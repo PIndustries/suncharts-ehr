@@ -16,27 +16,22 @@ const fields=[field('service_date','Service date',{type:'date',value:'2030-01-02
 const form={querySelectorAll:sel=>sel.startsWith('[data-visit-charge-options]')?[{querySelectorAll:()=>fields}]:[]};
 const ctx={Set,String,visitBillingDate:v=>`date(${v})`};vm.createContext(ctx);vm.runInContext(rowsSrc,ctx);
 assert.deepEqual(JSON.parse(JSON.stringify(ctx.encounterDetailsSummaryRows(form))),[['Service date','date(2030-01-02)'],['Prior authorization number (box 23)','SYN-AUTH-1'],['Do not send this claim electronically','Yes'],['Secondary insurance','Bill the primary only']]);
-// The bar.
-function page(state,withTable=true){
- const nodes={};
- const card={getAttribute:()=>state,querySelector:sel=>sel==='.visit-billing-status'?{outerHTML:'<div class="visit-billing-status">STEP</div>'}:sel==='.visit-billing-totals'?{outerHTML:'<p class="visit-billing-totals">TOTALS</p>'}:sel==='.visit-billing-breakdown'?(withTable?{}:null):null};
- nodes['encounter-revenue-status']={querySelector:sel=>sel==='.visit-billing-card'?card:null};
- const host={style:{setProperty(){}},querySelector(){return null;},children:[],insertBefore(node){nodes['encounter-bar']=node;node.remove=()=>{delete nodes['encounter-bar'];};this.children.push(node);}};
- nodes['visit-page-host']=host;
- const c={$:id=>nodes[id]||null,document:{createElement:()=>({dataset:{},setAttribute(){},set innerHTML(v){this.html=v;},get innerHTML(){return this.html;}}),querySelector:()=>null},getComputedStyle:()=>({top:'0px'}),parseFloat,Math,clearTimeout,setTimeout};
- vm.createContext(c);vm.runInContext(barSrc,c);return {c,nodes};
-}
-{const {c,nodes}=page('post_charges');c.encounterBarSync();const bar=nodes['encounter-bar'];
- assert.equal(bar.html,'<div class="visit-billing-status">STEP</div><p class="visit-billing-totals">TOTALS<button type="button" class="text-button" data-money-details>Money details</button></p>');
- assert.equal(bar.dataset.visitBillingState,'post_charges');}
-{const {c,nodes}=page('post_charges',false);c.encounterBarSync();assert.doesNotMatch(nodes['encounter-bar'].html,/Money details/,'no table, no button for it');}
-{const {c,nodes}=page('add_charges');c.encounterBarSync();assert.equal(nodes['encounter-bar'],undefined,'no charges yet: no bar');}
-// The bar always carries the one next step of an open encounter: the note first, then the charges, then finishing.
-{const {c,nodes}=page('add_charges');c.activeVisit={id:'v',status:'in_progress'};c.encounterBarSync();const html=nodes['encounter-bar'].html;
- assert.match(html,/Finish and sign the note/);assert.match(html,/class="primary" data-encounter-next="note">Go to the note</);assert.equal(html.match(/class="primary"/g).length,1,'one main button');assert.doesNotMatch(html,/STEP/);}
-{const {c,nodes}=page('add_charges');c.activeVisit={id:'v',status:'signed'};c.encounterBarSync();assert.match(nodes['encounter-bar'].html,/^<div class="visit-billing-status">STEP<\/div>/,'signed with no charges: the card’s own Add charges step');}
-{const {c,nodes}=page('post_charges');c.activeVisit={id:'v',status:'signed'};c.selected='p';c.checkoutProgress=()=>({});c.checkoutKey=(p,v)=>`${p}:${v}`;c.checkoutStates=new Map([['p:v',{checkout:{completed:false}}]]);c.encounterBarSync();
- assert.match(nodes['encounter-bar'].html,/class="primary" data-encounter-next="finish">Finish encounter</,'nothing left to press in billing: finishing is the main step');
- c.checkoutStates.set('p:v',{checkout:{completed:true}});c.encounterBarSync();assert.doesNotMatch(nodes['encounter-bar'].html,/Finish encounter/,'a finished encounter is not asked to finish again');}
+// The old bar is retired; its existing refresh entry point reconciles the five steps.
+let removed=0,scheduled=0;
+vm.runInNewContext(barSrc,{$:()=>({remove:()=>removed++}),encounterStepsSchedule:()=>scheduled++});
+const refresh={ $:()=>({remove:()=>removed++}),encounterStepsSchedule:()=>scheduled++};
+vm.createContext(refresh);vm.runInContext(barSrc,refresh);refresh.encounterBarSync();
+assert.equal(removed,1);assert.equal(scheduled,1);
 assert.match(src,/data-details-edit>Edit claim details</);
-console.log('PASS claim details read first and the encounter bar: listed values, skipped fields, copied next step with Money details, no bar without charges');
+console.log('PASS claim details keep listed values and the old next-step bar refreshes the stepper');
+
+// The Summary note action focuses the encounter. Finish invokes encounter completion.
+{const start=src.indexOf('// The bar\'s note-side steps:'),end=src.indexOf('\n});',start)+4,events=[],calls=[];
+ const c={document:{addEventListener:(kind,fn)=>events.push(fn),querySelector:()=>null},chartSection:'overview',showChartSection:key=>calls.push(['section',key]),invoiceTabSet:key=>calls.push(['tab',key]),run:fn=>fn(),finishVisitEncounter:()=>calls.push(['finish']),$:()=>null};
+ vm.runInNewContext(src.slice(start,end),c);
+ events[0]({target:{closest:()=>({dataset:{encounterNext:'note'}})},preventDefault(){}});
+ assert.deepEqual(calls,[['section','visits'],['tab','note']]);
+ calls.length=0;events[0]({target:{closest:()=>({dataset:{encounterNext:'finish'}})},preventDefault(){}});
+ assert.deepEqual(calls,[['section','visits'],['finish']]);
+ console.log('PASS Summary next-step opens the encounter before note / finish navigation');
+}

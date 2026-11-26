@@ -16,19 +16,20 @@ assert.doesNotMatch(native,/account_key|encrypted_key|credential_fingerprint/,'s
 assert.match(billing,/loadClaimMdConnection\(\)/);
 assert.match(billing,/claimMdConnectionCard\(\)/);
 assert.match(billing,/Patient coverage, charges and connected revenue-cycle workflows/);
-assert.match(claims,/loadClaimMdConnection\(\)/);
+assert.match(claims,/loadClaimMdConnection\(\(\)=>claimContextCurrent\(context\)\)/);
 assert.match(claims,/claimMdConnectionCard\(\)/);
-assert.match(claims,/Send claims, see payer responses and post insurance payments/);
+assert.match(claims,/data-claim-worklist/);
+assert.match(claims,/data-era-worklist/);
 console.log('PASS Claim.MD is presented as a native revenue-cycle connection');
 
 const vm=require('node:vm');
 // Staff display helpers load before every feature script, exactly as index.html loads them.
 {const createContext=vm.createContext;vm.createContext=(...args)=>{const context=createContext(...args);vm.runInContext(require('fs').readFileSync('web/display-format.js','utf8'),context);return context;};}
 
-const context=vm.createContext({document:{addEventListener(){}},esc:value=>String(value??'').replaceAll('<','&lt;'),human:String,date:String});
+const clickHandlers=[];
+const context=vm.createContext({document:{addEventListener(type,handler){if(type==='click')clickHandlers.push(handler);}},esc:value=>String(value??'').replaceAll('<','&lt;'),human:String,date:String});
 vm.runInContext(native,context);
 const claim={status:'adjudicated',snapshot:{account:{coverage_snapshot:{coverage:{id:'synthetic'}}}}};
-const stage=(html,label)=>html.match(new RegExp('<li class="([^"]+)"[^]*?<b>'+label+'</b>'));
 let html=context.claimMdClaimLifecycle(claim,{}, {items:[{reason:'submission acceptance received'}]});
 assert.match(html,/Eligibility is checked separately/);
 assert.match(html,/Eligibility has not been checked/);
@@ -37,12 +38,12 @@ assert.doesNotMatch(html,/From coverage to settled balance/);
 assert.match(html,/<li class="(?:is-upcoming|is-current)" tabindex="0" aria-label="(?:Later|Now): Sent to clearinghouse\./,'free text and adjudication do not prove delivery');
 assert.match(html,/<li class="is-missed" tabindex="0" aria-label="Not done: Eligibility checked\./,'coverage alone does not complete eligibility; a skipped step shows as not done');
 html=context.claimMdClaimLifecycle(claim,{tracking:{eligibility:{status:'completed',service_date:'2026-11-10'},submissions:[{status:'delivered'}],reports:[{received_at:'2026-11-10',evidence:{senderid:'CLMMD',status:'A',message:{message:'Acknowledged <unsafe>',status:'A'}}}],connections:[{paused:false,last_poll_at:'2026-11-10',last_success_at:'2026-11-09',last_result:'poll_failed_cursor_retained'}]}});
-assert.match(html,/Claim.MD received this claim/);assert.match(html,/Acknowledged &lt;unsafe>/);assert.match(html,/Last checked/);assert.match(html,/poll_failed_cursor_retained/);assert.doesNotMatch(html,/Status code/);
+assert.match(html,/The clearinghouse received this claim/);assert.match(html,/Acknowledged &lt;unsafe>/);assert.match(html,/Last checked/);assert.match(html,/poll_failed_cursor_retained/);assert.doesNotMatch(html,/Status code/);
 assert.doesNotMatch(html,/The payer still has to accept it/,'an adjudicated claim is not still waiting for payer acceptance');assert.match(html,/No insurance payment posted yet/);
 assert.doesNotMatch(html,/Current payer state: Adjudicated/);
 html=context.claimMdClaimLifecycle({status:'ready',snapshot:claim.snapshot},{tracking:{submissions:[{status:'delivered'}],reports:[]}});
 assert.match(html,/<li class="is-current" tabindex="0" aria-label="(?:Done|Now|Not done|Later): Payer response\./,'delivery advances the displayed stage without assuming eligibility completed');
-assert.doesNotMatch(html,/class="claim-progress-now"><b>[^<]*<\/b> · Send this claim to Claim.MD.<\/p>/,'do not prompt duplicate submission after a recorded delivery');
+assert.doesNotMatch(html,/class="claim-progress-now"><b>[^<]*<\/b> · Send this claim to the clearinghouse.<\/p>/,'do not prompt duplicate submission after a recorded delivery');
 html=context.claimMdTrackingSummary({reports:[{evidence:{senderid:'SYN-PAYER',sender_name:'Synthetic Payer',message:{message:'Finalized/Payment'}},received_at:'2026-11-10'}]});
 assert.match(html,/Update from Synthetic Payer/);assert.match(html,/do not post insurance payments/);
 assert.doesNotMatch(native,/\(check the sender below\)/,'staff must not be told to check the sender');
@@ -51,17 +52,18 @@ assert.doesNotMatch(native,/Status code/,'status codes are not staff wording');
 console.log('PASS coverage, transport, response sender and remittance milestones require distinct recorded evidence');
 
 html=context.claimMdTrackingSummary({reports:[{evidence:{senderid:'CLMMD',sender_name:'Claim.MD',status:'A',message:{status:'W',message:'NCCI - Procedure Code 11111 requires an appropriate modifier.'}},received_at:'2026-11-11'}]});
-assert.match(html,/Claim\.MD found a problem with this claim/);
-assert.match(html,/Nothing has gone to the insurer\. Correct the claim and send it again\./);
+assert.match(html,/Warning from Claim\.MD/);
+assert.match(html,/NCCI - Procedure Code 11111 requires an appropriate modifier\./);
+assert.doesNotMatch(html,/send it again|Nothing has gone to the insurer/,'a warning alone establishes neither permission to resend nor upstream delivery');
 assert.doesNotMatch(html,/received this claim/);
 html=context.claimMdTrackingSummary({reports:[{evidence:{senderid:'CLMMD',sender_name:'Claim.MD',status:'A',message:{status:'A',message:'Acknowledged'}},received_at:'2026-11-11'}]});
-assert.match(html,/Claim\.MD received this claim/);
+assert.match(html,/The clearinghouse received this claim/);
 html=context.claimMdTrackingSummary({reports:[{evidence:{senderid:'CLMMD',sender_name:'Claim.MD',status:'A',message:{status:'A',message:'Claim received <unsafe>'}},received_at:'2026-11-11'}]});
-assert.match(html,/Claim.MD received this claim/);assert.match(html,/Claim received &lt;unsafe>/);
+assert.match(html,/The clearinghouse received this claim/);assert.match(html,/Claim received &lt;unsafe>/);
 html=context.claimMdTrackingSummary({reports:[{evidence:{senderid:'SYN-PAYER',sender_name:'Synthetic Payer',status:'A',sender_icn:'ICN<SYN0001>',message:{status:'A',message:'Accepted by payer'}},received_at:'2026-11-12'}]});
 assert.match(html,/Synthetic Payer accepted this claim/);assert.match(html,/Payer claim number ICN&lt;SYN0001>/);
 html=context.claimMdTrackingSummary({reports:[{evidence:{senderid:'CLMMD',sender_name:'Claim.MD',status:'R',message:{status:'R',message:'Format check failed'}},received_at:'2026-11-13'}]});
-assert.match(html,/Claim\.MD rejected this claim/);assert.match(html,/Format check failed/);
+assert.match(html,/The clearinghouse rejected this claim/);assert.match(html,/Format check failed/);
 html=context.claimMdTrackingSummary({reports:[{evidence:{senderid:'SYN-PAYER',status:'R',message:{status:'R',message:'Coverage not in effect'}},received_at:'2026-11-14'}]});
 assert.match(html,/The payer rejected this claim/);assert.match(html,/Coverage not in effect/);
 html=context.claimMdTrackingSummary({reports:[{evidence:{senderid:'SYN-PAYER',sender_name:'Synthetic Payer',status:'R',sender_icn:'ICNSYN9',message:{status:'A',message:'Claim status changed to rejected'}},received_at:'2026-11-15'}]});
@@ -71,7 +73,7 @@ html=context.claimMdTrackingSummary({reports:[{evidence:{senderid:'CLMMD',sender
 assert.match(html,/Synthetic Payer rejected this claim/);
 assert.match(html,/Earlier updates \(1\)/);
 const earlierBlock=html.match(/<summary>Earlier updates \(1\)<\/summary>[^]*?<\/details>/)[0];
-assert.match(earlierBlock,/Claim\.MD received this claim/);assert.match(earlierBlock,/Claim received/);
+assert.match(earlierBlock,/The clearinghouse received this claim/);assert.match(earlierBlock,/Claim received/);
 assert.doesNotMatch(earlierBlock,/Coverage not in effect/,'the newest update is not repeated under earlier updates');
 console.log('PASS each payer response is named by who sent it and whether they accepted or rejected');
 
@@ -101,9 +103,42 @@ console.log('PASS the payer response stage follows the claim status, not only th
 {
  const withConn={connections:[{route_key:'r',paused:false}],submissions:[{status:'delivered'}],reports:[]};
  let out=context.claimMdTrackingSummary(withConn,'claim-1');
- assert.match(out,/<button type="button" data-claimmd-check="claim-1">Check with Claim.MD now<\/button>/);
+ assert.match(out,/<button type="button" data-claimmd-check="claim-1">Check with the clearinghouse now<\/button>/);
  assert.doesNotMatch(context.claimMdTrackingSummary(withConn),/data-claimmd-check/,'no claim id, no button');
  assert.doesNotMatch(context.claimMdTrackingSummary({connections:[],submissions:[],reports:[]},'claim-1'),/data-claimmd-check/,'nothing sent, nothing to check');
- assert.match(native,/No new messages from Claim\.MD\./);assert.match(native,/new message\$\{n===1\?'':'s'\} from Claim\.MD\./);assert.match(native,/Checking…/);
- console.log('PASS Check with Claim.MD now button renders for sent claims');
+ console.log('PASS manual status check renders for sent claims');
 }
+
+(async function checkStatusClick(){
+ const calls=[],result={textContent:''},freshResult={textContent:''},lifecycle={outerHTML:''};
+ const openedClaim={...claim,id:'claim-1',status:'submitted'};
+ const claimView={claim:'claim-1'};
+ const tracking={submissions:[{status:'delivered'}],reports:[{received_at:'2026-11-10',evidence:{senderid:'CLMMD',status:'A',message:{message:'Synthetic received response'}}}]};
+ const pane={isConnected:true,querySelector:selector=>selector==='.claim-lifecycle'?lifecycle:freshResult};
+ let surfaced;
+ Object.assign(context,{
+  claimCurrent:openedClaim,claimsBase:'/api/v1/billing/claims',
+  claimContextSnapshot:()=>claimView,claimContextCurrent:view=>view===claimView,
+  updateClaimStatusSurfaces:(item,view,detail)=>{surfaced={item,view,detail};},
+  api:async(path,method)=>{calls.push({path,method});return method==='POST'?{new_messages:1}:{claim:openedClaim,tracking};}
+ });
+ const button={dataset:{claimmdCheck:'claim-1'},disabled:false,parentElement:{querySelector:()=>result},closest:selector=>selector==='.billing-account-detail'?pane:null};
+ let prevented=false;
+ const event={target:{closest:selector=>selector==='[data-claimmd-check]'?button:null},preventDefault(){prevented=true;}};
+ for(const handle of clickHandlers)await handle(event);
+ assert.equal(prevented,true);
+ assert.equal(button.disabled,false);
+ assert.deepEqual(calls,[
+  {path:'/api/v1/billing/claims/claim-1/claimmd-status/check',method:'POST'},
+  {path:'/api/v1/billing/claims/claim-1',method:undefined}
+ ]);
+ assert.match(lifecycle.outerHTML,/Synthetic received response/);
+ assert.equal(freshResult.textContent,'1 new message from the clearinghouse.');
+ assert.equal(surfaced.item,openedClaim);
+ assert.equal(surfaced.view,claimView);
+ context.api=async()=>{throw new Error('Claim.MD is temporarily rate limited. Try again later.');};
+ for(const handle of clickHandlers)await handle(event);
+ assert.equal(button.disabled,false);
+ assert.match(result.textContent,/temporarily rate limited/);
+ console.log('PASS manual status check updates the selected claim and reports a rate-limit error');
+})().catch(error=>{console.error(error);process.exitCode=1;});

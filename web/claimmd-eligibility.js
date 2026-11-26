@@ -1,23 +1,43 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 'use strict';
 
-let claimmdProviderDefaults={providers:[],facilities:[]};
+let claimmdProviderDefaults={};
 async function loadClaimmdProviderDefaults(){const identity=me,data=await api('/api/v1/billing/claimmd/provider-defaults');if(me!==identity)throw new Error('Session changed; reload the provider directory.');claimmdProviderDefaults=data;return data;}
 const claimmdEligibilityContexts=new WeakMap();
 let claimmdEligibilityGeneration=0;
 let claimmdCoveragePayerTimer=null;
-function claimmdClaimProviderDefaults(){
- const provider=claimmdProviderDefaults.providers?.find(item=>item.id===claimmdProviderDefaults.default_provider_id)||(claimmdProviderDefaults.providers?.length===1?claimmdProviderDefaults.providers[0]:null);
- const facility=claimmdProviderDefaults.facilities?.find(item=>item.id===claimmdProviderDefaults.default_facility_id)||(claimmdProviderDefaults.facilities?.length===1?claimmdProviderDefaults.facilities[0]:null);
- return {billing_provider_name:facility?.name||provider?.display_name||'',billing_npi:provider?.npi||'',rendering_npi:provider?.npi||'',billing_address:facility?.address||'',tax_id:''};
+function claimmdClaimProviderDefaults(visit=null,details={},directory=claimmdProviderDefaults){
+ if(!Array.isArray(directory?.providers)||!Array.isArray(directory.facilities))return {};
+ const provider=visit?.clinician_id?directory.providers.find(item=>item.id===visit.clinician_id):
+  !visit?.id&&directory.providers.length===1?directory.providers[0]:null;
+ const facility=directory.facilities.length===1?directory.facilities[0]:null;
+ const organizations=directory.billing_organizations||[];
+ const organization=organizations.length===1?organizations[0]:null;
+ const rendering=details?.rendering_npi||provider?.npi||'';
+ const assignedName=provider?.display_name||visit?.clinician_name||
+  (visit?.clinician_id&&typeof encounterListProviderName==='function'?encounterListProviderName(visit.clinician_id):'');
+ const overrideProvider=details?.rendering_npi?directory.providers.find(p=>p.npi===details.rendering_npi):null;
+ const renderingName=details?.rendering_provider_name||overrideProvider?.display_name||
+  (details?.rendering_npi&&details.rendering_npi!==provider?.npi?'':assignedName);
+ return {billing_provider_name:facility?.name||organization?.name||provider?.display_name||'',
+  billing_organization_name:organization?.name||'',billing_organization_count:organizations.length,
+  rendering_provider_name:renderingName==='—'?'':renderingName||'',
+  billing_npi:organizations.length>1?'':organization?.npi||rendering,rendering_npi:rendering,
+  billing_address:facility?.address||'',tax_id:''};
+}
+function claimmdSubscriberBirthMissing(coverage,patient,options={}){
+ const recorded=String(coverage.subscriber_birth_date||'').trim();
+ if(coverage.relationship!=='self')return !recorded;
+ if(options.claim&&recorded)return false;
+ return !!patient&&!patient.birth_date;
 }
 
-function claimmdEligibilityButton(coverage){
- return billingWrite()&&coverage.content.status==='active'?`<button type="button" data-claimmd-eligibility="${esc(coverage.id)}">Check eligibility</button>`:'';
+function claimmdEligibilityButton(coverage,label='Check eligibility'){
+ return claimmdEligibilityCanRequest(coverage)?`<button type="button" data-claimmd-eligibility="${esc(coverage.id)}">${esc(label)}</button>`:'';
 }
 
 function claimmdPayerDirectoryPanel(){
- return `<section class="billing-section"><div class="section-head"><div><h3>Claim.MD payer directory</h3><p class="muted">Search the current Claim.MD directory and review eligibility, claims and ERA capabilities.</p></div></div><form id="claimmd-payer-search" class="billing-filter"><label>Payer ID<input name="payerid" maxlength="40"></label><label>Payer name<input name="name" minlength="2" maxlength="120"></label><button type="submit">Search Claim.MD</button></form><div id="claimmd-payer-results"></div></section>`;
+ return `<section class="billing-section"><div class="section-head"><div><h3>Clearinghouse payer directory</h3><p class="muted">Search the current clearinghouse directory and review eligibility, claims and ERA capabilities.</p></div></div><form id="claimmd-payer-search" class="billing-filter"><label>Payer ID<input name="payerid" maxlength="40"></label><label>Payer name<input name="name" minlength="2" maxlength="120"></label><button type="submit">Search the clearinghouse</button></form><div id="claimmd-payer-results"></div></section>`;
 }
 
 function claimmdSubscriberParts(value){
@@ -115,6 +135,7 @@ function claimmdCheckedLine(check){
 }
 function claimmdStatusLabel(check){
  if(check.status==='pending')return 'Waiting for the insurer';
+ if(check.status==='failed')return 'Check failed';
  if(check.status!=='completed')return 'Could not confirm';
  return {active:'Active',inactive:'Not active',unknown:'Could not confirm'}[claimmdEligibilitySummary(check).status];
 }
@@ -128,7 +149,7 @@ function claimmdEligibilityResult(check,coverage,options={}){
  const problem=summary.status==='unknown'&&summary.errors.length?claimmdPayerProblem(summary.errors):'';
  const said=summary.errors.map(error=>typeof error==='string'?error:error?.error_message||error?.error_mesg||error?.message||'').filter(Boolean)[0];
  const explain=problem==='member'?'The insurer could not find this member. Check the member ID, name and date of birth on the coverage.':problem==='provider'?`The insurer does not recognise ${claimmdProviderLabel(check)} for eligibility checks yet.`:problem==='retry'?'The insurer\'s system could not answer right now. Try again in a few minutes.':problem?`The insurer did not confirm coverage${said?': “'+String(said).slice(0,300)+'”':'.'}`:summary.status==='unknown'?'The insurer answered but did not say whether the plan is active.':'';
- const next=options.actions===false||!problem?'':problem==='member'&&typeof billingCan==='function'&&billingCan()?`<button type="button" data-edit-coverage="${esc(coverage.id)}">Edit insurance</button>`:problem==='provider'?claimmdEnrollAction(check,coverage):problem==='retry'?claimmdTryAgain(coverage,options):'';
+ const next=options.actions===false||!problem?'':problem==='member'&&typeof billingCan==='function'&&billingCan()?`<button type="button" data-edit-coverage="${esc(coverage.id)}">Edit insurance</button>`:problem==='member'?'<p>Ask billing staff to correct the coverage.</p>':problem==='provider'?claimmdEnrollAction(check,coverage):problem==='retry'?claimmdTryAgain(coverage,options):'';
  const other=options.serviceDate&&serviceDate&&serviceDate!==options.serviceDate?`<p class="eligibility-caution">This answer is for ${esc(claimmdDay(serviceDate))}. The encounter is on ${esc(claimmdDay(options.serviceDate))}.</p>`:'';
  return `<div class="eligibility-result"><p class="eligibility-status"><span class="eligibility-pill ${summary.status}">${label}</span> <span>${serviceDate?'on '+esc(claimmdDay(serviceDate))+' · ':''}${esc(claimmdCheckedLine(check))}</span></p>${other}${explain?`<p>${esc(explain)}</p>${next}`:''}${summary.status==='inactive'?'<p>The insurer reports this plan is not active on this date. Ask the patient for their current insurance card.</p>':''}`
   +`<dl class="billing-dl eligibility-facts">${fact('Plan',summary.plan)}${fact('Insurance type',summary.type)}${fact('Group number',summary.group)}${fact('Coverage dates',summary.dates)}${fact('Member name from the insurer',summary.memberName)}</dl>${summary.differs.length?`<p class="eligibility-caution">The insurer has a different ${esc(summary.differs.join(' and '))} on file.</p>`:''}`
@@ -157,25 +178,25 @@ function claimmdEnrollAction(check,coverage){
  if(!claimmdEligibilityOwner())return '<p>Ask the practice owner to set this up under Claim connections.</p>';
  const result=claimmdEligibilityUiFor(coverage.id).enrollment;
  const hints=result?.failure?.provider_hints||[],canSupport=typeof supportHelpAvailable==='function'&&supportHelpAvailable(),support=canSupport?`<button type="button" data-eligibility-support="${esc(check.id)}" data-coverage="${esc(coverage.id)}">Send this to support</button>`:'';
- const outcome=!result||result.check!==check.id?'':result.status==='started'?`<p role="status">Claim.MD's setup form opened in a new tab. Finish it there. The insurer can take a few days to turn eligibility on. <a href="${esc(result.external_url)}" target="_blank" rel="noopener noreferrer">Open the form again</a></p>`:result.status==='refused'&&(hints.includes('already')||hints.includes('duplicate'))?'<p role="status">Claim.MD says this is already set up or already requested. The insurer can take a few days to turn it on. Try the check again later.</p>':`<p role="status">Claim.MD did not open a setup form for this insurer. Sign in to Claim.MD and open Provider Enrollment${canSupport?', or send this to support':''}.</p>${support}`;
- return `<button type="button" class="primary" data-eligibility-enroll="${esc(check.id)}" data-coverage="${esc(coverage.id)}">Set up eligibility with Claim.MD</button>${outcome}`;
+ const outcome=!result||result.check!==check.id?'':result.status==='started'?`<p role="status">The clearinghouse's setup form opened in a new tab. Finish it there. The insurer can take a few days to turn eligibility on. <a href="${esc(result.external_url)}" target="_blank" rel="noopener noreferrer">Open the form again</a></p>`:result.status==='refused'&&(hints.includes('already')||hints.includes('duplicate'))?'<p role="status">The clearinghouse says this is already set up or already requested. The insurer can take a few days to turn it on. Try the check again later.</p>':`<p role="status">The clearinghouse did not open a setup form for this insurer. Sign in to the clearinghouse and open Provider Enrollment${canSupport?', or send this to support':''}.</p>${support}`;
+ return `<button type="button" class="primary" data-eligibility-enroll="${esc(check.id)}" data-coverage="${esc(coverage.id)}">Set up eligibility with the clearinghouse</button>${outcome}`;
 }
 function claimmdEligibilityFailure(check,coverage,options={}){
  const kind=claimmdFailureKind(check),failure=check?.response_snapshot?.failure,owner=claimmdEligibilityOwner(),insurer=typeof payerName==='function'&&coverage?payerName(coverage.content.payer_id):'the insurer',actions=options.actions!==false&&coverage;
  const canSupport=actions&&typeof supportHelpAvailable==='function'&&supportHelpAvailable();
  const edit=actions&&typeof billingCan==='function'&&billingCan()?`<button type="button" data-edit-coverage="${esc(coverage.id)}">Edit insurance</button>`:'';
  const [text,action]={
-  enroll:[`Claim.MD has not turned on eligibility checks for ${claimmdProviderLabel(check)} with ${insurer} yet.`,actions?claimmdEnrollAction(check,coverage):''],
-  member:['The insurer could not find this member. Check the member ID, name and date of birth on the coverage.',edit],
-  payer:[`Claim.MD did not recognise the payer ID for ${insurer}. Check the payer ID for this insurance company.`,actions?claimmdPayerAction(coverage):''],
-  retry:['The insurer\'s system did not answer. Try again in a few minutes.',actions?claimmdTryAgain(coverage,options):''],
-  connection:['Claim.MD is not connected.',actions?(owner?'<button type="button" data-eligibility-connections>Open Claim connections</button>':'<p>Ask the practice owner to check Claim connections.</p>'):''],
-  other:canSupport?['Claim.MD refused the request and gave no reason we can show. Send this to support.',`<button type="button" data-eligibility-support="${esc(check.id)}" data-coverage="${esc(coverage.id)}">Send this to support</button>`]:['Claim.MD refused the request and gave no reason we can show. Contact SunCharts support and tell them when this check was tried.','']
+  enroll:[`Review eligibility enrollment for ${claimmdProviderLabel(check)} with ${insurer}.`,actions?claimmdEnrollAction(check,coverage):''],
+  member:['Review the recorded member ID, name and date of birth against the insurance card.',edit||(actions?'<p>Ask billing staff to correct the coverage.</p>':'')],
+  payer:[`Review the payer ID recorded for ${insurer}.`,actions?claimmdPayerAction(coverage):''],
+  retry:['No usable eligibility answer was received. Try again in a few minutes.',actions?claimmdTryAgain(coverage,options):''],
+  connection:['Check the practice’s clearinghouse connection before retrying.',actions?(owner&&(typeof workspaceModuleAllowed!=='function'||workspaceModuleAllowed('edi'))?'<button type="button" data-eligibility-connections>Open Claim connections</button>':'<p>Ask the practice owner to check Claim connections.</p>'):''],
+  other:canSupport?['No specific reason is available for this failure.',`<button type="button" data-eligibility-support="${esc(check.id)}" data-coverage="${esc(coverage.id)}">Send this to support</button>`]:['No specific reason is available for this failure. Contact SunCharts support and tell them when this check was tried.','']
  }[kind];
- return `<div class="eligibility-failure" data-failure="${kind}"><p class="eligibility-status"><span class="eligibility-pill unknown">Could not confirm</span> <span>${esc(claimmdCheckedLine(check).replace(/^Checked/,'Tried'))}</span></p><p>${esc(text)}</p>${action}<p class="muted">This does not mean the patient is uninsured.</p>${failure?claimmdTechnicalDetails({kind:failure.kind,status:failure.http_status,codes:failure.provider_codes||[],words:failure.provider_hints||[]}):''}</div>`;
+ return `<div class="eligibility-failure" data-failure="${kind}"><p class="eligibility-status"><span class="eligibility-pill unknown">Check failed</span> <span>${esc(claimmdCheckedLine(check).replace(/^Checked/,'Tried'))}</span></p><p>Eligibility remains unconfirmed for this check. ${esc(text)}</p>${action}${failure?claimmdTechnicalDetails({kind:failure.kind,status:failure.http_status,codes:failure.provider_codes||[],words:failure.provider_hints||[]}):''}</div>`;
 }
-function claimmdPayerAction(coverage){
- return claimmdEligibilityOwner()?`<button type="button" data-eligibility-payer="${esc(coverage.content.payer_id)}">Add the payer ID</button>`:'<p>Ask the practice owner to add it in the payer directory under Billing tools.</p>';
+function claimmdPayerAction(coverage,missing=false){
+ return claimmdEligibilityOwner()?`<button type="button" data-eligibility-payer="${esc(coverage.content.payer_id)}">${missing?'Add the payer ID':'Review payer ID'}</button>`:`<p>Ask the practice owner to ${missing?'add':'review'} it in the payer directory under Billing tools.</p>`;
 }
 
 // ---- The card on a coverage -----------------------------------------------------------
@@ -198,10 +219,10 @@ function claimmdNeedPrompt(coverage,ui){
  if(need.kind==='subscriber_birth_date')return form('<label>What is the policy holder\'s date of birth?<input type="date" name="subscriber_birth_date" required></label>','Save and check');
  if(need.kind==='subscriber_name')return form('<label>Policy holder\'s first name<input name="given" maxlength="90" required autocomplete="off"></label><label>Policy holder\'s last name<input name="family" maxlength="90" required autocomplete="off"></label>','Save and check');
  if(need.kind==='member_id')return `${ask('This coverage has no member ID.')}${typeof billingCan==='function'&&billingCan()?`<button type="button" data-edit-coverage="${esc(coverage.id)}">Edit insurance</button>`:''}</div>`;
- if(need.kind==='payer_id')return `${ask('This insurance company has no payer ID yet.')}${claimmdPayerAction(coverage)}</div>`;
+ if(need.kind==='payer_id')return `${ask('This insurance company has no payer ID yet.')}${claimmdPayerAction(coverage,true)}</div>`;
  if(need.kind==='provider_npi')return `${ask('No provider has an NPI on file yet.')}${owner?'<button type="button" data-practice-providers>Add an NPI</button>':'<p>Ask the practice owner to add one in Practice administration.</p>'}</div>`;
  if(need.kind==='billing_organization_missing')return `${ask('The practice has no billing organization with a tax ID yet.')}${owner?'<button type="button" data-billing-organizations>Add a billing organization</button>':'<p>Ask the practice owner to add one in Practice administration.</p>'}</div>`;
- if(need.kind==='claim_connection')return `${ask('Claim.MD is not connected.')}${owner?'<button type="button" data-eligibility-connections>Open Claim connections</button>':'<p>Ask the practice owner to check Claim connections.</p>'}</div>`;
+ if(need.kind==='claim_connection')return `${ask('the clearinghouse is not connected yet.')}${owner?'<button type="button" data-eligibility-connections>Open Claim connections</button>':'<p>Ask the practice owner to check Claim connections.</p>'}</div>`;
  return `${ask('One more detail is needed before this can be checked.')}</div>`;
 }
 function claimmdHistoryLine(check,coverage){
@@ -219,9 +240,9 @@ function claimmdEligibilityCard(coverage,items,options={}){
   if(latest?.status==='failed')parts.push(claimmdEligibilityFailure(latest,coverage,{actions:!options.readOnly}));
   else if(latest?.status==='pending')parts.push('<p>Waiting for the insurer\'s answer. Refresh in a moment.</p>');
  }
- if(answer)parts.push((answer!==latest?'<p class="muted">Last answer from the insurer</p>':'')+claimmdEligibilityResult(answer,coverage,{serviceDate:options.serviceDate,actions:!options.readOnly}));
+ if(answer)parts.push((answer!==latest?'<p class="muted">Last answer from the insurer</p>':'')+claimmdEligibilityResult(answer,coverage,{serviceDate:options.serviceDate,actions:!options.readOnly&&answer===latest}));
  if(!latest&&!ui.running&&!asking)parts.push('<p class="muted">Not checked with the insurer yet.</p>');
- if(can&&!ui.running&&options.button)parts.push(`<div class="actions"><button type="button" data-claimmd-eligibility="${esc(coverage.id)}">${latest?'Check again':'Check eligibility'}</button></div>`);
+ if(can&&!ui.running&&!asking&&options.button&&(!latest||latest.status==='completed'))parts.push(`<div class="actions">${claimmdEligibilityButton(coverage,latest?'Check again':'Check eligibility')}</div>`);
  const shown=new Set([answer,!ui.running&&!asking&&latest?.status!=='completed'?latest:null]),rest=list.filter(check=>!shown.has(check)),answers=rest.filter(check=>check.status!=='failed'),attempts=rest.filter(check=>check.status==='failed');
  if(rest.length)parts.push(`<details class="eligibility-history"><summary>Past checks (${rest.length})</summary>${answers.map(check=>claimmdHistoryLine(check,coverage)).join('')}${attempts.length?`<details class="eligibility-attempts"><summary>Earlier attempts (${attempts.length})</summary>${attempts.map(check=>claimmdHistoryLine(check,coverage)).join('')}</details>`:''}</details>`);
  if(can&&claimmdEligibilityOwner()&&!options.form)parts.push(`<details class="eligibility-more eligibility-options"><summary>More options</summary><p class="muted">Check a different date, service or provider.</p><button type="button" data-eligibility-advanced="${esc(coverage.id)}">Open the full request form</button></details>`);
@@ -279,7 +300,7 @@ async function claimmdEligibilityCheck(coverage,options={}){
 function claimmdEligibilityAuto(coverage,items,context={}){
  const key=`${me?.user_id||''}:${selected}:${coverage.id}`,payer=(typeof billingPayers==='undefined'?[]:billingPayers).find(row=>row.id===coverage.content.payer_id);
  if(claimmdEligibilityAutoTried.has(key)||!context.appointmentId||!claimmdEligibilityCanRequest(coverage)||!payer?.content?.payer_code)return false;
- const now=Date.now(),day=86400000,since=new Date(now-30*day).toISOString().slice(0,10),list=items||[];
+ const now=Date.now(),day=86400000,since=localIsoDate(new Date(now-30*day)),list=items||[];
  if(list.some(check=>check.status==='completed'&&claimmdCheckDate(check)>=since)||list.some(check=>check.status==='failed'&&now-new Date(check.created_at).getTime()<day/2)||list.some(check=>check.status==='pending'))return false;
  claimmdEligibilityAutoTried.add(key);
  void claimmdEligibilityCheck(coverage,{automatic:true,context});
@@ -294,7 +315,7 @@ async function claimmdSaveCoverage(coverage,changes,reason){
 }
 function claimmdSupportDraft(check,coverage){
  const failure=check.response_snapshot?.failure||{},codes=(failure.provider_codes||[]).filter(code=>/^\d{1,6}$/.test(String(code))),hints=(failure.provider_hints||[]).filter(hint=>/^[a-z ]{1,20}$/.test(String(hint)));
- return {subject:'Eligibility check was refused',message:[`An eligibility check with ${payerName(coverage.content.payer_id)} was refused by Claim.MD.`,`Checked: ${new Date(check.created_at).toISOString()}`,`Service date: ${claimmdCheckDate(check)||'not recorded'}`,`Claim.MD code: ${codes.join(', ')||'none'}`,`Words in Claim.MD's reply: ${hints.join(', ')||'none'}`,`Check reference: ${check.id}`].join('\n')};
+ return {subject:'Eligibility check was refused',message:[`An eligibility check with ${payerName(coverage.content.payer_id)} was refused by the clearinghouse.`,`Checked: ${new Date(check.created_at).toISOString()}`,`Service date: ${claimmdCheckDate(check)||'not recorded'}`,`Clearinghouse code: ${codes.join(', ')||'none'}`,`Words in the clearinghouse's reply: ${hints.join(', ')||'none'}`,`Check reference: ${check.id}`].join('\n')};
 }
 
 async function openClaimmdEligibility(coverage,options={}){
@@ -315,7 +336,7 @@ async function openClaimmdEligibility(coverage,options={}){
 // The full request form, for the rare check the one-click request cannot express.
 async function openClaimmdEligibilityForm(coverage,options={}){
  const opening=++claimmdEligibilityGeneration;
- const patientId=selected,identity=me,editor=typeof billingEditorHost==='function'?billingEditorHost():$('billing-editor'),patient=workspace.patient,serviceDate=options.serviceDate||new Date().toISOString().slice(0,10);
+ const patientId=selected,identity=me,editor=typeof billingEditorHost==='function'?billingEditorHost():$('billing-editor'),patient=workspace.patient,serviceDate=options.serviceDate||localIsoDate();
  let editorAnchor=editor?.firstElementChild;
  const visitId=typeof activeVisit==='undefined'?null:activeVisit?.id,section=typeof chartSection==='undefined'?null:chartSection;
  const current=()=>opening===claimmdEligibilityGeneration&&editor?.firstElementChild===editorAnchor&&selected===patientId&&me===identity&&(typeof activeVisit==='undefined'||activeVisit?.id===visitId)&&(typeof chartSection==='undefined'||chartSection===section)&&(typeof billingEditorHost==='function'?billingEditorHost():$('billing-editor'))===editor&&(!options.isCurrent||options.isCurrent());
@@ -325,7 +346,8 @@ async function openClaimmdEligibilityForm(coverage,options={}){
  const subscriber=claimmdSubscriberParts(coverage.content.subscriber_name);
  const directory=await loadClaimmdProviderDefaults();if(!current())return;
  const providers=directory.providers||[],organizations=directory.billing_organizations||[];
- const preferredProvider=providers.find(row=>row.id===(typeof activeVisit==='undefined'?null:activeVisit?.clinician_id))?.id||directory.default_provider_id||'';
+ const clinicianId=typeof activeVisit==='undefined'?null:activeVisit?.clinician_id;
+ const preferredProvider=clinicianId?(providers.find(row=>row.id===clinicianId)?.id||''):(directory.default_provider_id||'');
  const providerOptions=providers.map(row=>`<option value="${esc(row.id)}" ${row.id===preferredProvider?'selected':''}>${esc(row.display_name)} · NPI ${esc(row.npi)}</option>`).join('');
  const orgOptions=organizations.map(row=>`<option value="${esc(row.id)}" ${organizations.length===1?'selected':''}>${esc(row.name)} · ${esc(row.tax_id_type==='E'?'EIN':'SSN')} ending ${esc(row.tax_id_last4)}</option>`).join('');
  const identityFields=`<label>Provider<select name="provider_id" required><option value="">Select a practice provider</option>${providerOptions}</select></label><label>Billing organization and tax ID<select name="billing_organization_id" required><option value="">Select a billing organization</option>${orgOptions}</select></label><p class="muted">Use the provider and billing organization the insurer has on file for the practice.</p>${!providers.length||!organizations.length?`<div class="notice error"><p>Before checking eligibility, the practice needs ${[!organizations.length?'a billing organization with its tax ID':'',!providers.length?'a provider with an NPI':''].filter(Boolean).join(' and ')}.</p>${!organizations.length?'<button type="button" class="primary" data-billing-organizations>Add billing organization</button> ':''}${!providers.length?'<button type="button" class="primary" data-practice-providers>Add provider</button>':''}</div>`:'<button type="button" data-billing-organizations>Billing organizations</button> <button type="button" data-practice-providers>Providers</button>'}`;
@@ -338,7 +360,7 @@ function claimmdPayerRows(items,selectable=false){
  return `<div class="billing-table-wrap"><table class="billing-table"><thead><tr><th>Payer</th><th>ID / type</th><th>Eligibility</th><th>Professional / institutional</th><th>ERA</th>${selectable?'<th></th>':''}</tr></thead><tbody>${items.map(item=>`<tr><td><b>${esc(item.payer_name||'Unnamed payer')}</b><small>${esc(item.payer_state||'')}</small></td><td>${esc(item.payerid||'—')}<small>${esc(item.payer_type||'')}</small></td><td>${esc(item.eligibility||'no')}</td><td>${esc(item['1500_claims']||'no')} / ${esc(item.ub_claims||'no')}</td><td>${esc(item.era||'no')}</td>${selectable?`<td><button type="button" data-claimmd-payer-select="${esc(item.payerid||'')}" data-payer-name="${esc(item.payer_name||'')}">Use payer</button></td>`:''}</tr>`).join('')||`<tr><td colspan="${selectable?6:5}">No matching payers returned.</td></tr>`}</tbody></table></div>`;
 }
 
-function claimmdCoveragePayerSearch(){return `<section class="billing-section"><h4>Look up an insurer in the Claim.MD directory</h4><p class="muted">Type an insurer name and matches appear as you type — there is nothing to press. Choosing one that is already set up here selects it for this insurance record. Choosing one that is not fills in the box below for you to check and add.</p><label>Insurer name in the Claim.MD directory<input name="name" id="coverage-claimmd-payer-query" maxlength="120" autocomplete="off" spellcheck="false" placeholder="Start typing a name"></label><div id="coverage-claimmd-payer-results"></div></section>`;}
+function claimmdCoveragePayerSearch(){return `<section class="billing-section"><h4>Look up an insurer in the clearinghouse directory</h4><p class="muted">Type an insurer name and matches appear as you type — there is nothing to press. Choosing one that is already set up here selects it for this insurance record. Choosing one that is not fills in the box below for you to check and add.</p><label>Insurer name in the clearinghouse directory<input name="name" id="coverage-claimmd-payer-query" maxlength="120" autocomplete="off" spellcheck="false" placeholder="Start typing a name"></label><div id="coverage-claimmd-payer-results"></div></section>`;}
 // The Claim.MD directory search runs while the staff member types, through the same lookup
 // this screen already used. The typed name is only a lookup: the choice is made from the
 // table below, where a row is either matched to an insurer already on file or added.
@@ -364,7 +386,7 @@ document.addEventListener('input',event=>{
   }catch(error){
    if($('coverage-claimmd-payer-query')!==box||box.value.trim()!==query||$('coverage-claimmd-payer-results')!==host)return;
    box.removeAttribute('aria-busy');
-   host.innerHTML=`<p class="error">The Claim.MD directory could not be searched just now: ${esc(error.message)}. What you typed is still here.</p>`;
+   host.innerHTML=`<p class="error">The clearinghouse directory could not be searched just now: ${esc(error.message)}. What you typed is still here.</p>`;
   }
  });},250);
 });
@@ -380,7 +402,7 @@ document.addEventListener('click',event=>{
  if(data.eligibilityCopay){claim();run(async()=>{
   const coverage=coverageFor(data.eligibilityCopay),cents=Number(data.cents),patientId=selected,identity=me;
   if(!Number.isSafeInteger(cents)||cents<0)throw new Error('The insurer did not report a copay amount that can be saved.');
-  await claimmdSaveCoverage(coverage,{copay_cents:cents},`From the insurer's eligibility response ${data.checkDate||new Date().toISOString().slice(0,10)}`);
+  await claimmdSaveCoverage(coverage,{copay_cents:cents},`From the insurer's eligibility response ${data.checkDate||localIsoDate()}`);
   if(selected!==patientId||me!==identity)return;
   claimmdEligibilityUiFor(coverage.id).copaySaved=cents;claimmdEligibilityRepaint(coverage.id);notice(`Saved ${claimmdDollars(cents/100)} as this plan's copay.`);
  });return;}
@@ -390,7 +412,7 @@ document.addEventListener('click',event=>{
   if(selected!==patientId||me!==identity)return;
   if(result.status==='started'&&/^https:\/\/(www\.)?claim\.md\//.test(String(result.external_url)))window.open(result.external_url,'_blank','noopener,noreferrer');
   claimmdEligibilityUiFor(coverage.id).enrollment={...result,check:data.eligibilityEnroll};claimmdEligibilityRepaint(coverage.id);
-  if(result.status==='started')notice('Finish the setup in the Claim.MD tab that just opened.');
+  if(result.status==='started')notice('Finish the setup in the clearinghouse tab that just opened.');
  });return;}
  if(data.eligibilitySupport){claim();run(async()=>{
   const coverage=coverageFor(data.coverage),ui=claimmdEligibilityUiFor(coverage.id);
@@ -426,7 +448,7 @@ document.addEventListener('submit',event=>{
   if(form.id==='claimmd-payer-search'||form.id==='coverage-claimmd-payer-search'){
    const payerid=(data.payerid||'').trim(),name=(data.name||'').trim();
    const query=new URLSearchParams();if(payerid)query.set('payerid',payerid);if(name)query.set('name',name);
-   const result=await api(`/api/v1/billing/claimmd/payers?${query}`);$(form.id==='claimmd-payer-search'?'claimmd-payer-results':'coverage-claimmd-payer-results').innerHTML=claimmdPayerRows(result.items,form.id==='coverage-claimmd-payer-search');notice('Claim.MD payer directory refreshed.');return;
+   const result=await api(`/api/v1/billing/claimmd/payers?${query}`);$(form.id==='claimmd-payer-search'?'claimmd-payer-results':'coverage-claimmd-payer-results').innerHTML=claimmdPayerRows(result.items,form.id==='coverage-claimmd-payer-search');notice('Clearinghouse payer directory refreshed.');return;
   }
   const context=claimmdEligibilityContexts.get(form);
   if(!context||!context.current()||$('claimmd-eligibility-form')!==form)throw new Error('The chart changed while this form was open. Close it and open it again.');

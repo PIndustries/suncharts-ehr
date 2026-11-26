@@ -67,22 +67,22 @@ for(const file of ['web/claimmd-native.js','web/provider-settings.js','web/clear
  assert.match(connectionNotice.outerHTML,/No clearinghouse is connected/);
  assert.match(connectionNotice.outerHTML,/data-provider-new/);
  assert.match(connectionNotice.outerHTML,/Connect your clearinghouse account to check eligibility, send claims/);
- assert.match(providerHtml,/Claim\.MD is not connected/);
+ assert.match(providerHtml,/the clearinghouse is not connected yet/);
  assert(order.indexOf('delivery')>0,'legacy delivery panels load after native settings');
  assert(calls.indexOf('/api/v1/billing/provider-settings')<calls.indexOf('/api/v1/billing/delivery/routes')||!calls.includes('/api/v1/billing/delivery/routes'));
  console.log('PASS Clearinghouse renders native Claim.MD zero state before optional legacy panels');
 
  statusFailure=true;connectionNotice.outerHTML='';await vm.runInContext('showEdiWorkspace()',context);await settle();
  assert.match(connectionNotice.outerHTML,/data-provider-new/);
- assert.match(providerHtml,/Claim\.MD is not connected/);
+ assert.match(providerHtml,/the clearinghouse is not connected yet/);
  console.log('PASS Claim.MD status refresh failure cannot blank or block AccountKey setup');
 
  statusFailure=false;legacyFailure=true;optionalFailure=true;connectionNotice.outerHTML='';await vm.runInContext('showEdiWorkspace()',context);await settle();
  assert.match(workspaceHtml,/manual clearinghouse history is temporarily unavailable/);
  assert.match(connectionNotice.outerHTML,/data-provider-new/);
- assert.match(providerHtml,/Claim\.MD is not connected/);
+ assert.match(providerHtml,/the clearinghouse is not connected yet/);
  assert.match(providerHtml,/Delivery and acknowledgment details are temporarily unavailable/);
- assert.match(providerHtml,/More Claim\.MD activity is temporarily unavailable/);
+ assert.match(providerHtml,/More clearinghouse activity is temporarily unavailable/);
  console.log('PASS legacy and optional API outages preserve native Claim.MD setup with section warnings');
 
  legacyFailure=false;optionalFailure=false;optionalHang=true;connectionNotice.outerHTML='';

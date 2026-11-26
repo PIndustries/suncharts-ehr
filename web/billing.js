@@ -19,13 +19,18 @@ function billingChargeDraftSession(){if(billingChargeDraftIdentity!==me)clearBil
 // One editor host is shared by the charge form and non-charge forms (copay receipt, ledger entry,
 // statement). A non-charge render replaces the charge form, detaching it; a detached charge form
 // holds no live input, so its retained draft must stay exactly as it was until it is opened again.
-function chargeFormLive(){const form=$('billing-account-form');if(!form)return false;const host=billingEditorHost();return !host||typeof host.contains!=='function'||host.contains(form);}
+function chargeFormLive(form=$('billing-account-form')){
+ if(!form||form.isConnected===false)return false;
+ const host=form.closest?.('#encounter-billing-editor,#insurance-editor,#billing-editor')||billingEditorHost();
+ return !!host&&(typeof host.contains!=='function'||host.contains(form));
+}
 function billingChargeKey(account,source,visit){return selected+':'+(account?'account:'+account:source?'source:'+source:'visit:'+(visit||'unlinked'));}
 function billingChargeMarkup(form){
  if(!form?.cloneNode)return null;
  const copy=form.cloneNode(true),fields=form.querySelectorAll('input,textarea,select'),targets=copy.querySelectorAll('input,textarea,select');
  fields.forEach((field,index)=>{const target=targets[index];if(field.tagName==='SELECT'){Array.from(target.options).forEach((option,i)=>option.toggleAttribute('selected',field.options[i].selected));}else if(field.tagName==='TEXTAREA')target.textContent=field.value;else{target.setAttribute('value',field.value);if(['checkbox','radio'].includes(field.type))target.toggleAttribute('checked',field.checked);}});
  if(typeof clearTerminologyComboboxMarkup==='function')clearTerminologyComboboxMarkup(copy);
+ copy.querySelector('[data-charge-diagnosis-editor] #visit-diagnoses')?.replaceChildren();
  copy.querySelectorAll('[data-charge-diagnoses]').forEach(node=>node.replaceChildren());
  copy.querySelectorAll('[data-charge-draft-notice]').forEach(node=>node.remove());copy.querySelectorAll('button[disabled]').forEach(button=>button.removeAttribute('disabled'));copy.removeAttribute('data-draft-stale');
  return copy.outerHTML;
@@ -35,20 +40,20 @@ function captureBillingChargeDraft(){
  // The editor host is shared with non-charge forms (copay receipts, ledger entries, statements).
  // Once one is on top, the charge form is detached; a detached form is not live input and must
  // never be captured. Its draft stays exactly as it was until the charge editor is opened again.
- if(!chargeFormLive())return;
+ if(!chargeFormLive(form))return;
  const baseline=billingChargeBaselines.get(form),html=billingChargeMarkup(form);if(!baseline||html===null)return;
  // A live table is compared on its charge lines; a retained editor copy on its own markup.
- const current=chargeTableHost(form)?chargeTableSignature({lines:chargeLiveRows(form).map(chargeRowValue)}):html;
- const key=form.dataset.draftKey;if(current===baseline)billingChargeDrafts.delete(key);else billingChargeDrafts.set(key,{key,patient:selected,account:form.dataset.id||null,visit:form.elements.visit_id?.value||null,version:Number(form.dataset.version),html,baseline});
+ const current=chargeTableHost(form)?billingChargeLiveSignature(form):html;
+ const key=form.dataset.draftKey;if(current===baseline&&!form.dataset.codesDetailsChanged)billingChargeDrafts.delete(key);else billingChargeDrafts.set(key,{key,patient:selected,account:form.dataset.id||null,visit:form.elements.visit_id?.value||null,version:Number(form.dataset.version),html,baseline});
 }
 function billingChargeHasDrafts(){billingChargeDraftSession();return billingChargeDrafts.size>0;}
 function billingChargeDraftFor(account,source,visit){billingChargeDraftSession();return billingChargeDrafts.get(billingChargeKey(account,source,visit))||(account&&visit?billingChargeDrafts.get(billingChargeKey(null,null,visit)):null);}
 function restoreBillingChargeDraft(account,source,visit){
  const draft=billingChargeDraftFor(account?.id,source,visit);if(!draft)return false;
  openBillingEditor(draft.html);const form=$('billing-account-form');if(!form)return false;billingChargeBaselines.set(form,draft.baseline);
- const replaced=!!account&&draft.account!==account.id,readOnly=!!account&&(account.status!=='draft'||replaced),stale=!!account&&Number(form.dataset.version)!==account.version;
+ const replaced=!!account&&draft.account!==account.id,readOnly=!!account&&((account.status!=='draft'&&!(form.dataset.mode==='correction'&&account.status==='posted'))||replaced),stale=!!account&&Number(form.dataset.version)!==account.version;
  if(readOnly){form.dataset.draftReadOnly='true';form.querySelectorAll('input,textarea').forEach(field=>field.readOnly=true);form.querySelectorAll('select,button,input[type="checkbox"],input[type="radio"]').forEach(field=>field.disabled=true);}
- else if(stale){form.dataset.draftStale='true';form.querySelector('button[type="submit"]').disabled=true;}
+ else if(stale){form.dataset.draftStale='true';const submit=form.querySelector('button[type="submit"]');if(submit)submit.disabled=true;}
  // Edits brought back into a draft that can still take them carry on saving by themselves;
  // only a draft that cannot be saved as it stands stops and says why.
  if(!readOnly&&!stale)return true;
@@ -80,7 +85,8 @@ function billingChargeSaved(form,saved,submitted){
 // what still needs fixing, then leaves the save running on its own a short while after the
 // typing stops, so nothing depends on anyone remembering to press a button.
 function chargeTableEdited(form,target){
- if(!chargeTableHost(form)||form.dataset.autosave==='off')return false;
+ if(!chargeTableHost(form))return false;
+ if(form.dataset.autosave==='off'){renderChargeRowProblems(form);return false;}
  if(target?.name==='amount'){const row=target.closest?.('.billing-charge-row');if(row)chargeRowCapture(row);}
  chargeTableTotals(form);renderChargeRowProblems(form);
  captureBillingChargeDraft();
@@ -110,13 +116,35 @@ function encounterRevenueVisitUnsigned(a){
 function billingAccountActionForm(a,missingElectronicPayer,reasonLabel,helper,postLabel,voidLabel,localOnlyLabel){
  if(!billingCan()||a.status!=='draft')return '';
  const unsigned=encounterRevenueVisitUnsigned(a);
- return `<form id="billing-account-action" data-account="${esc(a.id)}" data-version="${a.version}"><h3>Review and post charges</h3><div class="form-grid">${billingField('reason',reasonLabel,'','text',1000,true)}</div>${missingElectronicPayer?`<div class="mapping-notice"><b>Claim.MD payer ID needed for electronic claims</b><p>Edit this coverage's payer mapping and add the correct Claim.MD payer ID before posting.</p><label class="review-ack"><input type="checkbox" name="local_only" value="true"> ${esc(localOnlyLabel)}</label></div>`:''}<p class="muted">${esc(helper)}</p><div class="actions"><button type="submit" class="primary" name="action" value="post"${unsigned?' disabled':''}>${esc(postLabel)}</button><button type="submit" name="action" value="void">${esc(voidLabel)}</button></div></form>`;
+ return `<form id="billing-account-action" data-account="${esc(a.id)}" data-version="${a.version}"><h3>Review and post charges</h3><div class="form-grid">${billingField('reason',reasonLabel,'','text',1000,true)}</div>${missingElectronicPayer?`<div class="mapping-notice"><b>Clearinghouse payer ID needed for electronic claims</b><p>Edit this coverage's payer mapping and add the correct Clearinghouse payer ID before posting.</p><label class="review-ack"><input type="checkbox" name="local_only" value="true"> ${esc(localOnlyLabel)}</label></div>`:''}<p class="muted">${esc(helper)}</p><div class="actions"><button type="submit" class="primary" name="action" value="post"${unsigned?' disabled':''}>${esc(postLabel)}</button><button type="submit" name="action" value="void">${esc(voidLabel)}</button></div></form>`;
 }
-function billingEditorHost(){return (typeof chartSection!=='undefined'&&chartSection==='insurance'&&$('insurance-editor'))||(typeof chartSection!=='undefined'&&chartSection==='visits'&&$('encounter-billing-editor'))||$('billing-editor');}
+function billingEditorHost(){
+ const section=typeof chartSection==='undefined'?'':chartSection;
+ if(section==='visits')return $('encounter-billing-editor');
+ if(section==='insurance')return $('insurance-editor');
+ return $('billing-editor');
+}
 function billingDetailHost(){return (typeof chartSection!=='undefined'&&chartSection==='visits'&&$('encounter-billing-detail'))||$('billing-detail');}
 // True while the encounter's Billing tab opens its charge table by itself: nothing scrolls or takes focus.
 let billingEditorQuiet=false;
-function openBillingEditor(html){const host=billingEditorHost();if(!host)return;captureBillingChargeDraft();for(const id of ['billing-editor','insurance-editor','encounter-billing-editor'])if($(id)&&$(id)!==host)$(id).replaceChildren();host.innerHTML=html;if(billingEditorQuiet)return;host.scrollIntoView({block:'start'});const heading=host.querySelector('h2,h3');if(heading){heading.tabIndex=-1;heading.focus({preventScroll:true});}}
+function openBillingEditor(html){
+ const history=typeof document!=='undefined'&&document.querySelector?.('dialog[data-step-payment-details][open]');
+ if(history&&/^<form id="(?:billing-ledger-form|copay-void-form)"/.test(html)){
+  openEncounterPaymentHistoryEditor(history,html);return;
+ }
+ const host=billingEditorHost();
+ // The automatic procedure table belongs to the encounter even if a chart refresh renders
+ // that encounter in the background. It must never populate the chart billing or insurance host.
+ if(!host||billingEditorQuiet&&host!==$('encounter-billing-editor'))return;
+ captureBillingChargeDraft();
+ for(const id of ['billing-editor','insurance-editor','encounter-billing-editor']){
+  const other=$(id);if(other&&other!==host)other.replaceChildren();
+ }
+ host.innerHTML=html;
+ if(billingEditorQuiet)return;
+ if(chartSection==='insurance'||chartSection==='billing')chartOpenEditor(host.id,'Billing details');
+ const heading=host.querySelector('h2,h3');if(heading){heading.tabIndex=-1;heading.focus({preventScroll:true});}
+}
 function renderBilling(){
  if(!workspace.billing)return;
  const b=workspace.billing,panel=document.createElement('section');panel.id='billing-workspace';panel.className='panel';
@@ -138,9 +166,9 @@ async function openEncounterBillingAccount(id){
 }
 async function beginPatientClaim(){
  const accounts=patientClaimAccounts();
- if(!accounts.length)throw new Error('Post an insured charge account with a Claim.MD payer ID before creating a claim.');
+ if(!accounts.length)throw new Error('Post an insured charge account with a clearinghouse payer ID before creating a claim.');
  if(accounts.length===1){await beginClaim(accounts[0].id);return;}
- openBillingEditor(`<section><div class="section-head"><div><h3>Choose charges for this claim</h3><p class="muted">Select the posted insured account for the service being billed. Nothing is sent until the claim is reviewed, marked ready and explicitly submitted through Claim.MD.</p></div></div>${accounts.map(a=>`<button type="button" data-new-claim="${a.id}">${esc(a.content.service_date)} · ${money(a.total_cents)} · ${esc(a.coverage_snapshot.payer.content.name)}</button>`).join('')}</section>`);
+ openBillingEditor(`<section><div class="section-head"><div><h3>Choose charges for this claim</h3><p class="muted">Select the posted insured account for the service being billed. Nothing is sent until the claim is reviewed, marked ready and explicitly submitted through the clearinghouse.</p></div></div>${accounts.map(a=>`<button type="button" data-new-claim="${a.id}">${esc(a.content.service_date)} · ${money(a.total_cents)} · ${esc(a.coverage_snapshot.payer.content.name)}</button>`).join('')}</section>`);
 }
 function beginPatientPayment(){
  const accounts=patientPaymentAccounts();
@@ -169,10 +197,11 @@ function showEncounterBillingAccount(a,entries,frozen,missingElectronicPayer,fro
  const state=a.status==='posted'?'Posted · can still be corrected':a.status==='void'?'Charges were removed':'Charges can still be changed';
  host.innerHTML=`<section class="billing-account-detail"><div class="section-head"><div><h3>Line items</h3><p class="muted">${esc(visitBillingDate(a.content.service_date))} · ${state}</p></div></div>
  <p>${frozen?`Insurance: <b>${esc(frozen.payer.content.name)}</b>`:a.content.coverage_id?'Insurance is chosen. It is fixed when the charges are posted.':'Self-pay. No insurance on this encounter.'}</p>${chargeTable(a.content.lines)}${billingChargeDraftRecovery(a)}${accountDiagnosisSummary(a.diagnosis_snapshot)}${accountDiagnosisDraftRecovery(a)}<p class="note-text">${esc(a.content.notes)}</p>
- <div class="actions">${billingCan()&&a.status==='draft'?'<button type="button" data-edit-bill>Edit draft</button>'+(a.content.visit_id?'<button type="button" data-link-account-diagnoses>Link visit diagnoses</button>':''):''}</div>${a.status==='posted'&&frozen&&!frozenElectronicPayer?'<div class="mapping-notice"><b>This insurer is billed outside SunCharts</b><p>The insurer had no payer ID when the charges were posted, so no electronic claim can be made for this encounter.</p></div>':''}
+ <div class="actions">${billingCan()&&a.status==='draft'?'<button type="button" data-edit-bill>Edit draft</button>'+(a.content.visit_id?'<button type="button" data-link-account-diagnoses>Link visit diagnoses</button>':''):billingCan()&&a.status==='posted'&&a.content.visit_id&&!a.source_history_id?'<button type="button" data-encounter-charges-correct>Correct charges</button>':''}</div>${a.status==='posted'&&frozen&&!frozenElectronicPayer?'<div class="mapping-notice"><b>This insurer is billed outside SunCharts</b><p>The insurer had no payer ID when the charges were posted, so no electronic claim can be made for this encounter.</p></div>':''}
  ${billingAccountActionForm(a,missingElectronicPayer,'Reason (saved in the history)','Posting makes the charges final'+(a.content.coverage_id?' and prepares the insurance claim for you to review':'')+'. The encounter note must be signed first.','Post charges','Remove these charges','Post without an electronic claim. I understand this encounter cannot be billed to the insurer from SunCharts.')}</section>`;
  const ledger=$('visit-billing-ledger');if(!ledger)return;
- ledger.innerHTML=`<div class="billing-table-wrap"><table class="billing-table"><thead><tr><th>What was recorded</th><th>Reference / reason</th><th class="money-cell">Change to balance</th><th></th></tr></thead><tbody>${billingEncounterReceiptRows(a)}${entries.map(e=>`<tr><td>${esc(ledgerKind(e.kind))}<small>${esc(visitBillingDate(e.content.occurred_on))} · ${esc(e.content.party==='insurer'?'insurance':e.content.party)}</small></td><td>${ledgerReferenceText(e.content.reference)}<small>${esc(e.content.reason)}</small>${e.content.remittance_id?'<small>From the insurer’s payment. Change it from the claim.</small>':''}${e.content.managed_payment_id?'<small>Card payment. Refund it from the card payment below.</small>':''}${e.content.hosted_copay_operation_id?'<small>'+(e.content.test_mode?'Test card':'Card')+' payment taken for this encounter</small>':''}${e.reverses_id?'<small>Undoes an earlier entry</small>':''}</td><td class="money-cell">${money(e.effect_cents)}</td><td>${billingCan()&&!e.content.remittance_id&&!e.content.managed_payment_id&&!e.content.hosted_copay_operation_id&&e.kind!=='reversal'&&!entries.some(r=>r.reverses_id===e.id)?`<button type="button" data-reverse-entry="${e.id}">Reverse</button>`:''}</td></tr>`).join('')||(billingEncounterReceiptRows(a)?'':'<tr><td colspan="4">No payments or adjustments yet.</td></tr>')}</tbody></table></div>${billingCan('create')&&a.status==='posted'?`<div class="actions">${typeof $==='function'&&$('visit-billing-collect')?'<button type="button" class="primary" data-visit-collect>Take payment</button>':''}<button type="button" data-new-ledger>Write-off or adjustment</button></div>`:''}`;
+ const receiptRows=billingEncounterReceiptRows(a,{evidenceOnly:a.status!=='posted'||a.content.coverage_id===null&&!frozen});
+ ledger.innerHTML=`<div class="billing-table-wrap"><table class="billing-table"><thead><tr><th>What was recorded</th><th>Reference / reason</th><th class="money-cell">Change to balance</th><th></th></tr></thead><tbody>${receiptRows}${entries.map(e=>`<tr><td>${esc(ledgerKind(e.kind))}<small>${esc(visitBillingDate(e.content.occurred_on))} · ${esc(e.content.party==='insurer'?'insurance':e.content.party)}</small></td><td>${ledgerReferenceText(e.content.reference)}<small>${esc(e.content.reason)}</small>${e.content.remittance_id?'<small>From the insurer’s payment. Change it from the claim.</small>':''}${e.content.managed_payment_id?'<small>Card payment. Refund it from the card payment below.</small>':''}${e.content.hosted_copay_operation_id?'<small>'+(e.content.test_mode?'Test card':'Card')+' payment taken for this encounter</small>':''}${e.reverses_id?'<small>Undoes an earlier entry</small>':''}</td><td class="money-cell">${money(e.effect_cents)}</td><td>${billingCan()&&!e.content.remittance_id&&!e.content.managed_payment_id&&!e.content.hosted_copay_operation_id&&e.kind!=='reversal'&&!entries.some(r=>r.reverses_id===e.id)?`<button type="button" data-reverse-entry="${e.id}">Reverse</button>`:''}</td></tr>`).join('')||(receiptRows?'':'<tr><td colspan="4">No payments or adjustments yet.</td></tr>')}</tbody></table></div>${billingCan('create')&&a.status==='posted'?`<div class="actions">${typeof $==='function'&&$('visit-billing-collect')?'<button type="button" class="primary" data-visit-collect>Take payment</button>':''}<button type="button" data-new-ledger>Write-off or adjustment</button></div>`:''}`;
  
 }
 // Money the patient paid at the desk for this encounter (cash, check, card on the reader, card on
@@ -208,21 +237,22 @@ function copaysForAppointment(appointmentId){
  }
  return out;
 }
-function billingEncounterReceiptRows(a){
+function billingEncounterReceiptRows(a,{evidenceOnly=false}={}){
  const visit=(workspace.visits||[]).find(v=>v.id===a?.content?.visit_id);if(!visit)return '';
  const receipts=copaysForAppointment(visit.appointment_id).filter(r=>!r.voided);
  const how=r=>r.hosted_checkout?'Card':r.method==='check'?'Check':r.method==='cash'?'Cash':'Payment';
- const net=r=>r.amount_cents-Number(r.hosted_checkout?.refunded_cents||0);
+ const refundedAmount=r=>Number(r.hosted_checkout?.refunded_cents||0)+Number(r.cash_refunded_cents||0);
+ const net=r=>Math.max(0,r.amount_cents-refundedAmount(r));
  // One payment, however many ways it was paid, is one row and one receipt. How it was paid is
  // a short tag; the amounts per method show on hover and on the receipt.
  const groups=[],seen=new Map();
  for(const r of receipts){const key=r.payment_group_id||r.id;if(!seen.has(key)){seen.set(key,[]);groups.push(seen.get(key));}seen.get(key).push(r);}
- return groups.map(parts=>{const first=parts[0],total=parts.reduce((sum,r)=>sum+net(r),0),refunded=parts.reduce((sum,r)=>sum+Number(r.hosted_checkout?.refunded_cents||0),0);
+ return groups.map(parts=>{const first=parts[0],total=parts.reduce((sum,r)=>sum+net(r),0),refunded=parts.reduce((sum,r)=>sum+refundedAmount(r),0);
   const methods=[...new Set(parts.map(how))],tag=methods.join(' + '),breakdown=parts.map(r=>`${how(r)} ${money(net(r))}${r.method==='check'&&r.reference?' (check #'+r.reference+')':''}`).join(', ');
   const test=parts.some(r=>r.hosted_checkout?.livemode===false)?'<small>Test payment</small>':'';
   const button=parts.length>1&&first.payment_group_id?`<button type="button" data-payment-group="${esc(first.payment_group_id)}" data-appointment="${esc(first.appointment_id)}">Receipt</button>`:`<button type="button" data-copay-receipt="${esc(first.id)}" data-appointment="${esc(first.appointment_id)}">Receipt</button>`;
   const number=receiptNumberFor(first.appointment_id,first.payment_group_id||first.id);
-  return `<tr class="payment-row"><td>${number&&!number.startsWith('Payment ')?`Receipt ${esc(number)}`:'Payment'}<small>${esc(visitBillingDate(first.occurred_on))}</small></td><td><span class="payment-tag" title="${esc(breakdown)}">${esc(tag)}</span>${test}${refunded?`<small>${money(refunded)} refunded</small>`:''}</td><td class="money-cell">−${money(total)}</td><td>${button}</td></tr>`;}).join('');
+  return `<tr class="payment-row"><td>${number&&!number.startsWith('Payment ')?`Receipt ${esc(number)}`:evidenceOnly?'Recorded receipt':'Payment'}<small>${esc(visitBillingDate(first.occurred_on))}</small></td><td><span class="payment-tag" title="${esc(breakdown)}">${esc(tag)}</span>${evidenceOnly?`<small>${money(total)} received</small>`:''}${test}${refunded?`<small>${money(refunded)} refunded</small>`:''}</td><td class="money-cell">${evidenceOnly?'—':'−'+money(total)}</td><td>${button}</td></tr>`;}).join('');
 }
 function showBillingAccount(id,activate=true,reveal=false){
  if(activate)showChartSection('billing');billingSelected=id;const a=workspace.billing.accounts.find(v=>v.id===id),entries=workspace.billing.entries.filter(e=>e.account_id===id),frozen=a.coverage_snapshot,coverage=workspace.billing.coverages.find(c=>c.id===a.content.coverage_id),payer=billingPayers.find(p=>p.id===coverage?.content.payer_id),missingElectronicPayer=!!a.content.coverage_id&&!String(payer?.content.payer_code||'').trim(),frozenElectronicPayer=String(frozen?.payer?.content?.payer_code||'').trim();
@@ -232,9 +262,9 @@ function showBillingAccount(id,activate=true,reveal=false){
  const host=billingDetailHost();if(!host)return;for(const id of ['billing-detail','encounter-billing-detail'])if($(id)&&$(id)!==host)$(id).replaceChildren();host.innerHTML=`<section class="billing-account-detail"><div class="section-head"><div><h3>Invoice · ${esc(typeof displayDate==="function"?displayDate(a.content.service_date):a.content.service_date)}</h3><p class="muted">${a.source_history_id?'Brought over from the previous system':'Visit charges'}</p></div><span class="status-badge ${a.status==='posted'?'checked_in':'completed'}">${esc(a.status)}</span></div>
  ${!encounter?`<div class="billing-totals"><span>Charges <b>${money(a.total_cents)}</b></span><span>Payments and adjustments <b>${money(entrySum(a.id))}</b></span><span>Balance <b>${a.status==='posted'?money(billBalance(a)):'Not posted'}</b></span></div>`:''}
  <p>${frozen?`Payer on file: <b>${esc(frozen.payer.content.name)}</b> · Member ${esc(frozen.coverage.content.member_id)} · ${esc(frozen.coverage.content.verification)}`:a.content.coverage_id?'Insurance selected; coverage is captured when posted.':'Self-pay. No insurance selected.'}</p>${chargeTable(a.content.lines)}${billingChargeDraftRecovery(a)}${accountDiagnosisSummary(a.diagnosis_snapshot)}${accountDiagnosisDraftRecovery(a)}<p class="note-text">${esc(a.content.notes)}</p>
- <div class="actions">${billingCan()&&a.status==='draft'?'<button type="button" data-edit-bill>Edit draft</button>':''}${!encounter&&billingCan()&&a.status==='posted'&&frozenElectronicPayer?`<button type="button" class="primary" data-new-claim="${a.id}">Create insurance claim</button>`:''}<button type="button" data-bill-history>History</button></div>${a.status==='posted'&&frozen&&!frozenElectronicPayer?'<div class="mapping-notice"><b>Local-only insurance account</b><p>This frozen payer mapping has no Claim.MD payer ID, so it cannot create an electronic claim.</p></div>':''}<div id="bill-history"></div>
+ <div class="actions">${billingCan()&&a.status==='draft'?'<button type="button" data-edit-bill>Edit draft</button>':''}${!encounter&&billingCan()&&a.status==='posted'&&frozenElectronicPayer?`<button type="button" class="primary" data-new-claim="${a.id}">Create insurance claim</button>`:''}<button type="button" data-bill-history>History</button></div>${a.status==='posted'&&frozen&&!frozenElectronicPayer?'<div class="mapping-notice"><b>Local-only insurance account</b><p>This frozen payer mapping has no clearinghouse payer ID, so it cannot create an electronic claim.</p></div>':''}<div id="bill-history"></div>
  ${billingAccountActionForm(a,missingElectronicPayer,'Review / action reason','Posting locks the charges. The encounter note must be signed first.','Post charges','Void draft','Post as local-only insurance activity. I understand this account cannot create an electronic claim.')}
- ${a.status==='posted'?`<section class="billing-section"><div class="actions">${!encounter&&billingCan('create')?'<button type="button" data-build-patient-invoice>Send the patient a statement</button>':''}${!encounter?'<button type="button" data-patient-invoices>Statements sent</button>':''}${billingCan()&&typeof availableCopayCreditForAccount==='function'&&availableCopayCreditForAccount(a)>0?'<button type="button" data-apply-copays>Apply recorded copay credit</button>':''}</div></section>`:''}${encounter?'<details class="encounter-account-record"><summary>Payments, adjustments &amp; processor history</summary>':''}<h3>Payments and adjustments</h3><div class="billing-table-wrap"><table class="billing-table"><thead><tr><th>Recorded activity</th><th>Evidence / reason</th><th class="money-cell">Balance effect</th><th></th></tr></thead><tbody>${entries.map(e=>`<tr><td>${esc(ledgerKind(e.kind))}<small>${esc(e.content.occurred_on)} · ${esc(e.content.party)}</small></td><td>${ledgerReferenceText(e.content.reference)}<small>${esc(e.content.reason)}</small>${e.content.remittance_id?'<small>ERA posting · review in Claims & remittances</small>':''}${e.content.managed_payment_id?'<small>Verified test processor payment · reconcile or refund in Payments</small>':''}${e.content.hosted_copay_operation_id?'<small>Verified '+(e.content.test_mode?'test ':'')+'card copay · review hosted payment status in Insurance</small>':''}${e.reverses_id?`<small>Reverses ${esc(e.reverses_id.slice(0,8))}</small>`:''}</td><td class="money-cell">${money(e.effect_cents)}</td><td>${billingCan()&&!e.content.remittance_id&&!e.content.managed_payment_id&&!e.content.hosted_copay_operation_id&&e.kind!=='reversal'&&!entries.some(r=>r.reverses_id===e.id)?`<button type="button" data-reverse-entry="${e.id}">Reverse</button>`:''}</td></tr>`).join('')||'<tr><td colspan="4">No recorded payments or adjustments.</td></tr>'}</tbody></table></div>
+ ${a.status==='posted'?`<section class="billing-section"><div class="actions">${!encounter&&billingCan('create')?'<button type="button" data-build-patient-invoice>Prepare statement</button>':''}${!encounter?'<button type="button" data-patient-invoices>Saved statements</button>':''}${billingCan()&&typeof availableCopayCreditForAccount==='function'&&availableCopayCreditForAccount(a)>0?'<button type="button" data-apply-copays>Apply recorded copay credit</button>':''}</div></section>`:''}${encounter?'<details class="encounter-account-record"><summary>Payments, adjustments &amp; processor history</summary>':''}<h3>Payments and adjustments</h3><div class="billing-table-wrap"><table class="billing-table"><thead><tr><th>Recorded activity</th><th>Evidence / reason</th><th class="money-cell">Balance effect</th><th></th></tr></thead><tbody>${entries.map(e=>`<tr><td>${esc(ledgerKind(e.kind))}<small>${esc(e.content.occurred_on)} · ${esc(e.content.party)}</small></td><td>${ledgerReferenceText(e.content.reference)}<small>${esc(e.content.reason)}</small>${e.content.remittance_id?'<small>ERA posting · review in Claims & remittances</small>':''}${e.content.managed_payment_id?'<small>Verified test processor payment · reconcile or refund in Payments</small>':''}${e.content.hosted_copay_operation_id?'<small>Verified '+(e.content.test_mode?'test ':'')+'card copay · review hosted payment status in Insurance</small>':''}${e.reverses_id?`<small>Reverses ${esc(e.reverses_id.slice(0,8))}</small>`:''}</td><td class="money-cell">${money(e.effect_cents)}</td><td>${billingCan()&&!e.content.remittance_id&&!e.content.managed_payment_id&&!e.content.hosted_copay_operation_id&&e.kind!=='reversal'&&!entries.some(r=>r.reverses_id===e.id)?`<button type="button" data-reverse-entry="${e.id}">Reverse</button>`:''}</td></tr>`).join('')||'<tr><td colspan="4">No recorded payments or adjustments.</td></tr>'}</tbody></table></div>
  ${billingCan('create')&&a.status==='posted'?'<div class="actions"><button type="button" data-new-ledger>Record a payment or adjustment</button></div>':''}${encounter?'</details>':''}</section>`;
  
 }
@@ -267,7 +297,7 @@ function coveragePayerOptions(selectedId=''){return `<option value="">Choose the
 function patientSelfPolicyHolder(form){
  const elements=form?.elements;if(!elements||elements.relationship?.value!=='self')return;
  if(elements.subscriber_name?.value)return;
- const patient=typeof workspace!=='undefined'&&workspace?.patient||{};
+ const patient=form.patient||(typeof workspace!=='undefined'&&workspace?.patient)||{};
  const name=[patient.given_name,patient.family_name].filter(Boolean).join(' ');
  if(!name)return;
  elements.subscriber_name.value=name;
@@ -305,7 +335,7 @@ function renderChargeEncounterDiagnoses(form){
   // line whose codes were cleared by hand is never quietly refilled on a later refresh.
   if(row.dataset?.diagnosesDefault==='pending'){
    row.dataset.diagnosesDefault='done';
-   if(!disabled&&field&&!field.value.trim()&&state.diagnoses.length){
+   if(!disabled&&field&&!field.value.trim()){
     const given=chargeDiagnosisDefaultCodes(state.diagnoses);
     field.value=given;markChargeDiagnosisAuto(row,given);
     if(typeof captureBillingChargeDraft==='function')captureBillingChargeDraft();
@@ -345,50 +375,54 @@ const chargeDiagnosisLineLimit=4;
 // A line whose codes were filled in from the encounter by the last refresh, and nothing since. Only
 // such a line is moved when the encounter's diagnoses change: a code typed by hand, a tick unticked,
 // or anything saved is the person's own answer and is left alone.
-function chargeDiagnosisAutoFilled(row){return (row.dataset.diagnosesAuto||row.getAttribute?.('data-diagnoses-auto')||'')===(row.querySelector('[name="diagnoses"]')?.value||'').trim();}
+function chargeDiagnosisAutoFilled(row){
+ const previous=row.dataset.diagnosesAuto;
+ return previous!==undefined&&previous===(row.querySelector('[name="diagnoses"]')?.value||'').trim();
+}
 // The marker has to be read back after a re-render, and a re-render builds rows from markup: like
 // the code and the amount, what a line was filled with is written into the row's own markup, so it
 // is still there when the table is drawn again.
 function markChargeDiagnosisAuto(row,values){row.dataset.diagnosesAuto=values;if(row.setAttribute)row.setAttribute('data-diagnoses-auto',values);}
-// An empty line — no code, no codes yet — was answered by nobody, so the encounter may still fill it
-// in: at the first refresh, after a save on either screen, or the moment it is added. A line that
-// came in carrying codes is a different thing; those are an answer already given.
-function chargeDiagnosisLineUnanswered(row){return !String(row.querySelector?.('[name="code"]')?.value||'').trim()&&String(row.querySelector?.('[name="diagnoses"]')?.value||'').trim()==='';}
+// Only a newly added service can receive its first default. A saved service with zero
+// pointers may have been deliberately cleared by its clinician.
+function chargeDiagnosisLineUnanswered(row){return row.dataset.diagnosesDefault==='pending'&&String(row.querySelector?.('[name="diagnoses"]')?.value||'').trim()==='';}
 function chargeDiagnosisDefaultCodes(diagnoses){return diagnoses.slice(0,chargeDiagnosisLineLimit).map(d=>d.code).join(', ');}
 // The encounter's diagnoses were just saved — from the section above the table, or from the encounter's
 // Diagnoses screen. Every line's choices follow at once, with nothing reloaded and nothing the
 // person typed disturbed: a line still holding what the encounter last gave it is re-pointed at the
 // visit as it now stands, and any other line keeps exactly what it holds.
-function chargeDiagnosesVisitUpdated(visitId){
+function chargeDiagnosesVisitUpdated(visitId,data){
  const form=$('billing-account-form');if(!form||form.elements.visit_id?.value!==visitId)return;
  if(!form.chargeDiagnosisState||!chargeDiagnosisCurrent(form,form.chargeDiagnosisState))return;
  // The encounter's own record is what a line must be pointed at — not the copy this screen last
  // loaded. The diagnoses save happens somewhere else on the page, so the list here is re-read
  // from the server before any line moves; a line whose codes were filled in by the encounter is
  // re-pointed at the encounter as it now stands, and any other line keeps exactly what it holds.
- void refreshChargeEncounterDiagnoses(form);
+ void refreshChargeEncounterDiagnoses(form,data);
 }
-async function refreshChargeEncounterDiagnoses(form){
+async function refreshChargeEncounterDiagnoses(form,saved){
  const state=form.chargeDiagnosisState;
  try{
-  const data=await api(`/api/v1/visits/${encodeURIComponent(state.visit)}/diagnoses`);
-  if(!chargeDiagnosisCurrent(form,state))return;
+  const data=saved||await api(`/api/v1/visits/${encodeURIComponent(state.visit)}/diagnoses`);
+  if(!chargeDiagnosisCurrent(form,state)||Number(data.version)<Number(state.version))return;
   state.diagnoses=Array.isArray(data.diagnoses)?data.diagnoses:[];state.version=data.version;state.error=false;
  }catch{state.error=true;renderChargeEncounterDiagnoses(form);return;}
- let followed=false;
+ let followed=false,saveFollowed=false;
+ if(form.dataset.draftReadOnly||form.dataset.draftStale){renderChargeEncounterDiagnoses(form);return;}
  for(const row of chargeLiveRows(form)){
   const field=row.querySelector('[name="diagnoses"]');if(!field)continue;
   if(!chargeDiagnosisAutoFilled(row)&&!chargeDiagnosisLineUnanswered(row))continue;
   const next=chargeDiagnosisDefaultCodes(state.diagnoses);
   if(field.value===next)continue;
   field.value=next;markChargeDiagnosisAuto(row,next);followed=true;
+  if(chargeRowReadyToSave(row))saveFollowed=true;
  }
  renderChargeEncounterDiagnoses(form);captureBillingChargeDraft();
  // Lines that took up the encounter's diagnoses are saved like any other change, and what each line
  // still needs is said again: a line that has just been linked no longer asks for a diagnosis.
- if(followed&&!form.dataset.draftReadOnly&&!form.dataset.draftStale){
+ if(followed){
   if(typeof renderChargeRowProblems==='function')renderChargeRowProblems(form);
-  if(typeof scheduleChargeAutosave==='function'&&typeof chargeTableHost==='function'&&chargeTableHost(form))scheduleChargeAutosave(form);
+  if(saveFollowed&&typeof scheduleChargeAutosave==='function'&&typeof chargeTableHost==='function'&&chargeTableHost(form))scheduleChargeAutosave(form);
  }
 }
 function followVisitDiagnoses(){
@@ -400,31 +434,28 @@ async function loadChargeEncounterDiagnoses(form){
  if(!form||form.dataset.patient!==selected)return;
  const state={patient:selected,identity:me,visit:form.elements.visit_id?.value,loading:true,diagnoses:[]};form.chargeDiagnosisState=state;renderChargeEncounterDiagnoses(form);
  if(!state.visit){state.loading=false;renderChargeEncounterDiagnoses(form);return;}
- try{const data=await api(`/api/v1/visits/${encodeURIComponent(state.visit)}/diagnoses`);if(!chargeDiagnosisCurrent(form,state))return;state.diagnoses=Array.isArray(data.diagnoses)?data.diagnoses:[];state.version=data.version;}
+ try{const data=await api(`/api/v1/visits/${encodeURIComponent(state.visit)}/diagnoses`);if(!chargeDiagnosisCurrent(form,state)||Number(data.version)<Number(state.version))return;state.diagnoses=Array.isArray(data.diagnoses)?data.diagnoses:[];state.version=data.version;}
  catch{if(chargeDiagnosisCurrent(form,state))state.error=true;}
  finally{
   if(chargeDiagnosisCurrent(form,state)){
    state.loading=false;
-   // A line that arrived with the encounter's codes on it, or with nothing at all, keeps following the
-   // visit from here on. One that came from the previous system, or that staff have changed, does
-   // not — its codes are an answer already given.
-   if(!form.dataset.draftReadOnly&&!form.dataset.draftStale)for(const row of chargeLiveRows(form)){const field=row.querySelector('[name="diagnoses"]');if(field&&chargeDiagnosisAutoFilled(row))markChargeDiagnosisAuto(row,(field.value||'').trim());}
    followVisitDiagnoses();
    // An empty line still gets its first answer from the encounter here, not from a render pass that
    // may have already run while the list was loading.
-   let followed=false;
+   let followed=false,saveFollowed=false;
    if(!form.dataset.draftReadOnly&&!form.dataset.draftStale)for(const row of chargeLiveRows(form)){
     const field=row.querySelector('[name="diagnoses"]');if(!field||!chargeDiagnosisLineUnanswered(row))continue;
     const next=chargeDiagnosisDefaultCodes(state.diagnoses);
     if(field.value===next)continue;
     field.value=next;markChargeDiagnosisAuto(row,next);followed=true;
+    if(chargeRowReadyToSave(row))saveFollowed=true;
    }
    renderChargeEncounterDiagnoses(form);
    // What the lines show is what is saved: a line that took its diagnoses from the encounter here is
    // saved with them, so the next step does not go on asking for a link the screen already shows.
    if(followed){
     if(typeof renderChargeRowProblems==='function')renderChargeRowProblems(form);
-    if(typeof scheduleChargeAutosave==='function'&&typeof chargeTableHost==='function'&&chargeTableHost(form))scheduleChargeAutosave(form);
+    if(saveFollowed&&typeof scheduleChargeAutosave==='function'&&typeof chargeTableHost==='function'&&chargeTableHost(form))scheduleChargeAutosave(form);
    }
   }
  }
@@ -432,6 +463,12 @@ async function loadChargeEncounterDiagnoses(form){
 document.addEventListener('change',event=>{
  const form=event.target.closest?.('#billing-account-form');if(!form||form.dataset.patient!==selected)return;
  if(event.target.name==='visit_id'){void loadChargeEncounterDiagnoses(form);return;}
+ if(event.target.name==='coverage_id'&&form.dataset.compact==='true'&&!form.dataset.source){
+  const selfPay=!event.target.value;
+  form.dataset.selfPay=String(selfPay);
+  for(const details of form.querySelectorAll('[data-charge-insurance-detail]'))details.open=!selfPay;
+  chargeTableTotals(form);
+ }
  if(['service_date','coverage_id'].includes(event.target.name)){const host=form.querySelector('[data-charge-coverage-order]');if(host)host.innerHTML=billingCoverageOrderMarkup(form.elements.service_date.value,form.elements.coverage_id.value,form.dataset.compact==='true');}
  // The chips answer for the line; a code put in by hand, or by something filling the box in, is an
  // answer too, and the chips are brought back in step with it.
@@ -439,8 +476,7 @@ document.addEventListener('change',event=>{
 });
 document.addEventListener('click',event=>{
  if(event.target.closest?.('[data-reload-charge-diagnoses]')){event.preventDefault();void loadChargeEncounterDiagnoses($('billing-account-form'));return;}
- // Only the chip itself answers: a click that lands on anything else is whatever else it was for.
- const chip=event.target.hasAttribute?.('data-charge-diagnosis')?event.target:null;if(!chip)return;
+ const chip=event.target.hasAttribute?.('data-charge-diagnosis')?event.target:event.target.closest?.('[data-charge-diagnosis]');if(!chip?.dataset.chargeDiagnosis)return;
  const form=chip.closest?.('#billing-account-form');if(!form||form.dataset.patient!==selected)return;
  event.preventDefault();
  const row=chip.closest('.billing-charge-row'),field=row?.querySelector('[name="diagnoses"]');if(!field)return;
@@ -457,7 +493,9 @@ function chargeDiagnosisChipToggle(row,field,code){
  if(codes.includes(upper))field.value=codes.filter(c=>c!==upper).join(', ');
  else if(codes.length>=chargeDiagnosisLineLimit){notice(`A line can point to ${chargeDiagnosisLineLimit} diagnoses.`);return;}
  else field.value=[...codes,upper].join(', ');
- markChargeDiagnosisAuto(row,'');
+ // A cleared manual selection and an empty automatic default look identical in the submitted field.
+ delete row.dataset.diagnosesAuto;row.removeAttribute?.('data-diagnoses-auto');
+ row.dataset.diagnosesDefault='done';
  const form=$('billing-account-form');
  renderChargeEncounterDiagnoses(form);renderChargeRowProblems(form);captureBillingChargeDraft();scheduleChargeAutosave(form);
 }
@@ -465,9 +503,9 @@ function coveragePayerSetup(){
  const search=typeof claimmdCoveragePayerSearch==='function'?claimmdCoveragePayerSearch():'';
  if(billingPayers.length)return `${search}${me.role==='owner'?`<details class="amendment"><summary>Add a payer that is not listed</summary>${coveragePayerForm()}</details>`:''}`;
  if(me.role!=='owner')return '<div class="mapping-notice"><b>No native payers are available</b><p>A practice owner must add the payer before this coverage can be saved. The plan name alone cannot identify the payer used for eligibility and claims.</p></div>';
- return `${search}<div class="mapping-notice"><b>Add the payer first</b><p>Create the native payer here without losing the coverage details above. If the practice uses Claim.MD, enter its Claim.MD payer ID so eligibility and claim work can resolve the same payer.</p></div>${coveragePayerForm()}`;
+ return `${search}<div class="mapping-notice"><b>Add the payer first</b><p>Create the native payer here without losing the coverage details above. If the practice uses the clearinghouse, enter its clearinghouse payer ID so eligibility and claim work can resolve the same payer.</p></div>${coveragePayerForm()}`;
 }
-function coveragePayerForm(){return `<form id="coverage-payer-form" data-request="${crypto.randomUUID()}"><h4>Add native payer</h4><div class="form-grid">${billingField('name','Payer name','','text',200,true)}${billingField('payer_code','Claim.MD payer ID','','text',100,true)}${billingField('phone','Contact phone (optional)','','text',50)}</div><label>Address (optional)<textarea name="address" maxlength="1000"></textarea></label><p class="muted">Required here because insured accounts freeze this mapping when they are posted. Use the payer ID returned by the Claim.MD payer directory; do not guess or reuse a plan name as an ID.</p><button type="submit">Add payer and use it</button></form>`;}
+function coveragePayerForm(){return `<form id="coverage-payer-form" data-request="${crypto.randomUUID()}"><h4>Add native payer</h4><div class="form-grid">${billingField('name','Payer name','','text',200,true)}${billingField('payer_code','Clearinghouse payer ID','','text',100,true)}${billingField('phone','Contact phone (optional)','','text',50)}</div><label>Address (optional)<textarea name="address" maxlength="1000"></textarea></label><p class="muted">Required here because insured accounts freeze this mapping when they are posted. Use the payer ID returned by the clearinghouse payer directory; do not guess or reuse a plan name as an ID.</p><button type="submit">Add payer and use it</button></form>`;}
 // Replace only the submit control: run() restores disabled states captured
 // before payer creation, while the existing coverage fields must stay intact.
 function enableCoverageSubmit(coverage){
@@ -481,11 +519,12 @@ function importedCoverage(i){
  return {payer_id:payer.length===1?payer[0].id:'',priority:['primary','secondary','tertiary'].includes(i.priority)?i.priority:'primary',status:'active',member_id:i.member_id||'',group_number:i.group_number||'',plan_name:i.plan_name||'',subscriber_name:i.subscriber_name||(self?[patient.given_name,patient.family_name].filter(Boolean).join(' '):''),subscriber_birth_date:self?date(patient.birth_date):'',relationship:['self','spouse','child','other'].includes(i.relationship)?i.relationship:'other',effective_date:date(i.effective_date),end_date:date(i.end_date),verification:'unverified',notes:''};
 }
 function importedCoverageNotice(i,v){return `<div class="mapping-notice"><b>From previous system</b><p>Filled in from the insurance record in the previous system. Check each field, then save.</p>${i.payer_name&&!v.payer_id?`<p>Payer in the previous system: <b>${esc(i.payer_name)}</b>. Choose the matching payer.</p>`:''}</div>`;}
-function coverageEditor(c,m){
- showChartSection('insurance');const raw=m?.source_data||{},imported=!c&&raw.coverage&&typeof raw.coverage==='object'?raw.coverage:null,v=c?.content||(imported?importedCoverage(imported):null)||{priority:['primary','secondary','tertiary'].includes(raw.type)?raw.type:'primary',status:'active',member_id:raw.policy_number||'',group_number:raw.group_number||'',plan_name:raw.plan_name||'',subscriber_name:[raw.subscriber_fname,raw.subscriber_mname,raw.subscriber_lname].filter(Boolean).join(' '),subscriber_birth_date:raw.subscriber_DOB&&/^\d{4}-\d{2}-\d{2}$/.test(raw.subscriber_DOB)?raw.subscriber_DOB:'',relationship:'other',effective_date:'',end_date:'',verification:'unverified',notes:''};
+function coverageEditor(c,m,options={}){
+ if(!options.sheet)showChartSection('insurance');const raw=m?.source_data||{},imported=!c&&raw.coverage&&typeof raw.coverage==='object'?raw.coverage:null,v=c?.content||(imported?importedCoverage(imported):null)||{priority:['primary','secondary','tertiary'].includes(raw.type)?raw.type:'primary',status:'active',member_id:raw.policy_number||'',group_number:raw.group_number||'',plan_name:raw.plan_name||'',subscriber_name:[raw.subscriber_fname,raw.subscriber_mname,raw.subscriber_lname].filter(Boolean).join(' '),subscriber_birth_date:raw.subscriber_DOB&&/^\d{4}-\d{2}-\d{2}$/.test(raw.subscriber_DOB)?raw.subscriber_DOB:'',relationship:'other',effective_date:'',end_date:'',verification:'unverified',notes:''};
  const adding=!c,effective=v.effective_date||(adding&&!imported?`${new Date().getFullYear()}-01-01`:'');
- openBillingEditor(`<form id="coverage-form" data-id="${c?.id||''}" data-version="${c?.version||''}" data-request="${crypto.randomUUID()}" data-source="${m?.source_history_id||''}"><h3>${c?'Edit insurance':imported?'Add coverage from previous system':m?'Reconcile source coverage':'Add insurance'}</h3>${imported?importedCoverageNotice(imported,v):sourceNotice(m)}<div class="form-grid">${payerPickerMarkup('payer','Insurance company',{payerId:v.payer_id,id:'coverage-payer-name'})}${selectField('priority','Order',['primary','secondary','tertiary'],v.priority,insuranceOptionLabels(['primary','secondary','tertiary']))}${adding?'':selectField('status','Status',['active','inactive','entered_in_error'],v.status,insuranceOptionLabels(['active','inactive','entered_in_error']))}${billingField('member_id','Member ID',v.member_id,'text',150,true)}${billingField('group_number','Group number',v.group_number,'text',150)}${billingField('plan_name','Plan name',v.plan_name)}${billingField('subscriber_name','Policy holder name',v.subscriber_name,'text',200,true)}${billingField('subscriber_birth_date','Policy holder date of birth',v.subscriber_birth_date||'','date')}${selectField('relationship',"Patient is the policy holder's",['self','spouse','child','other'],v.relationship,insuranceOptionLabels(['self','spouse','child','other']))}${billingField('effective_date','Effective date',effective,'date',0,true)}${billingField('end_date','End date',v.end_date||'','date')}${billingField('copay','Copay (optional)',dollars(v.copay_cents))}${selectField('verification','Checked by staff',['unverified','manually_verified'],v.verification,insuranceOptionLabels(['unverified','manually_verified']))}</div><p class="muted">Two active plans cannot share the same order.</p><label>Notes<textarea name="notes" maxlength="2000">${esc(v.notes)}</textarea></label>${imported?'<input type="hidden" name="reason" value="Added from previous system insurance record">':billingField('reason','Reason / evidence for change','','text',1000,true)}${m&&!imported?'<label class="review-ack"><input type="checkbox" required> I verified source patient, payer, subscriber, dates and coordination priority.</label>':''}<div class="actions"><button class="primary" type="submit" ${billingPayers.length?'':'disabled'}>Save insurance</button><button type="button" data-cancel-billing>Cancel</button></div></form><div id="coverage-payer-setup">${coveragePayerSetup()}</div>`);
- const form=$('coverage-form');typeaheadInit(form);if(!c){patientSelfPolicyHolder(form);form?.addEventListener('change',e=>{if(e.target?.name==='relationship')patientSelfPolicyHolder(form);});}
+ const present=options.sheet?html=>{const panel=document.createElement('div');panel.innerHTML=html;sheetOpen('Add insurance',panel);}:openBillingEditor;
+ present(`<form id="coverage-form" data-patient="${esc(options.patient?.id||selected)}" data-id="${c?.id||''}" data-version="${c?.version||''}" data-request="${crypto.randomUUID()}" data-source="${m?.source_history_id||''}"><h3>${c?'Edit insurance':imported?'Add coverage from previous system':m?'Reconcile source coverage':'Add insurance'}</h3>${imported?importedCoverageNotice(imported,v):sourceNotice(m)}<div class="form-grid">${payerPickerMarkup('payer','Insurance company',{payerId:v.payer_id,id:'coverage-payer-name'})}${selectField('priority','Order',['primary','secondary','tertiary'],v.priority,insuranceOptionLabels(['primary','secondary','tertiary']))}${adding?'':selectField('status','Status',['active','inactive','entered_in_error'],v.status,insuranceOptionLabels(['active','inactive','entered_in_error']))}${billingField('member_id','Member ID',v.member_id,'text',150,true)}${billingField('group_number','Group number',v.group_number,'text',150)}${billingField('plan_name','Plan name',v.plan_name)}${billingField('subscriber_name','Policy holder name',v.subscriber_name,'text',200,true)}${billingField('subscriber_birth_date','Policy holder date of birth',v.subscriber_birth_date||'','date')}${selectField('relationship',"Patient is the policy holder's",['self','spouse','child','other'],v.relationship,insuranceOptionLabels(['self','spouse','child','other']))}${billingField('effective_date','Effective date',effective,'date',0,true)}${billingField('end_date','End date',v.end_date||'','date')}${billingField('copay','Copay (optional)',dollars(v.copay_cents))}${selectField('verification','Checked by staff',['unverified','manually_verified'],v.verification,insuranceOptionLabels(['unverified','manually_verified']))}</div><p class="muted">Two active plans cannot share the same order.</p><label>Notes<textarea name="notes" maxlength="2000">${esc(v.notes)}</textarea></label>${imported?'<input type="hidden" name="reason" value="Added from previous system insurance record">':billingField('reason','Reason / evidence for change','','text',1000,true)}${m&&!imported?'<label class="review-ack"><input type="checkbox" required> I verified source patient, payer, subscriber, dates and coordination priority.</label>':''}<div class="actions"><button class="primary" type="submit" ${billingPayers.length?'':'disabled'}>Save insurance</button><button type="button" data-cancel-billing>Cancel</button></div></form><div id="coverage-payer-setup">${coveragePayerSetup()}</div>`);
+ const form=$('coverage-form');if(options.sheet){form.dataset.insuranceSheet='1';form.patient=options.patient;}typeaheadInit(form);if(!c){patientSelfPolicyHolder(form);form?.addEventListener('change',e=>{if(e.target?.name==='relationship')patientSelfPolicyHolder(form);});}
 }
 function openInvalidChargeOptions(form){const box=form.querySelector?.('[data-visit-charge-options]');if(!box)return;const bad=Array.from(box.querySelectorAll('input,select,textarea')).some(f=>typeof f.checkValidity==='function'&&!f.checkValidity());if(bad)box.open=true;}
 // Drug given on a charge line: an injected drug (a J-code such as botulinum
@@ -495,7 +534,7 @@ function chargeDrugMarkup(l){const code=String(l.ndc_code||'').trim();return cod
 // A drug line is one whose code starts with J; its NDC fields open inside the row so staff
 // are never sent hunting through a closed box for a field the line needs.
 function chargeIsDrugCode(code){return /^J\d/i.test(String(code||'').trim().toUpperCase());}
-function chargeCodeSystem(l){const code=String(l.code||'').trim().toUpperCase();return l.code_system||(code.startsWith('J')?'HCPCS':'CPT');}
+function chargeCodeSystem(l){const code=String(l.code||'').trim().toUpperCase();return l.code_system||(/^[A-Z]/.test(code)?'HCPCS':'CPT');}
 function chargeMiniField(name,label,value='',max=200,required=false){return `<label>${label}<input name="${name}" type="text" value="${esc(value)}" ${max?`maxlength="${max}"`:''} ${required?'required':''}></label>`;}
 // One box per line carries the procedure: the code and the description the line submits ride on
 // the row beside it, so the code cell holds the box and the description column only has what the
@@ -549,19 +588,14 @@ function chargeDiagnosisCell(l){return chargeDiagnosisCodesField(l)+'<div class=
 // Named for what it holds and nothing else: the letters on the charge lines below are these
 // diagnoses, so one plain word says where each belongs without repeating the encounter in both.
 // On the one-page visit the codes & charges block carries its own stable diagnoses host
-// (#encounter-diagnoses, drawn and kept by the revenue block), so the table lays down nothing and
-// there is never a second #visit-diagnoses; elsewhere the table still brings its own.
-function encounterDiagnosesHostExists(){return typeof document!=='undefined'&&typeof document.getElementById==='function'&&Boolean(document.getElementById('encounter-diagnoses'));}
+// (#encounter-diagnoses, drawn and kept by the revenue block).
 function chargeDiagnosisSectionMarkup(){
- if(encounterDiagnosesHostExists())return '';
- return `<section class="charge-visit-diagnoses" data-charge-diagnosis-editor><h3>Diagnoses</h3><div id="visit-diagnoses"><p class="muted">Loading…</p></div></section>`;
+ return '<section id="encounter-diagnoses" class="charge-visit-diagnoses encounter-diagnoses" data-charge-diagnosis-editor><div id="visit-diagnoses"><h4>Diagnoses (ICD-10)</h4><p class="muted">Loading…</p></div><div class="actions"><button type="button" data-note-suggest hidden>Suggest codes</button><span data-note-suggest-status role="status"></span></div><div id="note-diagnosis-suggestions" class="actions"></div></section>';
 }
-// Placing the section is not drawing it. The diagnoses code fills its own host and saves on its
-// own, exactly as it does on the encounter's Diagnoses screen; this only asks it to — into the stable
-// block host when the page carries one, otherwise into the host laid down with this charge table.
 function openChargeDiagnosisSection(){
  if(typeof renderVisitDiagnoses!=='function'||typeof activeVisit==='undefined'||!activeVisit)return;
- if(encounterDiagnosesHostExists()||billingEditorHost()?.querySelector?.('[data-charge-diagnosis-editor]'))void renderVisitDiagnoses();
+ const host=billingEditorHost()?.querySelector?.('[data-charge-diagnosis-editor] #visit-diagnoses');
+ if(host)void renderVisitDiagnoses(host);
 }
 // The amount an edit leaves behind, in cents, or nothing at all while it is not yet an amount.
 // The amount each line was saved at, remembered on the row, survives while it is edited.
@@ -576,7 +610,7 @@ function chargeRowAmountCents(row){
 function chargeRowExtras(l,compact){
  if(!compact)return '';
  const dated=l.service_from||l.service_to;
- return `<details class="charge-more charge-line-dates"${dated?' open':''}><summary>${dated?'Dates for this line':'Different dates for this line'}</summary><label>From<input type="date" name="service_from" value="${esc(l.service_from||'')}"></label><label>To<input type="date" name="service_to" value="${esc(l.service_to||'')}"></label></details><details class="charge-more"><summary>Code list this came from</summary>${typeof terminologyLookupButton==='function'?terminologyLookupButton('procedure'):''}${typeof terminologySnapshotMarkup==='function'?terminologySnapshotMarkup(l.catalog_snapshot):''}</details>`;
+ return `<details class="charge-more charge-line-dates"${dated?' open':''}><summary>${dated?'Dates for this line':'Different dates for this line'}</summary><label>From<input type="date" name="service_from" value="${esc(l.service_from||'')}"></label><label>To<input type="date" name="service_to" value="${esc(l.service_to||'')}"></label></details><details class="charge-more"><summary>Code list this came from</summary><div data-terminology-source>${typeof terminologyLookupButton==='function'?terminologyLookupButton('procedure'):''}${typeof terminologySnapshotMarkup==='function'?terminologySnapshotMarkup(l.catalog_snapshot):''}</div></details>`;
 }
 // The table holds the columns; anything a line carries beyond them rides on the row element
 // between a save and the next one, so nothing recorded is dropped by a re-render.
@@ -598,17 +632,20 @@ function chargeServiceDate(value){return typeof visitBillingDate==='function'?vi
 // The one prior authorization number a claim carries stays editable until the claim has gone out:
 // a draft claim takes it here, saved onto the claim itself. Anything sent already, or released and
 // waiting, shows it as plain text, and a correction goes through the corrected claim.
-function chargePriorAuthorizationFinishedMarkup(a,given){
- const claim=given||(typeof encounterRevenueState!=='undefined'?encounterRevenueState.data?.summary?.claim:null);
- const number=String((claim?.content?.encounter?.prior_authorization_number)??a.content.claim_details?.prior_authorization_number??'').trim();
- if(claim?.id&&claim.status==='draft'&&billingCan())return `<div class="charge-prior-auth" data-prior-auth-edit data-claim="${esc(claim.id)}"><label>Prior authorization number<input name="prior_authorization_number" value="${esc(number)}" maxlength="50" autocomplete="off"></label><button type="button" data-prior-auth-save>Save</button><span class="muted">Sent with the claim (box 23). One number per claim.</span></div>`;
+function chargePriorAuthorizationFinishedMarkup(account,{claim,readOnly=false}={}){
+ const summary=typeof encounterRevenueState!=='undefined'?encounterRevenueState.data?.summary:null;
+ if(claim===undefined)claim=account?.id&&summary?.account?.id===account.id?summary.claim:null;
+ const number=String(claim?.content?claim.content.encounter?.prior_authorization_number||'':account?.content?.claim_details?.prior_authorization_number||'').trim();
+ const canEdit=!readOnly&&claim?.status==='draft'&&claim.id&&billingCan()&&(typeof workspaceResourceAllowed!=='function'||workspaceResourceAllowed('claims','edit'));
+ if(canEdit)return `<div class="charge-prior-auth" data-prior-auth-edit data-claim="${esc(claim.id)}"><label>Prior authorization number<input name="prior_authorization_number" value="${esc(number)}" maxlength="50" autocomplete="off"></label><button type="button" data-prior-auth-save>Save</button><span class="muted">Sent with the claim (box 23). One number per claim.</span></div>`;
  return number?`<p class="charge-prior-auth-line">Prior authorization number <b>${esc(number)}</b></p>`:'';
 }
 // Saved onto the draft claim the way every other claim edit is: read it back for its version, put
 // the whole content back with the number changed, and let the claim be checked again.
-async function chargePriorAuthorizationSave(claimId,value){
+async function chargePriorAuthorizationSave(claimId,value,isCurrent=()=>true){
  const fresh=(await api(`/api/v1/billing/claims/${encodeURIComponent(claimId)}`)).claim;
- if(!fresh||fresh.status!=='draft')throw new Error('This claim has already been released. Send a corrected claim to change the number.');
+ if(!isCurrent()||fresh?.id!==claimId)return false;
+ if(fresh.status!=='draft')throw new Error('This claim has already been released. Send a corrected claim to change the number.');
  const number=String(value||'').trim().slice(0,50),encounter={...(fresh.content.encounter||{})};
  if(number)encounter.prior_authorization_number=number;else delete encounter.prior_authorization_number;
  const content={...fresh.content,encounter};
@@ -766,7 +803,9 @@ function chargeTableHost(form){return !!chargeRowTable(form);}
 function chargeTableTotals(host){
  const rows=Array.from(host.querySelectorAll?.('.billing-charge-row')||[]).filter(row=>row.isConnected!==false&&!chargeRowRemoved(row));
  const total=rows.reduce((sum,row)=>sum+chargeLineTotalCents(row),0);
- const copay=typeof visitPlanCopayCents==='function'?visitPlanCopayCents():null;
+ const selection=host.elements?.namedItem?.('coverage_id');
+ const selfPay=selection?selection.value==='':host.dataset?.selfPay==='true';
+ const copay=!selfPay&&typeof visitPlanCopayCents==='function'?visitPlanCopayCents(selection?.value||host.elements?.coverage_id?.value||undefined):null;
  const pays=Math.min(total,copay??total);
  // A total that moved is tinted for a moment, so the eye finds what the last change did.
  for(const node of host.querySelectorAll('[data-charge-total]')){
@@ -775,13 +814,12 @@ function chargeTableTotals(host){
  }
  if(typeof document!=='undefined'&&document.createElement){chargeUnitCharges(host);for(const row of host.querySelectorAll?.('.billing-charge-row')||[])modifierOptionsRender(row);}
  const copayNode=host.querySelector('[data-charge-copay]'),owesNode=host.querySelector('[data-charge-pays]');
- if(copayNode)copayNode.textContent=copay==null?'No copay recorded for this plan':`Copay ${money(copay)}`;
- if(owesNode)owesNode.textContent=copay==null?'Until the insurer answers, what the patient owes comes from the plan or a review':`Patient pays now ${money(pays)}`;
+ if(copayNode)copayNode.textContent=selfPay?'Self-pay':copay==null?'No copay recorded for this plan':`Copay ${money(copay)}`;
+ if(owesNode)owesNode.textContent=selfPay?'':copay==null?'Until the insurer answers, what the patient owes comes from the plan or a review':`Patient pays now ${money(pays)}`;
 }
-function visitPlanCopayCents(){
- const visit=typeof activeVisit!=='undefined'?activeVisit:null;
+function visitPlanCopayCents(selectedCoverage){
  const account=typeof encounterChargeAccount==='function'?encounterChargeAccount():null;
- const coverage=(workspace?.billing?.coverages||[]).find(c=>c.id===(account?.content.coverage_id||(typeof revenueCoverage==='function'?revenueCoverage()?.id:null)));
+ const coverage=(workspace?.billing?.coverages||[]).find(c=>c.id===(selectedCoverage??(account?.content?.coverage_id||(typeof revenueCoverage==='function'?revenueCoverage()?.id:null))));
  return coverage&&coverage.content.copay_cents!=null?Number(coverage.content.copay_cents):null;
 }
 // Everything a row needs to be sent: the columns, plus what the row carries beyond them.
@@ -806,11 +844,13 @@ function chargeRowProblems(row){
  if(!code)problems.push('Add the procedure code.');
  if(code&&!description)problems.push('Add what this service was.');
  if(amount==null)problems.push('Add the amount for this line.');
- else{
-  if(!(units>=1))problems.push('Add how many units were done.');
-  if(!diagnoses)problems.push('Choose the diagnoses this service was for.');
+ if((code||amount!=null)&&!(units>=1))problems.push('Add how many units were done.');
+ if((code||amount!=null)&&!diagnoses)problems.push('Choose the diagnoses this service was for.');
+ if(ndc||quantity||unit){
+  if(!/^\d{11}$/.test(ndc.replace(/[ -]/g,'')))problems.push('Enter the 11-digit NDC code.');
+  if(quantity.length>7||!/^(0|[1-9]\d*)(\.\d{0,3})?$/.test(quantity)||Number(quantity)<=0)problems.push('Enter the quantity given.');
+  if(!unit)problems.push('Choose the drug unit.');
  }
- if(ndc&&!(quantity&&unit))problems.push('For a drug, add its NDC code, the amount given and the unit.');
  return problems;
 }
 // A line's sentence and the letters it is about are written in the same pass, so a line never shows
@@ -819,12 +859,14 @@ function renderChargeRowProblems(form){
  if(!chargeTableHost(form))return;
  const busy=!!(form?.dataset.chargeSaving||form?.dataset.chargeConflict||form?.dataset.draftReadOnly||form?.dataset.draftStale);
  for(const row of chargeLiveRows(form)){
+  if(chargeRowAmount(row)!=null)row.querySelector('[data-sign-price-needed]')?.remove();
   const cell=row.querySelector('[data-charge-problem]');if(!cell)continue;
   const problems=busy?[]:chargeRowProblems(row);
   if(problems.length){cell.textContent=problems.join(' ');row.setAttribute('data-charge-problem','true');}
   else{cell.textContent='';row.removeAttribute('data-charge-problem');}
  }
  renderChargeEncounterDiagnoses(form);
+ renderEncounterCodeChecks(form);
 }
 function chargeLineCount(form){return Array.from(form?.querySelectorAll?.('.billing-charge-row')||[]).filter(row=>!chargeRowRemoved(row)).length;}
 // A removed line waits, taken out of the table, until it has been saved away or undone.
@@ -838,7 +880,6 @@ function addChargeRow(){
  (row?.querySelector('input[name="procedure"]')||row?.querySelector('[name="code"]'))?.focus();
  chargeTableTotals(form);renderChargeRowProblems(form);
  captureBillingChargeDraft();
- scheduleChargeAutosave(form);
 }
 // A second line like this one, right under it: same code, words, modifiers, units, diagnoses and
 // amount, ready to be changed (a different side, a different modifier). It is saved like any edit.
@@ -883,6 +924,7 @@ function restoreChargeRow(form,slot){
 // so the row itself, its slot and the Undo offer all go away together.
 function closeChargeRemovals(){clearTimeout(chargeRemovedExpiry);for(const row of chargeRemovedRows.values()){row.parentElement?.querySelector('[data-charge-removed-slot]')?.remove();row.remove();}chargeRemovedRows.clear();}
 function removeChargeRowTable(form,row){
+ if(row.nextElementSibling?.hasAttribute('data-sign-price-row'))row.nextElementSibling.remove();
  removeChargeRow(form,row);
  chargeTableTotals(form);renderChargeRowProblems(form);
  captureBillingChargeDraft();
@@ -909,13 +951,15 @@ function chargeRowUnsavable(row){
 }
 // The lines that are complete enough to keep are saved straight away; a line still missing
 // something waits on the screen and says what it needs, without holding the others back.
-function chargeRowsToSend(form){return chargeLiveRows(form).filter(row=>(row.querySelector('[name="code"]')?.value||'').trim()&&!chargeRowUnsavable(row));}
+function chargeRowReadyToSave(row){return !!(row.querySelector('[name="code"]')?.value||'').trim()&&!chargeRowUnsavable(row);}
+function chargeRowsToSend(form){return chargeLiveRows(form).filter(chargeRowReadyToSave);}
 function chargeTableWaiting(form){
  return chargeLiveRows(form).map(row=>({row,missing:chargeRowUnsavable(row)})).filter(item=>item.missing).map(item=>`Line ${chargeRowLabel(item.row)} is not saved yet: ${item.missing}.`).join(' ');
 }
 function chargeRowLabel(row){const code=(row.querySelector('[name="code"]')?.value||'').trim();return code||'without a code';}
 // One quiet line beside the table: saving, saved, or what went wrong with one way to retry.
 function setChargeStatus(form,state,message){
+ form.dataset.chargeSaveState=state;
  const status=form?.querySelector('[data-charge-status]');if(!status)return;
  chargeStatusInSheet(state,message);
  if(state==='saving'){status.textContent='Saving…';return;}
@@ -931,7 +975,7 @@ function setChargeStatus(form,state,message){
 // The same news in the foot of the Edit codes sheet, which stays in view however far the sheet has
 // been scrolled: saving, saved with the time, or that something did not save and where to look.
 function chargeStatusInSheet(state,message){
- const node=typeof document!=='undefined'&&document.querySelector?document.querySelector('#encounter-revenue[data-codes-editing] [data-codes-editor-state]'):null;if(!node)return;
+ const node=typeof document!=='undefined'&&document.querySelector?document.querySelector('[data-encounter-codes-dialog][open] [data-codes-editor-state],#encounter-revenue[data-codes-editing] [data-codes-editor-state]'):null;if(!node)return;
  node.classList?.toggle('is-problem',state==='error'||(!!message&&state!=='saving'&&state!=='saved'&&state!=='quiet'));
  if(state==='saving')node.textContent='Saving…';
  else if(state==='saved')node.textContent=`Saved at ${new Date().toLocaleTimeString([],{hour:'numeric',minute:'2-digit'})}. Changes save as you go.`;
@@ -941,105 +985,78 @@ function scheduleChargeAutosave(form,delay=700){
  if(!chargeTableHost(form)||form.dataset.autosave==='off'||form.dataset.draftReadOnly||form.dataset.draftStale)return;
  form.chargeSaveDelay=delay;
  if(form.dataset.chargeConflict)return;
- if(form.querySelector('.billing-charge-row:not([data-charge-removed])')===null)return;
  clearTimeout(form.chargeSaveTimer);
- form.chargeSaveTimer=setTimeout(()=>{form.chargeSaveTimer=null;void saveChargeTable(form);},delay);
-}
- async function correctChargeTable(form){
- if(!form?.isConnected||form.dataset.patient!==selected||!chargeLineCount(form))return;
- if(form.dataset.chargeSaving||form.dataset.chargeConflict||form.dataset.draftReadOnly||form.dataset.draftStale)return;
- const identity=me,patient=selected,editing=!!form.dataset.id;
- const sending=chargeRowsToSend(form),held=chargeTableWaiting(form);
- if(!sending.length){renderChargeRowProblems(form);if(held)setChargeStatus(form,'waiting',held);return;}
- const version=Number(form.dataset.version),body=chargeDraftBody(form);
- body.content.lines=sending.map(chargeRowValue);
- form.dataset.chargeSaving='true';delete form.dataset.chargeSavedAt;
- renderChargeRowProblems(form);setChargeStatus(form,'saving');
- let saved;
- try{
-  saved=await api(`${billingBase()}/${form.dataset.id}/corrections`,'POST',{request_id:form.dataset.request,...body},version);
- }catch(error){
-  if(!form.isConnected||me!==identity||selected!==patient)return;
-  delete form.dataset.chargeSaving;
-  if(error?.status===409){await reloadChargeTable(form,patient,identity);return;}
-  if(chargeLineCount(form))scheduleChargeAutosave(form,3000);
-  setChargeStatus(form,'error',`${error?.message||'This change could not be saved.'} Nothing you typed has been lost.`);
-  renderChargeRowProblems(form);
-  return;
- }
- if(!form.isConnected||me!==identity||selected!==patient)return;
- delete form.dataset.chargeSaving;form.dataset.request=crypto.randomUUID();
- form.dataset.id=saved.id;form.dataset.version=String(saved.version);
- form.dataset.draftKey=billingChargeKey(saved.id,null,null);
- billingSelected=saved.id;
- const html=billingChargeMarkup(form);
- if(html!==null)billingChargeDrafts.delete(form.dataset.draftKey);
- const signature=chargeTableSignature(saved.content);
- if(html!==null)billingChargeBaselines.set(form,signature);
- const lines=Array.isArray(saved.content?.lines)?saved.content.lines:[];
- // Only the rows that were sent are matched against what came back; a row still waiting stays as typed.
- const rows=sending.filter(row=>row.isConnected!==false&&!chargeRowRemoved(row));
- if(lines.length===rows.length)lines.forEach((line,index)=>{if(chargeRowSignature(rows[index])!==chargeLineSignature(line))renderChargeRowReplacement(form,rows[index],line);});
- else if(!held&&lines.length)renderChargeTableRows(form,lines);
- chargeTableTotals(form);
- renderChargeRowProblems(form);
- const stillHeld=chargeTableWaiting(form);
- clearTimeout(form.chargeSavedTimer);
- if(stillHeld)setChargeStatus(form,'waiting',`Saved. ${stillHeld}`);
- else{setChargeStatus(form,'saved');form.chargeSavedTimer=setTimeout(()=>setChargeStatus(form,'quiet'),4000);}
- closeChargeRemovals();
- if(typeof captureBillingChargeDraft==='function')captureBillingChargeDraft();
- chargeSavedFollowUp(form,saved,identity,patient);
+ form.chargeSaveTimer=setTimeout(()=>{
+  form.chargeSaveTimer=null;
+  if(chargeTableHasChanges(form))void saveChargeTable(form);
+ },delay);
 }
 async function saveChargeTable(form){
- if(!form?.isConnected||form.dataset.patient!==selected||!chargeLineCount(form))return;
- if(form.dataset.chargeSaving||form.dataset.chargeConflict||form.dataset.draftReadOnly||form.dataset.draftStale)return;
- if(form.dataset.mode==='correction')return correctChargeTable(form);
- const identity=me,patient=selected,editing=!!form.dataset.id;
- const sending=chargeRowsToSend(form),held=chargeTableWaiting(form);
- if(!sending.length){renderChargeRowProblems(form);if(held)setChargeStatus(form,'waiting',held);return;}
- const version=Number(form.dataset.version),body=chargeDraftBody(form);
+ if(!form?.isConnected||form.dataset.patient!==selected)return;
+ if(form.dataset.chargeEncounterVisit&&(typeof activeVisit==='undefined'||activeVisit?.id!==form.dataset.chargeEncounterVisit))return;
+ if(form.chargeSaveRequest)return form.chargeSaveRequest;
+ if(form.dataset.chargeConflict||form.dataset.draftReadOnly||form.dataset.draftStale)return;
+ const request=saveChargeTableRequest(form);
+ form.chargeSaveRequest=request;
+ try{await request;}finally{delete form.chargeSaveRequest;}
+}
+async function saveChargeTableRequest(form){
+ const identity=me,patient=selected,editing=!!form.dataset.id,correction=form.dataset.mode==='correction';
+ const visit=typeof activeVisit==='undefined'?null:activeVisit?.id;
+ const current=()=>form.isConnected&&me===identity&&selected===patient&&(typeof activeVisit==='undefined'?null:activeVisit?.id)===visit;
+ const sending=chargeRowsToSend(form);
+ if(!sending.length){renderChargeRowProblems(form);const missing=chargeTableWaiting(form);if(missing)setChargeStatus(form,'waiting',missing);return;}
+ const version=Number(form.dataset.version),body=chargeDraftBody(form),detailsRevision=form.dataset.codesDetailsChanged;
+ const draftKey=form.dataset.draftKey,submittedTable=billingChargeLiveSignature(form);
  body.content.lines=sending.map(chargeRowValue);
+ const submittedLines=body.content.lines.map(chargeLineSignature);
+ const submittedQueries=sending.map(row=>row.querySelector('[name="procedure"]')?.value);
  form.dataset.chargeSaving='true';delete form.dataset.chargeSavedAt;
  renderChargeRowProblems(form);setChargeStatus(form,'saving');
  let saved;
  try{
-  if(!editing)body.request_id=form.dataset.request,body.source_history_id=form.dataset.source||null;
-  saved=await api(`${billingBase()}${editing?'/'+form.dataset.id:''}`,editing?'PUT':'POST',body,editing?version:undefined);
+  if(!editing||correction)body.request_id=form.dataset.request;
+  if(!editing)body.source_history_id=form.dataset.source||null;
+  const path=editing?'/'+form.dataset.id:'';
+  saved=await api(billingBase()+path+(correction?'/corrections':''),editing&&!correction?'PUT':'POST',body,editing?version:undefined);
  }catch(error){
-  if(!form.isConnected||me!==identity||selected!==patient)return;
-  delete form.dataset.chargeSaving;
+  if(!current())return;
   if(error?.status===409&&editing){await reloadChargeTable(form,patient,identity);return;}
-  if(chargeLineCount(form))scheduleChargeAutosave(form,3000);
-  setChargeStatus(form,'error',`${error?.message||'This change could not be saved.'} Nothing you typed has been lost.`);
-  renderChargeRowProblems(form);
+  if(chargeLineCount(form)&&!form.closest?.('[data-encounter-codes-dialog]'))scheduleChargeAutosave(form,3000);
+  setChargeStatus(form,'error',error?.message||'Procedure changes could not be saved.');
   return;
+ }finally{
+  delete form.dataset.chargeSaving;
+  if(current()&&!saved)renderChargeRowProblems(form);
  }
- if(!form.isConnected||me!==identity||selected!==patient)return;
- delete form.dataset.chargeSaving;
+ if(!current())return;
+
+ const queryChanged=(row,index)=>row.querySelector('[name="procedure"]')?.value!==submittedQueries[index];
+ const editedDuringSave=submittedTable!==billingChargeLiveSignature(form)||detailsRevision!==form.dataset.codesDetailsChanged||sending.some(queryChanged);
+ if(form.dataset.codesDetailsChanged===detailsRevision)delete form.dataset.codesDetailsChanged;
+ if(correction)form.dataset.request=crypto.randomUUID();
+ billingChargeDrafts.delete(draftKey);
  form.dataset.id=saved.id;form.dataset.version=String(saved.version);
  form.dataset.draftKey=billingChargeKey(saved.id,null,null);
  billingSelected=saved.id;
- const html=billingChargeMarkup(form);
- if(html!==null)billingChargeDrafts.delete(form.dataset.draftKey);
- const signature=chargeTableSignature(saved.content);
- if(html!==null)billingChargeBaselines.set(form,signature);
- // A line may arrive back changed by the server: an NDC normalised to 11 digits, a code
- // resolved against a code list. Only a row that differs from what was sent is re-rendered,
- // so a cell staff are still typing in is never replaced under them.
- const lines=Array.isArray(saved.content?.lines)?saved.content.lines:[];
- // Only the rows that were sent are matched against what came back; a row still waiting stays as typed.
- const rows=sending.filter(row=>row.isConnected!==false&&!chargeRowRemoved(row));
- if(lines.length===rows.length)lines.forEach((line,index)=>{if(chargeRowSignature(rows[index])!==chargeLineSignature(line))renderChargeRowReplacement(form,rows[index],line);});
- else if(!held&&lines.length)renderChargeTableRows(form,lines);
+ billingChargeBaselines.set(form,chargeTableSignature(saved.content));
+ const lines=saved.content?.lines||[];
+ // A response may normalize codes or quantities. Apply it only to the rows that still match the submission.
+ if(lines.length===sending.length)lines.forEach((line,index)=>{
+  const row=sending[index];
+  if(row.isConnected!==false&&!chargeRowRemoved(row)&&!queryChanged(row,index)&&chargeRowSignature(row)===submittedLines[index]&&chargeLineSignature(line)!==submittedLines[index])renderChargeRowReplacement(form,row,line);
+ });
+ else if(!editedDuringSave&&!chargeTableWaiting(form))renderChargeTableRows(form,lines);
  chargeTableTotals(form);
  renderChargeRowProblems(form);
- const stillHeld=chargeTableWaiting(form);
+ const stillHeld=chargeTableWaiting(form),dirty=chargeTableHasChanges(form);
  clearTimeout(form.chargeSavedTimer);
- if(stillHeld)setChargeStatus(form,'waiting',`Saved. ${stillHeld}`);
+ if(stillHeld)setChargeStatus(form,'waiting',stillHeld);
+ else if(dirty)setChargeStatus(form,'saving');
  else{setChargeStatus(form,'saved');form.chargeSavedTimer=setTimeout(()=>setChargeStatus(form,'quiet'),4000);}
- closeChargeRemovals();
- if(typeof captureBillingChargeDraft==='function')captureBillingChargeDraft();
+ if(!editedDuringSave)closeChargeRemovals();
+ captureBillingChargeDraft();
+ if(editedDuringSave&&dirty)scheduleChargeAutosave(form);
  chargeSavedFollowUp(form,saved,identity,patient);
 }
 // The shape a stored line is kept in, so a save can tell which rows the server changed.
@@ -1053,6 +1070,46 @@ function chargeSavedFollowUp(form,saved,identity,patient){
  form.chargeCardTimer=setTimeout(()=>{if(form.isConnected!==false&&me===identity&&selected===patient&&typeof loadEncounterRevenueStatus==='function'&&typeof encounterChargeAccount==='function'&&encounterChargeAccount()?.id===saved?.id)loadEncounterRevenueStatus(encounterChargeAccount(),true);},1200);
 }
 function chargeRowSignature(row){return chargeLineSignature(chargeRowValue(row));}
+// An untouched starter or added row does not represent a service to save.
+function billingChargeLiveSignature(form){
+ const lines=chargeLiveRows(form).map(chargeRowValue).filter(line=>line.code||line.description.trim()||line.amount_cents!=null);
+ return chargeTableSignature({lines});
+}
+function chargeTableHasChanges(form){
+ const baseline=billingChargeBaselines.get(form);
+ return Boolean(form.dataset.codesDetailsChanged||baseline&&billingChargeLiveSignature(form)!==baseline);
+}
+async function flushEncounterProcedures(form,current){
+ if(!form||form.dataset.draftReadOnly)return;
+ clearTimeout(form.chargeSaveTimer);form.chargeSaveTimer=null;
+ while(current()&&form.isConnected){
+  if(form.chargeSaveRequest){
+   await form.chargeSaveRequest;
+   if(form.dataset.chargeSaveState==='error')throw new Error(form.querySelector('[data-charge-status]')?.firstChild?.textContent||'Procedure changes could not be saved.');
+   continue;
+  }
+  if(form.dataset.draftStale||form.dataset.chargeConflict)throw new Error('Review the saved charges before applying your edits.');
+  if(!chargeTableHasChanges(form))return;
+  const missing=chargeTableWaiting(form);
+  if(missing)throw new Error(missing);
+  const sending=chargeRowsToSend(form);
+  if(!sending.length)throw new Error('Add a procedure to save billing details for this visit.');
+  const invalid=Array.from(form.querySelectorAll('input:invalid,select:invalid,textarea:invalid')).find(field=>{
+   const row=field.closest('.billing-charge-row');
+   return !row||sending.includes(row);
+  });
+  if(invalid){
+   for(let parent=invalid.parentElement;parent&&parent!==form;parent=parent.parentElement)if(parent.tagName==='DETAILS')parent.open=true;
+   invalid.reportValidity();
+   throw new Error('Complete the highlighted billing field.');
+  }
+  const submitted=billingChargeLiveSignature(form),detailsRevision=form.dataset.codesDetailsChanged;
+  clearTimeout(form.chargeSaveTimer);form.chargeSaveTimer=null;
+  await saveChargeTable(form);
+  if(form.dataset.chargeSaveState==='error')throw new Error(form.querySelector('[data-charge-status]')?.firstChild?.textContent||'Procedure changes could not be saved.');
+  if(chargeTableHasChanges(form)&&submitted===billingChargeLiveSignature(form)&&detailsRevision===form.dataset.codesDetailsChanged)throw new Error('The procedure changes are still pending. Try closing again to retry.');
+ }
+}
 function chargeTableSignature(content){return JSON.stringify((content?.lines||[]).map(chargeLineSignature));}
 function chargeLiveRows(form){return Array.from(form.querySelector?.('#billing-charge-lines')?.querySelectorAll?.('.billing-charge-row')||[]).filter(row=>!chargeRowRemoved(row));}
 function renderChargeTableRows(form,lines){
@@ -1079,12 +1136,12 @@ function renderChargeRowReplacement(form,row,line){
 const encounterPlaceOptions=[['','Practice default'],['11','11 · Office'],['10','10 · Telehealth, patient at home'],['02','02 · Telehealth, other place'],['12','12 · Home'],['22','22 · Hospital outpatient'],['19','19 · Off-campus hospital outpatient'],['31','31 · Skilled nursing facility'],['32','32 · Nursing facility']];
 const encounterDetailText=['prior_authorization_number','secondary_coverage_id','batch_number','rendering_provider_name','service_location_name','service_location_address','rendering_npi','place_of_service','encounter_mode','referring_provider_name','referring_npi','supervising_provider_name','supervising_npi','claim_codes','additional_claim_info','business_office_note'];
 const encounterDetailDates=['current_illness_date','through_date','hospitalization_from','hospitalization_to'];
-function encounterClaimDetailsMarkup(d,part,locked){
+function encounterClaimDetailsMarkup(d,part,locked=false){
  d=d||{};const val=k=>esc(d[k]??''),field=(k,label,extra='')=>`<label>${label}<input name="cd_${k}" value="${val(k)}" ${extra}></label>`,dateField=(k,label)=>`<label>${label}<input type="date" name="cd_${k}" value="${val(k)}"></label>`;
- if(part==='authorization')return `<label class="charge-prior-auth" data-charge-prior-auth>Prior authorization number<input name="cd_prior_authorization_number" value="${val('prior_authorization_number')}" maxlength="50" autocomplete="off"${locked?' readonly':''}><span class="muted">${locked?'Change it from the Charges card on the Billing tab; correcting charges here would cancel the claim.':'Sent with the claim (box 23). One number per claim.'}</span></label>`;
+ if(part==='authorization')return `<label class="charge-prior-auth" data-charge-prior-auth>Prior authorization number<input name="cd_prior_authorization_number" value="${val('prior_authorization_number')}" maxlength="50" autocomplete="off"${locked?' readonly':''}><span class="muted">${locked?'Open the draft claim to update this number.':'Sent with the claim (box 23). One number per claim.'}</span></label>`;
  if(part==='head')return `<div class="form-grid">${dateField('current_illness_date','Date the illness or injury began (box 14)')}${dateField('through_date','Through date (if more than one day)')}${encounterSecondaryMarkup(d)}${field('batch_number','Batch number (for your reports)','maxlength="30"')}<label class="check-row"><input type="checkbox" name="cd_paper_only" ${d.paper_only?'checked':''}> Do not send this claim electronically (print it instead)</label></div>`;
  if(part==='provider')return `<section class="charge-encounter-head" data-encounter-provider><div class="encounter-provider-top"><h4>Provider and place</h4><button type="button" class="text-button" data-encounter-provider-change aria-expanded="false">Change</button></div><dl class="encounter-provider-summary" data-encounter-provider-summary>${encounterProviderSummaryMarkup(d)}</dl><div class="form-grid" data-encounter-provider-fields hidden><label>Rendering provider<select name="cd_rendering_pick" data-encounter-pick="provider"><option value="">Practice default</option>${encounterOptionsMarkup('providers',d.rendering_npi)}</select></label><input type="hidden" name="cd_rendering_provider_name" value="${val('rendering_provider_name')}">${field('rendering_npi','Rendering provider NPI','inputmode="numeric" maxlength="10" placeholder="Practice default"')}<label>Location<select name="cd_location_pick" data-encounter-pick="facility"><option value="">Billing address</option>${encounterOptionsMarkup('facilities',d.service_location_name)}</select></label><input type="hidden" name="cd_service_location_name" value="${val('service_location_name')}"><input type="hidden" name="cd_service_location_address" value="${val('service_location_address')}"><label>Place of service<select name="cd_place_of_service">${encounterPlaceOptions.map(([code,label])=>`<option value="${code}" ${String(d.place_of_service||'')===code?'selected':''}>${label}</option>`).join('')}</select></label><label>Encounter mode<select name="cd_encounter_mode"><option value="" ${!d.encounter_mode?'selected':''}>In office</option><option value="telehealth" ${d.encounter_mode==='telehealth'?'selected':''}>Telehealth</option></select></label>${field('referring_provider_name','Referring provider','maxlength="120"')}${field('referring_npi','Referring provider NPI','inputmode="numeric" maxlength="10"')}${field('supervising_provider_name','Supervising provider','maxlength="120"')}${field('supervising_npi','Supervising provider NPI','inputmode="numeric" maxlength="10"')}</div></section>`;
- if(part==='actions')return `<div class="encounter-form-actions"><button type="button" data-check-codes>Check codes</button><label class="check-row"><input type="checkbox" name="cd_review_requested" ${d.review_requested?'checked':''}> Hold for review before posting</label><div class="encounter-code-check" data-code-check role="status" aria-live="polite"></div></div>`;
+ if(part==='actions')return `<div class="encounter-form-actions"><label class="check-row"><input type="checkbox" name="cd_review_requested" ${d.review_requested?'checked':''}> Hold for review before posting</label><div class="encounter-code-check" data-code-check role="status" hidden></div></div>`;
  if(part==='extras')return `<div class="form-grid">${dateField('hospitalization_from','Hospitalized from (box 18)')}${dateField('hospitalization_to','Hospitalized to')}${field('claim_codes','Claim codes (box 10d)','maxlength="19"')}${field('additional_claim_info','Additional claim information (box 19)','maxlength="71"')}</div>`;
  if(part==='notes')return `<label>Business office notes (staff only, never on the claim)<textarea name="cd_business_office_note" maxlength="2000">${val('business_office_note')}</textarea></label>`;
  return '';
@@ -1100,11 +1157,24 @@ function encounterClaimDetailsValue(form){
  return any?out:null;
 }
 // The practice's providers and locations for the pick lists, read once per page.
-let encounterOptions=null,encounterOptionsLoading=null;
+let encounterOptions=null,encounterOptionsLoading=null,encounterOptionsIdentity=null,encounterOptionsError=false;
+function invalidateEncounterProviderOptions(){
+ encounterOptions=null;encounterOptionsLoading=null;encounterOptionsError=false;
+ if(typeof encounterRevenueState!=='undefined')encounterRevenueState.loadedAt=0;
+}
 function encounterOptionsLoad(){
+ const identity=typeof me==='undefined'?null:me;
+ if(identity!==encounterOptionsIdentity){invalidateEncounterProviderOptions();encounterOptionsIdentity=identity;}
  if(encounterOptions||encounterOptionsLoading||typeof api!=='function')return encounterOptionsLoading;
- encounterOptionsLoading=api('/api/v1/billing/encounter-options').then(data=>{encounterOptions={providers:data.providers||[],facilities:data.facilities||[]};encounterOptionsFill();}).catch(()=>{encounterOptions={providers:[],facilities:[]};}).finally(()=>{encounterOptionsLoading=null;});
- return encounterOptionsLoading;
+ const request=api('/api/v1/billing/encounter-options').then(data=>{
+  if(encounterOptionsLoading!==request)return;
+  encounterOptions={providers:data.providers||[],facilities:data.facilities||[]};encounterOptionsError=false;encounterOptionsFill();
+ }).catch(()=>{
+  if(encounterOptionsLoading!==request)return;
+  encounterOptionsError=true;encounterProviderSummaryRefresh(typeof $==='function'?$('billing-account-form'):null);
+ }).finally(()=>{if(encounterOptionsLoading===request)encounterOptionsLoading=null;});
+ encounterOptionsLoading=request;
+ return request;
 }
 function encounterOptionsMarkup(kind,current){
  const items=encounterOptions?.[kind]||[];
@@ -1119,8 +1189,15 @@ function encounterProviderSummaryMarkup(d){
  const npi=n=>n?` · NPI ${esc(n)}`:'',from=t=>` <span class="muted">${t}</span>`;
  let rendering;
  if(d.rendering_npi)rendering=`${esc(d.rendering_provider_name||providers.find(p=>p.npi===d.rendering_npi)?.name||'Chosen provider')}${npi(d.rendering_npi)}`;
- else{const mine=visit&&providers.find(p=>p.id===visit.clinician_id),only=providers.length===1?providers[0]:null,who=mine||only;
-  rendering=who?`${esc(who.name)}${npi(who.npi)}${from(mine?'from the schedule':'the practice’s provider')}`:encounterOptions?`The encounter’s clinician${from('from the schedule')}`:'Loading…';}
+ else{
+  const assignedId=visit?.clinician_id||appointment?.clinician_id;
+  const provider=assignedId?providers.find(p=>p.id===assignedId):null;
+  const record=appointment?.clinician_id===assignedId?appointment:visit;
+  const assignedName=record&&(typeof scheduleProviderName==='function'?scheduleProviderName(record):record.provider_label);
+  rendering=provider?`${esc(provider.name)}${npi(provider.npi)}${from('from the schedule')}`:
+   encounterOptions?`${esc(assignedName||'Assigned clinician')} · NPI not on file`:
+    typeof encounterOptionsError!=='undefined'&&encounterOptionsError?'Provider directory unavailable':'Loading…';
+ }
  const location=d.service_location_name?esc(d.service_location_name):`${esc(facilities.length===1?facilities[0].name:'Practice billing address')}${from('billing address')}`;
  const placeLabel=(encounterPlaceOptions.find(([code])=>code&&code===String(d.place_of_service||''))||[])[1];
  const place=`${placeLabel?esc(placeLabel):'Practice default'} · ${d.encounter_mode==='telehealth'?'Telehealth':'In office'}`;
@@ -1148,8 +1225,12 @@ function encounterOptionsFill(){
  const form=typeof $==='function'?$('billing-account-form'):null;if(!form?.querySelector)return;
  encounterProviderSummaryRefresh(form);
  for(const [name,kind,hidden] of [['cd_rendering_pick','providers','cd_rendering_npi'],['cd_location_pick','facilities','cd_service_location_name']]){
-  const select=form.elements?.[name];if(!select||select.options.length>1)continue;
-  select.insertAdjacentHTML('beforeend',encounterOptionsMarkup(kind,form.elements[hidden]?.value||''));
+  const select=form.elements?.[name];if(!select||!encounterOptions)continue;
+  const options=encounterOptionsMarkup(kind,form.elements[hidden]?.value||'');
+  if(select.encounterOptionsMarkup===options)continue;
+  while(select.options.length>1)select.remove(1);
+  select.insertAdjacentHTML('beforeend',options);
+  select.encounterOptionsMarkup=options;
  }
 }
 function encounterSecondaryMarkup(d){
@@ -1166,53 +1247,58 @@ if(typeof document!=='undefined')document.addEventListener('change',event=>{
  else{const f=(encounterOptions?.facilities||[]).find(x=>x.id===select.value);form.elements.cd_service_location_name.value=f?.name||'';form.elements.cd_service_location_address.value=f?.address||'';}
  if(typeof scheduleChargeAutosave==='function')scheduleChargeAutosave(form);
 });
-// Check codes: the coding rules a payer applies most often to this kind of encounter, checked
-// on the screen before posting. It reads the table as it is and never changes anything.
+// Run local coding checks against the current service lines, including unsaved edits.
 const encounterEmCodes=/^99(20[2-5]|21[1-5])$/,encounterToxinCodes=/^J058[5-8]$/,encounterChemodenervation=/^646(1[2-7]|4[2-7])$/,encounterGuidance=/^9587[34]$/;
 function encounterCodeFindings(form){
- const rows=chargeLiveRows(form).map(row=>({code:(row.querySelector('[name="code"]')?.value||'').trim().toUpperCase(),modifiers:String(row.querySelector('[name="modifiers"]')?.value||'').toUpperCase().split(/[,\s]+/).filter(Boolean),units:Math.trunc(Number(row.querySelector('[name="units"]')?.value))||0,diagnoses:String(row.querySelector('[name="diagnoses"]')?.value||'').trim(),ndc:(row.querySelector('[name="ndc_code"]')?.value||'').trim()})).filter(r=>r.code);
- // Two levels, as other systems grade them: 'fix' stops posting until it is fixed; 'review' is
- // shown before posting and can be posted anyway.
- const out=[],fix=text=>out.push({level:'fix',text}),review=text=>out.push({level:'review',text}),codes=rows.map(r=>r.code);
+ const rows=chargeLiveRows(form).map(row=>({row,code:(row.querySelector('[name="code"]')?.value||'').trim().toUpperCase(),modifiers:String(row.querySelector('[name="modifiers"]')?.value||'').toUpperCase().split(/[,\s]+/).filter(Boolean),units:Math.trunc(Number(row.querySelector('[name="units"]')?.value))||0,diagnoses:String(row.querySelector('[name="diagnoses"]')?.value||'').trim(),ndc:(row.querySelector('[name="ndc_code"]')?.value||'').trim()})).filter(r=>r.code);
+ const out=[],codes=rows.map(r=>r.code);
  const others=rows.filter(r=>!encounterEmCodes.test(r.code));
+ const insured=form.elements.coverage_id?!!form.elements.coverage_id.value:form.dataset.selfPay!=='true';
  for(const r of rows){
-  if(!r.diagnoses)fix(`${r.code}: link at least one diagnosis.`);
-  if(r.units<1)fix(`${r.code}: enter how many units.`);
-  if(r.modifiers.length>4)fix(`${r.code}: a claim line takes at most four modifiers.`);
-  if(encounterEmCodes.test(r.code)&&others.length&&!r.modifiers.includes('25'))review(`${r.code}: an office visit billed with a procedure on the same day usually needs modifier 25.`);
+  const fix=(text,fieldProblem=false)=>out.push({level:'fix',text,row:r.row,fieldProblem});
+  const review=text=>out.push({level:'review',text,row:r.row,code:r.code});
+  if(!r.diagnoses)fix('Choose the diagnoses this service was for.',true);
+  if(r.units<1)fix('Add how many units were done.',true);
+  if(!insured)continue;
+  if(r.modifiers.length>4)fix(`Use at most four modifiers on a claim line.`);
+  if(encounterEmCodes.test(r.code)&&others.length&&!r.modifiers.includes('25'))review(`An office visit billed with a procedure on the same day usually needs modifier 25.`);
   if(encounterToxinCodes.test(r.code)){
-   if(!r.ndc)fix(`${r.code}: add the drug's NDC code, quantity and unit.`);
+   if(!r.ndc)fix(`Add the drug's NDC code, quantity and unit.`);
    // A correct wastage claim is two lines: the dose given with no modifier, the amount
    // discarded with JW. Only a drug with neither JZ nor a JW line for it is flagged.
    const same=rows.filter(x=>x.code===r.code),hasJW=same.some(x=>x.modifiers.includes('JW')),hasJZ=same.some(x=>x.modifiers.includes('JZ'));
-   if(!hasJW&&!hasJZ&&r===same[0])review(`${r.code}: Medicare needs JZ when no drug was discarded, or a separate JW line for the amount discarded.`);
-   if(hasJW&&hasJZ&&r===same[0])fix(`${r.code}: use JZ (nothing discarded) or a JW line (amount discarded), not both.`);
+   if(!hasJW&&!hasJZ&&r===same[0])review(`Medicare needs JZ when no drug was discarded, or a separate JW line for the amount discarded.`);
+   if(hasJW&&hasJZ&&r===same[0])fix(`Use JZ (nothing discarded) or a JW line (amount discarded), not both.`);
   }
-  if(encounterChemodenervation.test(r.code)&&!codes.some(c=>encounterToxinCodes.test(c)))review(`${r.code}: no botulinum toxin line (J0585 to J0588) was entered for this injection.`);
-  if(encounterGuidance.test(r.code)&&!codes.some(c=>encounterChemodenervation.test(c)))fix(`${r.code}: guidance is an add-on and is billed with a chemodenervation code.`);
-  if(/^6464[2-7]$/.test(r.code)&&r.modifiers.includes('50'))fix(`${r.code}: do not use modifier 50; bill the extra-extremity add-on (64643 or 64645) instead.`);
+  if(encounterChemodenervation.test(r.code)&&!codes.some(c=>encounterToxinCodes.test(c)))review(`No botulinum toxin line (J0585 to J0588) was entered for this injection.`);
+  if(encounterGuidance.test(r.code)&&!codes.some(c=>encounterChemodenervation.test(c)))fix(`Guidance is an add-on and is billed with a chemodenervation code.`);
+  if(/^6464[2-7]$/.test(r.code)&&r.modifiers.includes('50'))fix(`Do not use modifier 50; bill the extra-extremity add-on (64643 or 64645) instead.`);
   if(r.code==='J0587'&&r.units>10)review('J0587 is billed per 100 units: check the units are the dose divided by 100.');
  }
- if(codes.includes('95874')&&codes.includes('95873'))fix('95873 and 95874 are never billed together: keep one guidance code.');
- const seen=new Map();for(const r of rows){const key=r.code+'|'+r.modifiers.slice().sort().join(',');if(seen.has(key)&&!r.modifiers.includes('JW')&&!r.modifiers.includes('59')&&!r.modifiers.includes('XS'))review(`${r.code} is entered twice with the same modifiers: use units, or add 59/XS if they were separate sites.`);seen.set(key,1);}
+ const fix=text=>out.push({level:'fix',text}),review=text=>out.push({level:'review',text});
+ if(insured&&codes.includes('95874')&&codes.includes('95873'))fix('95873 and 95874 are never billed together: keep one guidance code.');
+ const seen=new Map();for(const r of rows){const key=r.code+'|'+r.modifiers.slice().sort().join(',');if(seen.has(key)&&!r.modifiers.includes('JW')&&!r.modifiers.includes('59')&&!r.modifiers.includes('XS'))out.push({level:'review',row:r.row,text:`Duplicate ${r.code} with the same modifiers. Review the units and modifiers.`});seen.set(key,1);}
  const tele=form.elements?.cd_encounter_mode?.value==='telehealth',place=form.elements?.cd_place_of_service?.value||'';
- if(tele&&!['02','10',''].includes(place))review('Telehealth: the place of service is usually 02 or 10.');
- if(tele&&rows.some(r=>encounterEmCodes.test(r.code)&&!r.modifiers.includes('95')))review('Telehealth: many payers want modifier 95 on the visit code.');
- const dx=new Set(rows.flatMap(r=>r.diagnoses.split(/[,\s]+/).filter(Boolean)));if(dx.size>12)fix('A claim carries at most 12 diagnoses.');
+ if(insured&&tele&&!['02','10',''].includes(place))review('Telehealth: the place of service is usually 02 or 10.');
+ if(insured&&tele&&rows.some(r=>encounterEmCodes.test(r.code)&&!r.modifiers.includes('95')))review('Telehealth: many payers want modifier 95 on the visit code.');
+ const dx=new Set(rows.flatMap(r=>r.diagnoses.split(/[,\s]+/).filter(Boolean)));if(insured&&dx.size>12)fix('A claim carries at most 12 diagnoses.');
  return out;
 }
-function encounterCodeFindingsMarkup(findings){
- if(!findings.length)return '<p class="code-check-ok">No coding problems found.</p>';
- const fixes=findings.filter(f=>f.level==='fix'),reviews=findings.filter(f=>f.level==='review');
- return `${fixes.length?`<div class="code-check-fix"><b>Fix before posting</b><ul>${fixes.map(f=>`<li>${esc(f.text)}</li>`).join('')}</ul></div>`:''}${reviews.length?`<div class="code-check-review"><b>Check before posting</b><ul>${reviews.map(f=>`<li>${esc(f.text)}</li>`).join('')}</ul></div>`:''}<p class="muted">These are the common payer rules for this kind of encounter. They run again when the charges are posted.</p>`;
+function paintCodeFindings(host,findings){
+ if(!host)return;
+ const markup=findings.map(f=>`<p class="code-check-${f.level}"><b>${f.level==='fix'?'Fix':'Review'}</b> · ${esc(f.text)}</p>`).join('');
+ if(host.codeFindingsMarkup===markup)return;
+ host.codeFindingsMarkup=markup;host.innerHTML=markup;host.hidden=!markup;
 }
-if(typeof document!=='undefined')document.addEventListener('click',event=>{
- const button=event.target?.closest?.('[data-check-codes]');if(!button)return;event.preventDefault();
- const form=button.closest('form'),host=form?.querySelector('[data-code-check]');if(!host)return;
- const findings=encounterCodeFindings(form);
- host.innerHTML=encounterCodeFindingsMarkup(findings);
- if(typeof flashUpdated==='function')flashUpdated(host);
-});
+function renderEncounterCodeChecks(form,findings){
+ const summary=form.querySelector('[data-code-check]');
+ if(!summary)return;
+ findings??=encounterCodeFindings(form);
+ for(const row of chargeLiveRows(form)){
+  paintCodeFindings(row.querySelector('[data-line-code-check]'),findings.filter(f=>f.row===row&&!f.fieldProblem));
+ }
+ paintCodeFindings(summary,findings.filter(f=>!f.row));
+}
 // Modifiers are picked, not typed: the ones that fit the line's code first, in plain words, and
 // every other common modifier in one list. A line takes at most four.
 const modifierWords={'25':'Separate visit on the same day as a procedure','57':'Visit that decided on surgery','95':'Telehealth video visit','59':'Distinct procedure','XS':'Separate site or organ','XU':'Unusual, separate service','50':'Both sides','RT':'Right side','LT':'Left side','26':'Reading only (professional part)','TC':'Equipment only (technical part)','76':'Repeated by the same clinician','JZ':'No drug discarded','JW':'Drug amount discarded','KX':'Payer requirements met','GA':'Waiver (ABN) on file','GZ':'No waiver (ABN) on file','GY':'Not covered by Medicare'};
@@ -1298,7 +1384,7 @@ function restoreChargeTyping(form,typing){
  chargeTableTotals(form);
 }
 function chargeRow(l={},compact=false,key=''){
- return `<tr class="billing-charge-row"${key?` data-charge-key="${key}"`:''} ${!l.code&&l.amount_cents==null&&!(l.diagnosis_codes||[]).length?'data-diagnoses-default="pending"':''} data-catalog-release-id="${esc(l.catalog_release_id||'')}" data-catalog-code="${esc(l.code||'')}" data-catalog-display="${esc(l.description||'')}" data-catalog-system="${esc(l.code_system||chargeCodeSystem(l))}" data-charge-system="${esc(l.code_system||chargeCodeSystem(l))}"${l.amount_cents==null?'':' data-charge-amount="'+l.amount_cents+'"'}${l.fee_schedule_id?` data-fee-schedule="${esc(l.fee_schedule_id)}"`:''}${l.fee_entry_key?` data-fee-entry="${esc(l.fee_entry_key)}"`:''}><td class="charge-cell-code">${chargeCodeCell(l)}${chargeDescriptionCell(l)}${chargeRowExtras(l,compact)}</td><td class="charge-cell-modifiers">${compact?`<label>Modifiers<input name="modifiers" type="text" value="${esc(l.modifiers||'')}" maxlength="100" readonly placeholder="None"></label><div class="modifier-options" data-modifier-options></div>`:chargeMiniField('modifiers','Modifiers',l.modifiers||'',100)+'<div class="modifier-options" data-modifier-options></div>'}</td><td class="charge-cell-units"><label>Units<input name="units" type="number" min="1" max="1000" step="1" value="${l.units===undefined?1:l.units}" required></label></td><td class="charge-cell-diagnoses">${chargeDiagnosisCell(l)}</td><td class="charge-cell-amount">${chargeMiniField('amount','Amount',dollars(l.amount_cents),30,true)}${typeof feeLineMarkup==='function'?feeLineMarkup(l):''}${l.source_fee!==undefined?`<p class="mapping-notice">Source fee: ${esc(l.source_fee)} · Check whether that was the whole line or one unit, then enter the amount for the whole line.</p>`:''}</td><td class="charge-cell-remove"><button type="button" data-remove-charge>Remove</button><button type="button" data-duplicate-charge>Duplicate</button></td>${chargeLineTail(l)}</tr>`;
+ return `<tr class="billing-charge-row"${key?` data-charge-key="${key}"`:''} ${(l.fromEarlierVisit||(!l.code&&l.amount_cents==null))&&!(l.diagnosis_codes||[]).length?'data-diagnoses-default="pending"':''} data-catalog-release-id="${esc(l.catalog_release_id||'')}" data-catalog-code="${esc(l.code||'')}" data-catalog-display="${esc(l.description||'')}" data-catalog-system="${esc(l.code_system||chargeCodeSystem(l))}" data-charge-system="${esc(l.code_system||chargeCodeSystem(l))}"${l.amount_cents==null?'':' data-charge-amount="'+l.amount_cents+'"'}${l.fee_schedule_id?` data-fee-schedule="${esc(l.fee_schedule_id)}"`:''}${l.fee_entry_key?` data-fee-entry="${esc(l.fee_entry_key)}"`:''}><td class="charge-cell-code">${chargeCodeCell(l)}${chargeDescriptionCell(l)}${chargeRowExtras(l,compact)}${compact?'<div data-line-code-check role="status" hidden></div>':''}</td><td class="charge-cell-modifiers">${compact?`<label>Modifiers<input name="modifiers" type="text" value="${esc(l.modifiers||'')}" maxlength="100" readonly placeholder="None"></label><div class="modifier-options" data-modifier-options></div>`:chargeMiniField('modifiers','Modifiers',l.modifiers||'',100)+'<div class="modifier-options" data-modifier-options></div>'}</td><td class="charge-cell-units"><label>Units<input name="units" type="number" min="1" max="1000" step="1" value="${l.units===undefined?1:l.units}" required></label></td><td class="charge-cell-diagnoses">${chargeDiagnosisCell(l)}</td><td class="charge-cell-amount">${chargeMiniField('amount','Amount',dollars(l.amount_cents),30,true)}${typeof feeLineMarkup==='function'?feeLineMarkup(l):''}${l.source_fee!==undefined?`<p class="mapping-notice">Source fee: ${esc(l.source_fee)} · Check whether that was the whole line or one unit, then enter the amount for the whole line.</p>`:''}</td><td class="charge-cell-remove"><button type="button" data-remove-charge>Remove</button><button type="button" data-duplicate-charge>Duplicate</button></td>${chargeLineTail(l)}</tr>`;
 }
 // The browser can only point at an invalid control that is visible, so the tucked-away visit,
 // insurance and fee fields are opened before validation runs whenever one of them fails.
@@ -1351,7 +1437,7 @@ function encounterChargeAccountFor(visitId){return (workspace.billing?.accounts|
 // is not happening.
 function encounterChargesProposed(){
  if(typeof chargeProposeCard!=='function')return false;
- if(chargeProposeCard())return true;
+ // Earlier lines are suggestions until chosen in the note.
  const visit=typeof activeVisit!=='undefined'?activeVisit:null;if(!visit)return false;
  const form=$('billing-account-form');
  return !!form&&form.dataset.proposed==='true'&&form.querySelector('[data-charge-proposal-blank]')!==null&&!form.dataset.id&&chargeProposalChoice(visit.id)==='lines';
@@ -1540,35 +1626,40 @@ function chargeProposalStartBlank(form){
  captureBillingChargeDraft();
  (form.querySelector('input[name="procedure"]')||form.querySelector('[name="code"]'))?.focus?.({preventScroll:true});
 }
+function chargeInsuranceDisclosure(title,contents,selfPay){
+ return `<details data-charge-insurance-detail${selfPay?'':' open'}><summary>${esc(title)}</summary>${contents}</details>`;
+}
 function accountEditor(a,m,encounterContext=false,options={}){
  captureBillingChargeDraft();
+ const encounter=typeof activeVisit!=='undefined'?activeVisit:null;
  const correcting=!!options.correction;
  if(a&&a.status!=='draft'&&a.content.visit_id&&!a.source_history_id&&!correcting){openBillingEditor(chargeTableFinishedMarkup(a));return;}
- if(a?.diagnosis_snapshot){billingSelected=a.id;openBillingEditor(`<section><h3>Review the linked visit diagnoses before changing charges</h3>${accountDiagnosisSummary(a.diagnosis_snapshot)}<p>This draft contains versioned diagnosis links. Use the link editor to update them, or explicitly clear its selections before changing the service lines. Clearing links retains the codes for manual review.</p><button type="button" data-link-account-diagnoses>Review / clear diagnosis links</button></section>`);return;}
+ if(a?.status==='draft'&&a.diagnosis_snapshot){billingSelected=a.id;openBillingEditor(`<section><h3>Review the linked visit diagnoses before changing charges</h3>${accountDiagnosisSummary(a.diagnosis_snapshot)}<p>This draft contains versioned diagnosis links. Use the link editor to update them, or explicitly clear its selections before changing the service lines. Clearing links retains the codes for manual review.</p><button type="button" data-link-account-diagnoses>Review / clear diagnosis links</button></section>`);return;}
  // The encounter's own charges count as staff having worked on the table; a record from the previous
  // system is not an encounter's charges and decides nothing about a proposal.
  if(a&&!a.source_history_id)chargeProposalTouched(typeof activeVisit!=='undefined'?activeVisit:null);
  if(!encounterContext&&!(typeof chartSection!=='undefined'&&chartSection==='visits'))showChartSection('billing');const source=m?.source_data||{},rows=Array.isArray(source.charge_lines)?source.charge_lines.filter(r=>r&&typeof r==='object'&&!Array.isArray(r)):[source],proposed=m?rows.map(r=>({code_system:r.code_type||'',code:r.code||'',description:r.code_text||'',modifiers:r.modifier||'',units:/^[1-9]\d*$/.test(String(r.units))?Number(r.units):'',source_fee:r.fee,diagnosis_codes:[]})):[{}];
- const sourceBacked=!!(m||a?.source_history_id),encounter=typeof activeVisit!=='undefined'?activeVisit:null,serviceDate=typeof revenueServiceDate==='function'?revenueServiceDate():new Date().toISOString().slice(0,10),coverage=typeof revenueCoverage==='function'?revenueCoverage(serviceDate):null,v=a?.content||{visit_id:encounter?.id||'',coverage_id:coverage?.id||'',service_date:encounter?serviceDate:'',lines:proposed,notes:''};
+ const sourceBacked=!!(m||a?.source_history_id),serviceDate=typeof revenueServiceDate==='function'?revenueServiceDate():localIsoDate(),coverage=typeof revenueCoverage==='function'?revenueCoverage(serviceDate):null,v=a?.content||{visit_id:encounter?.id||'',coverage_id:coverage?.id||'',service_date:encounter?serviceDate:'',lines:proposed,notes:''};
  // A charge editor opened for an encounter is a live table: the lines, then one box with the encounter,
  // insurance and fee details. Nothing a line needs sits behind a closed box, and every edit
  // saves itself. Reconciling a record from the previous system keeps its one review step.
- const compact=!!v.visit_id,sourceLines=m?' data-charge-lines-source=""':'',chargeVisitBlock=`<div class="form-grid"><label>Visit<select name="visit_id" ${sourceBacked?'':'required'}><option value="">${sourceBacked?'Source kept — no visit found for it':'Choose a patient visit'}</option>${workspace.visits.map(vis=>`<option value="${vis.id}" ${v.visit_id===vis.id?'selected':''}>${esc((workspace.appointments.find(ap=>ap.id===vis.appointment_id)?.title||'Visit')+' · '+date(workspace.appointments.find(ap=>ap.id===vis.appointment_id)?.starts_at||vis.created_at))} · ${esc(human(vis.status))}</option>`).join('')}</select></label>${billingField('service_date','Service date',v.service_date,'date',0,true)}<label>Billing coverage<select name="coverage_id"><option value="">Self-pay / no selected coverage</option>${workspace.billing.coverages.map(c=>`<option value="${c.id}" ${v.coverage_id===c.id?'selected':''}>${esc(human(c.content.priority))} · ${esc(payerName(c.content.payer_id))} · ${esc(c.content.member_id)}</option>`).join('')}</select></label><label>Currency<input value="USD" readonly></label></div>`,chargeNotesBlock=`<label>Notes<textarea name="notes" maxlength="2000">${esc(v.notes)}</textarea></label>`,chargeLinesBlock=`${chargeLinesMarkup(v.lines,compact)}<div class="charge-table-foot"><button type="button" data-add-charge>${compact?'+ Add another charge':'+ Charge line'}</button><p class="charge-table-status" data-charge-status role="status" aria-live="polite"></p></div>${correcting?'':`<div class="charge-table-next-slot" data-charge-next>${chargeTableNextMarkup(v.visit_id,chargeTableNextWritten)}</div>`}`,chargeOptionsBlock=`${chargeVisitBlock}<div data-charge-coverage-order>${billingCoverageOrderMarkup(v.service_date,v.coverage_id,compact)}</div>${typeof feeContextMarkup==='function'?feeContextMarkup(v.fee_context):''}${chargeNotesBlock}`,  chargeFormBody=compact?`<h4 class="charge-lines-title">Procedures</h4><div class="charge-bundles" data-charge-bundles></div>${chargeLinesBlock}${encounterClaimDetailsMarkup(v.claim_details,'authorization',!!(a&&a.status!=='draft'))}${encounterClaimDetailsMarkup(v.claim_details,'actions')}<section class="charge-encounter-head" data-visit-charge-options><h4>Insurance and dates</h4>${chargeVisitBlock}<div data-charge-coverage-order>${billingCoverageOrderMarkup(v.service_date,v.coverage_id,compact)}</div>${encounterClaimDetailsMarkup(v.claim_details,'head')}</section>${encounterClaimDetailsMarkup(v.claim_details,'provider')}<details class="charge-more-options"><summary>Hospital stay, claim codes and box 19</summary>${encounterClaimDetailsMarkup(v.claim_details,'extras')}</details><details class="charge-more-options"><summary>Fees and notes</summary>${typeof feeContextMarkup==='function'?feeContextMarkup(v.fee_context):''}${chargeNotesBlock}${encounterClaimDetailsMarkup(v.claim_details,'notes')}</details>`:`${chargeOptionsBlock}<p class="muted">Enter the amount for the whole line, not for one unit.</p>${chargeLinesBlock}`;
+ const compact=!!v.visit_id,selfPay=compact&&!sourceBacked&&!v.coverage_id&&!a?.coverage_snapshot;
+ const sourceLines=m?' data-charge-lines-source=""':'',chargeVisitBlock=`<div class="form-grid"><label>Visit<select name="visit_id" ${sourceBacked?'':'required'}><option value="">${sourceBacked?'Source kept — no visit found for it':'Choose a patient visit'}</option>${workspace.visits.map(vis=>`<option value="${vis.id}" ${v.visit_id===vis.id?'selected':''}>${esc((workspace.appointments.find(ap=>ap.id===vis.appointment_id)?.title||'Visit')+' · '+date(workspace.appointments.find(ap=>ap.id===vis.appointment_id)?.starts_at||vis.created_at))} · ${esc(human(vis.status))}</option>`).join('')}</select></label>${billingField('service_date','Service date',v.service_date,'date',0,true)}<label>Billing coverage<select name="coverage_id"><option value="">Self-pay / no selected coverage</option>${workspace.billing.coverages.map(c=>`<option value="${c.id}" ${v.coverage_id===c.id?'selected':''}>${esc(human(c.content.priority))} · ${esc(payerName(c.content.payer_id))} · ${esc(c.content.member_id)}</option>`).join('')}</select></label><label>Currency<input value="USD" readonly></label></div>`,chargeNotesBlock=`<label>Notes<textarea name="notes" maxlength="2000">${esc(v.notes)}</textarea></label>`,chargeLinesBlock=`${chargeLinesMarkup(v.lines,compact)}<div class="charge-table-foot"><button type="button" data-add-charge>${compact?'+ Add procedure':'+ Charge line'}</button><p class="charge-table-status" data-charge-status role="status" aria-live="polite"></p></div>${correcting?'':`<div class="charge-table-next-slot" data-charge-next>${chargeTableNextMarkup(v.visit_id,chargeTableNextWritten)}</div>`}`,chargeOptionsBlock=`${chargeVisitBlock}<div data-charge-coverage-order>${billingCoverageOrderMarkup(v.service_date,v.coverage_id,compact)}</div>${typeof feeContextMarkup==='function'?feeContextMarkup(v.fee_context):''}${chargeNotesBlock}`,  chargeFormBody=compact?`<h4 class="charge-lines-title">Procedures</h4><div class="charge-bundles" data-charge-bundles></div>${chargeLinesBlock}${chargeInsuranceDisclosure('Prior authorization',encounterClaimDetailsMarkup(v.claim_details,'authorization',correcting),selfPay)}${encounterClaimDetailsMarkup(v.claim_details,'actions')}<section class="charge-encounter-head" data-visit-charge-options><h4>Insurance and dates</h4>${chargeVisitBlock}<div data-charge-coverage-order>${billingCoverageOrderMarkup(v.service_date,v.coverage_id,compact)}</div>${chargeInsuranceDisclosure('Insurance claim fields',encounterClaimDetailsMarkup(v.claim_details,'head'),selfPay)}</section>${encounterClaimDetailsMarkup(v.claim_details,'provider')}<details class="charge-more-options"><summary>Hospital stay, claim codes and box 19</summary>${encounterClaimDetailsMarkup(v.claim_details,'extras')}</details><details class="charge-more-options"><summary>Fees and notes</summary>${typeof feeContextMarkup==='function'?feeContextMarkup(v.fee_context):''}${chargeNotesBlock}${encounterClaimDetailsMarkup(v.claim_details,'notes')}</details>`:`${chargeOptionsBlock}<p class="muted">Enter the amount for the whole line, not for one unit.</p>${chargeLinesBlock}`;
  // Charges for the encounter in hand come from that visit alone; a reconciliation of a record from
  // the previous system, or a chart opened elsewhere, is never filled in from another visit.
  // Charges are only ever filled in for the encounter this table is being opened for, and only from
  // that patient's own chart: a reconciliation of a record from the previous system, or a chart
  // opened elsewhere, is never filled in from another visit.
- const proposalVisit=v.visit_id?(workspace.visits||[]).find(vis=>vis.id===v.visit_id&&vis.patient_id===selected)||null:null;
- const proposal=chargeProposeBeforeRender(!a&&!m?proposalVisit:null);
+ const proposal=null; // Earlier lines are offered in the note and require a click to add.
  if(restoreBillingChargeDraft(a,m?.source_history_id,v.visit_id)){const restored=$('billing-account-form');seedChargeRowAmounts(restored);chargeTableTotals(restored);renderChargeRowProblems(restored);openChargeDiagnosisSection();void loadChargeEncounterDiagnoses(restored);if(compact&&typeof chargeBundlesLoad==='function')void chargeBundlesLoad().then(chargeBundlesPaint);scheduleChargeAutosave(restored);return;}
-  openBillingEditor(`${compact&&typeof renderVisitDiagnoses==='function'?chargeDiagnosisSectionMarkup():''}<form id="billing-account-form"${sourceLines} data-compact="${compact}" data-id="${a?.id||''}" data-version="${a?.version||''}" data-request="${crypto.randomUUID()}" data-source="${m?.source_history_id||''}" data-mode="${correcting?'correction':'draft'}"><h3>${a?(correcting?'Correct posted charges':'Edit draft charges'):m?'Reconcile source billing to draft':'Charges for this encounter'}</h3>${sourceNotice(m)}${chargeFormBody}${m?`<label class="review-ack"><input type="checkbox" name="verified" required> I verified the source visit, charges, fee basis, diagnoses and prior payment history. This creates a draft only.</label>${billingField('reason','Reason for this reconciliation','','text',1000,true)}<div class="actions"><button class="primary" type="submit">Create draft charges</button><button type="button" data-cancel-billing>Cancel</button></div>`:correcting?`<div class="actions"><button type="button" class="primary" data-save-charge-correction>Save changes</button><button type="button" data-cancel-billing>Cancel</button></div>`:''}</form>`);
+  const usesVisitDiagnoses=$('visit-page-host')?.contains?.(billingEditorHost())&&typeof encounterDiagnosesHost==='function';
+  openBillingEditor(`${compact&&!usesVisitDiagnoses&&typeof renderVisitDiagnoses==='function'?chargeDiagnosisSectionMarkup():''}<form id="billing-account-form"${sourceLines} data-compact="${compact}" data-self-pay="${selfPay}" data-charge-encounter-visit="${encounterContext?esc(v.visit_id):''}" data-id="${a?.id||''}" data-version="${a?.version||''}" data-request="${crypto.randomUUID()}" data-source="${m?.source_history_id||''}" data-mode="${correcting?'correction':'draft'}"><h3>${a?(correcting?'Correct posted charges':'Edit draft charges'):m?'Reconcile source billing to draft':'Charges for this encounter'}</h3>${sourceNotice(m)}${chargeFormBody}${m?`<label class="review-ack"><input type="checkbox" name="verified" required> I verified the source visit, charges, fee basis, diagnoses and prior payment history. This creates a draft only.</label>${billingField('reason','Reason for this reconciliation','','text',1000,true)}<div class="actions"><button class="primary" type="submit">Create draft charges</button><button type="button" data-cancel-billing>Cancel</button></div>`:correcting?`<div class="actions"><button type="button" class="primary" data-save-charge-correction>Save changes</button><button type="button" data-cancel-billing>Cancel</button></div>`:''}</form>`);
   const form=$('billing-account-form');if(form){form.dataset.patient=selected;form.dataset.draftKey=billingChargeKey(a?.id,m?.source_history_id,v.visit_id);form.dataset.autosave=m||correcting?'off':'on';
   // Filled in from the earlier visit, or the blank line the table always starts with: the rows
   // are decided here, once, after this screen was opened and after any retained edits came back.
   chargeProposeAfterRender(form,proposal);
   if(m){const baseline=billingChargeMarkup(form);if(baseline)billingChargeBaselines.set(form,baseline);}
-  else{billingChargeBaselines.set(form,chargeTableSignature(a?.content||{lines:chargeLiveRows(form).map(chargeRowValue)}));seedChargeRowAmounts(form);chargeTableTotals(form);renderChargeRowProblems(form);}
+  else{seedChargeRowAmounts(form);billingChargeBaselines.set(form,billingChargeLiveSignature(form));chargeTableTotals(form);renderChargeRowProblems(form);}
   openChargeDiagnosisSection();void loadChargeEncounterDiagnoses(form);if(typeof loadFeeContext==='function')void loadFeeContext(form);if(compact)void encounterOptionsLoad();if(compact&&typeof chargeBundlesLoad==='function')void chargeBundlesLoad().then(chargeBundlesPaint);}
 }
 function ledgerEditor(original){
@@ -1578,25 +1669,28 @@ async function coverageDetail(id){
  showChartSection('insurance');const c=workspace.billing.coverages.find(c=>c.id===id),h=await api(`/api/v1/patients/${selected}/coverages/${id}/history`);
  openBillingEditor(`<h3>${esc(payerName(c.content.payer_id))} · ${esc(human(c.content.priority))}</h3><dl class="billing-dl">${Object.entries(c.content).filter(([k])=>k!=='payer_id').map(([k,v])=>`<dt>${esc(human(k))}</dt><dd>${esc(k==='copay_cents'?(v==null?'Not recorded':money(v)):v??'Not recorded')}</dd>`).join('')}</dl><p class="muted">${c.source_history_id?'Reconciled source coverage':'Native coverage'} · v${c.version}</p>${billingCan()?`<button type="button" data-edit-coverage="${id}">Edit insurance</button>`:''}<h3>Coverage history</h3>${h.items.map(r=>`<details class="amendment"><summary>v${r.version} · ${esc(r.reason)} · ${esc(date(r.created_at))}</summary><pre class="billing-source">${esc(JSON.stringify(r.snapshot.content,null,2))}</pre><p>Recorded by ${esc(r.actor_id)}</p></details>`).join('')}`);
 }
-async function showBillingQueue(status=billingQueueStatus,after,settings=false){
+async function showBillingQueue(status=billingQueueStatus,after,settings=false,practiceWide=false){
  if(typeof unregisterAutoRefresh==='function')unregisterAutoRefresh('billing-queue');
- if(!settings&&typeof renderBillingOverview==='function')return renderBillingOverview(status,after);
+ if(!settings&&typeof renderBillingOverview==='function')return renderBillingOverview(status,after,practiceWide?{practiceWide:true,patientId:null,tab:'overview'}:{});
  const query=new URLSearchParams();if(status)query.set('status',status);if(after)query.set('after',after);
  const [data,payers,payerSources,claimmd]=await Promise.all([api(`/api/v1/billing/worklist?${query}`),api('/api/v1/billing/payers'),me.role==='owner'?api('/api/v1/billing/payer-sources'):{items:[]},(typeof workspaceResourceAllowed!=='function'||workspaceResourceAllowed('claims'))?loadClaimMdConnection().catch(()=>null):null]);billingPayerSources=payerSources.items;billingPayers=payers.items;billingQueueStatus=status;billingQueueCursor=data.next_cursor;showTool('Billing & insurance');
- $('tools').innerHTML=`<section id="billing-tool"><div class="section-head"><div><h2>Billing tools & payer directory</h2><p class="muted">Visit charge accounts, payers and settings · USD</p><button type="button" data-billing-overview>Back to Patient billing</button></div>${me.role==='owner'?'<div class="actions">'+(typeof terminologyCatalogButton==='function'?terminologyCatalogButton():'')+'<button type="button" data-payment-settings>Payment settings</button><button type="button" data-new-payer>+ Payer</button></div>':''}</div><form id="billing-filter" class="billing-filter"><label>Status<select name="status" aria-describedby="billing-filter-status"><option value="">All accounts</option>${['draft','posted','void'].map(s=>`<option value="${s}" ${status===s?'selected':''}>${human(s)}</option>`).join('')}</select></label><span id="billing-filter-status" class="muted">Updates automatically</span></form><div class="billing-table-wrap"><table class="billing-table"><thead><tr><th>Patient / service date</th><th>Status</th><th>Payer at posting</th><th class="money-cell">Charges</th><th class="money-cell">Open balance</th><th></th></tr></thead><tbody>${data.items.map(a=>`<tr><td><b>${esc(a.patient_name)}</b><small>${esc(a.mrn)} · ${esc(a.service_date)}</small></td><td><span class="pill">${esc(displayStatus(a.status))}</span></td><td>${esc(a.status==='draft'?'Not captured':a.payer_name||'Self-pay')}</td><td class="money-cell">${money(a.total_cents)}</td><td class="money-cell">${a.balance_cents==null?'—':money(a.balance_cents)}</td><td>${typeof workspaceResourceAllowed!=='function'||workspaceResourceAllowed('clinical')?`<button type="button" data-billing-patient="${a.patient_id}" data-account="${a.id}">Open billing</button>`:''}</td></tr>`).join('')||'<tr><td colspan="6" class="table-empty">No billing accounts in this worklist. Open a patient chart → Visit → Billing & claim to record procedures and charges.</td></tr>'}</tbody></table></div>${data.next_cursor?'<div class="actions"><button type="button" data-billing-next>Next 100 accounts</button></div>':''}<section class="billing-section"><div class="section-head"><h3>Payer directory</h3><span class="pill">${billingPayers.length}</span></div><div class="billing-table-wrap"><table class="billing-table"><thead><tr><th>Payer</th><th>Claim.MD payer ID</th><th>Contact</th><th>Status</th><th></th></tr></thead><tbody>${billingPayers.map(p=>`<tr><td>${esc(p.content.name)}</td><td>${esc(p.content.payer_code)}</td><td>${esc(p.content.phone||'—')}</td><td>${p.content.active?'Active':'Inactive'}</td><td><button type="button" data-payer-open="${p.id}">Open</button></td></tr>`).join('')||'<tr><td colspan="5">No native payers configured. A practice owner can add a payer here.</td></tr>'}</tbody></table></div></section>${typeof claimmdPayerDirectoryPanel==='function'&&(typeof workspaceResourceAllowed!=='function'||workspaceResourceAllowed('claims'))?claimmdPayerDirectoryPanel():''}${billingPayerSources.length?`<details class="amendment"><summary>Imported payer records (${billingPayerSources.length})</summary>${billingPayerSources.map(source=>`<div class="timeline-row"><div><b>${esc(source.source_data.name||source.source_id)}</b><small>${esc(source.source_instance)} · ${source.native_id?'Reconciled':'Needs identity review'}</small></div><button type="button" data-payer-source="${source.source_history_id}">${source.native_id?'View native payer':'Review mapping'}</button></div>`).join('')}</details>`:''}<div id="payer-editor"></div></section>`;
+ $('tools').innerHTML=`<section id="billing-tool"><div class="section-head"><div><h2>Billing tools & payer directory</h2><p class="muted">Visit charge accounts, payers and settings · USD</p><button type="button" data-billing-overview>Back to Patient billing</button></div>${me.role==='owner'?'<div class="actions">'+(typeof terminologyCatalogButton==='function'?terminologyCatalogButton():'')+'<button type="button" data-payment-settings>Payment settings</button><button type="button" data-new-payer>+ Payer</button></div>':''}</div><form id="billing-filter" class="billing-filter"><label>Status<select name="status" aria-describedby="billing-filter-status"><option value="">All accounts</option>${['draft','posted','void'].map(s=>`<option value="${s}" ${status===s?'selected':''}>${human(s)}</option>`).join('')}</select></label><span id="billing-filter-status" class="muted">Updates automatically</span></form><div class="billing-table-wrap"><table class="billing-table"><thead><tr><th>Patient / service date</th><th>Status</th><th>Payer at posting</th><th class="money-cell">Charges</th><th class="money-cell">Open balance</th><th></th></tr></thead><tbody>${data.items.map(a=>`<tr><td><b>${esc(a.patient_name)}</b><small>${esc(a.mrn)} · ${esc(a.service_date)}</small></td><td><span class="pill">${esc(displayStatus(a.status))}</span></td><td>${esc(a.status==='draft'?'Not captured':a.payer_name||'Self-pay')}</td><td class="money-cell">${money(a.total_cents)}</td><td class="money-cell">${a.balance_cents==null?'—':money(a.balance_cents)}</td><td>${typeof workspaceResourceAllowed!=='function'||workspaceResourceAllowed('clinical')?`<button type="button" data-billing-patient="${a.patient_id}" data-account="${a.id}">Open billing</button>`:''}</td></tr>`).join('')||'<tr><td colspan="6" class="table-empty">No billing accounts in this worklist. Open a patient chart → Visit → Billing & claim to record procedures and charges.</td></tr>'}</tbody></table></div>${data.next_cursor?'<div class="actions"><button type="button" data-billing-next>Next 100 accounts</button></div>':''}<section class="billing-section"><div class="section-head"><h3>Payer directory</h3><span class="pill">${billingPayers.length}</span></div><div class="billing-table-wrap"><table class="billing-table"><thead><tr><th>Payer</th><th>Clearinghouse payer ID</th><th>Contact</th><th>Status</th><th></th></tr></thead><tbody>${billingPayers.map(p=>`<tr><td>${esc(p.content.name)}</td><td>${esc(p.content.payer_code)}</td><td>${esc(p.content.phone||'—')}</td><td>${p.content.active?'Active':'Inactive'}</td><td><button type="button" data-payer-open="${p.id}">Open</button></td></tr>`).join('')||'<tr><td colspan="5">No native payers configured. A practice owner can add a payer here.</td></tr>'}</tbody></table></div></section>${typeof claimmdPayerDirectoryPanel==='function'&&(typeof workspaceResourceAllowed!=='function'||workspaceResourceAllowed('claims'))?claimmdPayerDirectoryPanel():''}${billingPayerSources.length?`<details class="amendment"><summary>Imported payer records (${billingPayerSources.length})</summary>${billingPayerSources.map(source=>`<div class="timeline-row"><div><b>${esc(source.source_data.name||source.source_id)}</b><small>${esc(source.source_instance)} · ${source.native_id?'Reconciled':'Needs identity review'}</small></div><button type="button" data-payer-source="${source.source_history_id}">${source.native_id?'View native payer':'Review mapping'}</button></div>`).join('')}</details>`:''}<div id="payer-editor"></div></section>`;
 }
-function payerEditor(p,m){const v=p?.content||{name:m?.source_data?.name||'',payer_code:'',phone:'',address:'',active:true};$('payer-editor').innerHTML=`<form id="payer-form" data-id="${p?.id||''}" data-version="${p?.version||''}" data-request="${crypto.randomUUID()}" data-source="${m?.source_history_id||''}"><h3>${p?'Edit payer':m?'Reconcile source payer':'Add payer'}</h3>${sourceNotice(m?{...m,policy:'Verify source payer identity, code and contact information.'}:null)}<div class="form-grid">${billingField('name','Payer name',v.name,'text',200,true)}${billingField('payer_code','Claim.MD payer ID',v.payer_code,'text',100)}${billingField('phone','Contact phone',v.phone,'text',50)}<label>Status<select name="active"><option value="true" ${v.active?'selected':''}>Active</option><option value="false" ${!v.active?'selected':''}>Inactive</option></select></label></div><label>Address<textarea name="address" maxlength="1000">${esc(v.address)}</textarea></label>${billingField('reason','Reason for change','','text',1000,true)}<div class="actions"><button type="submit" class="primary">Save payer</button><button type="button" data-cancel-payer>Cancel</button></div></form>`;$('payer-editor').scrollIntoView({block:'nearest'});}
-document.addEventListener('click',e=>{const b=e.target.closest('button');if(!b||b.dataset.newClaim||b.type==='submit'||(!b.closest('#billing-workspace')&&!b.closest('#billing-tool')&&!b.closest('#insurance-workspace')&&!b.closest('#encounter-revenue')&&!b.dataset.mapBilling&&!b.hasAttribute('data-patient-create-claim')&&!b.hasAttribute('data-patient-collect-copay')))return;
+function payerEditor(p,m){const v=p?.content||{name:m?.source_data?.name||'',payer_code:'',phone:'',address:'',active:true};$('payer-editor').innerHTML=`<form id="payer-form" data-id="${p?.id||''}" data-version="${p?.version||''}" data-request="${crypto.randomUUID()}" data-source="${m?.source_history_id||''}"><h3>${p?'Edit payer':m?'Reconcile source payer':'Add payer'}</h3>${sourceNotice(m?{...m,policy:'Verify source payer identity, code and contact information.'}:null)}<div class="form-grid">${billingField('name','Payer name',v.name,'text',200,true)}${billingField('payer_code','Clearinghouse payer ID',v.payer_code,'text',100)}${billingField('phone','Contact phone',v.phone,'text',50)}<label>Status<select name="active"><option value="true" ${v.active?'selected':''}>Active</option><option value="false" ${!v.active?'selected':''}>Inactive</option></select></label></div><label>Address<textarea name="address" maxlength="1000">${esc(v.address)}</textarea></label>${billingField('reason','Reason for change','','text',1000,true)}<div class="actions"><button type="submit" class="primary">Save payer</button><button type="button" data-cancel-payer>Cancel</button></div></form>`;$('payer-editor').scrollIntoView({block:'nearest'});}
+document.addEventListener('click',e=>{
+ const b=e.target.closest('button');if(!b||b.dataset.newClaim||b.type==='submit')return;
+ const billingArea=b.closest('#billing-workspace,#billing-tool,#insurance-workspace,#encounter-revenue,#encounter-billing-editor,#encounter-billing-detail,#visit-billing-history,[data-encounter-payment-editor]');
+ if(!billingArea&&!b.dataset.mapBilling&&!b.hasAttribute('data-patient-create-claim')&&!b.hasAttribute('data-patient-collect-copay'))return;
  if(b.hasAttribute('data-add-charge')){addChargeRow();return;}
  if(b.hasAttribute('data-charge-proposal-blank')){e.preventDefault();chargeProposalStartBlank(b.closest('#billing-account-form'));return;}
  if(b.hasAttribute('data-remove-charge')){const form=b.closest('#billing-account-form'),row=b.closest('.billing-charge-row');if(form&&row)removeChargeRowTable(form,row);return;}
  if(b.hasAttribute('data-duplicate-charge')){const form=b.closest('#billing-account-form'),row=b.closest('.billing-charge-row');if(form&&row)duplicateChargeRow(form,row);return;}
  if(b.dataset.undoCharge!==undefined){const form=b.closest('#billing-account-form');undoChargeRemoval(form);return;}
  if(b.dataset.retryChargeSave!==undefined){const form=b.closest('#billing-account-form');if(form){delete form.dataset.chargeConflict;setChargeStatus(form,'saving');scheduleChargeAutosave(form,0);}return;}
-  if(b.hasAttribute('data-visit-charges-overview')){billingEditorHost()?.replaceChildren();return;}
+  if(b.hasAttribute('data-visit-charges-overview')){const dialog=b.closest('dialog.chart-record-sheet');billingEditorHost()?.replaceChildren();if(dialog)sheetClose(dialog);return;}
   if(b.hasAttribute('data-edit-charges')){const a=workspace.billing.accounts.find(a=>a.id===billingSelected);if(a)accountEditor(a,null,typeof chartSection!=='undefined'&&chartSection==='visits',{correction:true});return;}
-  if(b.hasAttribute('data-save-charge-correction')){e.preventDefault();run(()=>correctChargeTable(b.closest('#billing-account-form')));return;}
-  if(b.hasAttribute('data-cancel-billing')){captureBillingChargeDraft();billingEditorHost()?.replaceChildren();return;}if(b.hasAttribute('data-cancel-payer')){$('payer-editor').replaceChildren();return;}
+  if(b.hasAttribute('data-save-charge-correction')){e.preventDefault();run(()=>saveChargeTable(b.closest('#billing-account-form')));return;}
+  if(b.hasAttribute('data-cancel-billing')){const historyEditor=b.closest('[data-encounter-payment-editor]');if(historyEditor){historyEditor.remove();return;}if(b.closest('[data-insurance-sheet]')){sheetClose(b.closest('dialog'));return;}captureBillingChargeDraft();const editor=billingEditorHost();editor?.replaceChildren();if(editor?.id==='encounter-billing-editor'&&editor.closest('dialog.chart-record-sheet'))sheetClose(editor.closest('dialog'));return;}if(b.hasAttribute('data-cancel-payer')){$('payer-editor').replaceChildren();return;}
  const ownsAction=['data-patient-create-claim','data-patient-collect-copay','data-patient-claims','data-billing-overview','data-billing-next','data-new-payer','data-payer-source','data-payer-edit','data-payer-open','data-billing-patient','data-new-coverage','data-coverage-open','data-edit-coverage','data-new-billing','data-bill-open','data-edit-bill','data-build-patient-invoice','data-patient-invoices','data-print-patient-invoice','data-patient-invoice','data-new-ledger','data-reverse-entry','data-bill-history','data-map-billing'].some(name=>b.hasAttribute(name));
  if(!ownsAction)return;
  run(async()=>{
@@ -1606,9 +1700,15 @@ document.addEventListener('click',e=>{const b=e.target.closest('button');if(!b||
  if(b.hasAttribute('data-billing-overview')){await showBillingQueue();return;}if(b.hasAttribute('data-billing-next')){await showBillingQueue(billingQueueStatus,billingQueueCursor,true);return;}
  if(b.hasAttribute('data-new-payer')){payerEditor();return;}if(b.dataset.payerSource){const m=billingPayerSources.find(m=>m.source_history_id===b.dataset.payerSource);if(m.native_id)payerEditor(billingPayers.find(p=>p.id===m.native_id));else payerEditor(null,m);return;}if(b.dataset.payerEdit){payerEditor(billingPayers.find(p=>p.id===b.dataset.payerEdit));return;}
  if(b.dataset.payerOpen){const p=billingPayers.find(p=>p.id===b.dataset.payerOpen),h=await api(`/api/v1/billing/payers/${p.id}/history`);$('payer-editor').innerHTML=`<h3>${esc(p.content.name)}</h3><p class="note-text">${esc(p.content.address)}</p>${me.role==='owner'?`<button type="button" data-payer-edit="${p.id}">Edit payer</button>`:''}<h3>Payer history</h3>${h.items.map(r=>`<details class="amendment"><summary>v${r.version} · ${esc(r.reason)} · ${esc(date(r.created_at))}</summary><pre class="billing-source">${esc(JSON.stringify(r.snapshot.content,null,2))}</pre></details>`).join('')}`;return;}
- if(b.dataset.billingPatient){const identity=me;await showClinical();if(me!==identity)return;await selectPatient(b.dataset.billingPatient,null);if(me!==identity||selected!==b.dataset.billingPatient)return;await openEncounterBillingAccount(b.dataset.account);return;}
+ if(b.dataset.billingPatient){const identity=me;if(me!==identity)return;await selectPatient(b.dataset.billingPatient,null);if(me!==identity||selected!==b.dataset.billingPatient)return;await openEncounterBillingAccount(b.dataset.account);return;}
  if(b.hasAttribute('data-new-coverage')){coverageEditor();return;}if(b.dataset.coverageOpen){await coverageDetail(b.dataset.coverageOpen);return;}if(b.dataset.editCoverage){coverageEditor(workspace.billing.coverages.find(c=>c.id===b.dataset.editCoverage));return;}
- if(b.hasAttribute('data-new-billing')){if(typeof openEncounterCharges==='function'&&typeof activeVisit!=='undefined'&&activeVisit)openEncounterCharges();else accountEditor();return;}if(b.dataset.billOpen){captureBillingChargeDraft();await openEncounterBillingAccount(b.dataset.billOpen);billingEditorHost()?.replaceChildren();return;}if(b.hasAttribute('data-edit-bill')){accountEditor(workspace.billing.accounts.find(a=>a.id===billingSelected));return;}
+ if(b.hasAttribute('data-new-billing')){if(typeof openEncounterCharges==='function'&&typeof activeVisit!=='undefined'&&activeVisit)openEncounterCharges();else accountEditor();return;}if(b.dataset.billOpen){captureBillingChargeDraft();await openEncounterBillingAccount(b.dataset.billOpen);billingEditorHost()?.replaceChildren();return;}if(b.hasAttribute('data-edit-bill')){
+  const detail=b.closest('#encounter-billing-detail')?.closest('dialog.chart-record-sheet');
+  if(detail)sheetClose(detail);
+  accountEditor(workspace.billing.accounts.find(a=>a.id===billingSelected));
+  if(detail&&typeof encounterCodesEditorOpen==='function')encounterCodesEditorOpen();
+  return;
+ }
  if(b.hasAttribute('data-build-patient-invoice')){patientInvoiceEditor();return;}
  if(b.hasAttribute('data-patient-invoices')){await showPatientInvoices();return;}
  if(b.hasAttribute('data-print-patient-invoice')){$('patient-invoice-frame').contentWindow.focus();$('patient-invoice-frame').contentWindow.print();return;}
@@ -1629,7 +1729,7 @@ document.addEventListener('click',e=>{const b=e.target.closest('button');if(!b||
   }
   // The search label is only for display. Coverage records identify the insurer by payer_id.
   delete data.payer_name;
-  const reason=data.reason;delete data.reason;if(!data.status)data.status='active';data.subscriber_birth_date=data.subscriber_birth_date||null;data.end_date=data.end_date||null;data.copay_cents=cents(data.copay,true);delete data.copay;const body={content:data,reason};if(!f.dataset.id){body.request_id=f.dataset.request;body.source_history_id=f.dataset.source||null;}await api(`/api/v1/patients/${selected}/coverages${f.dataset.id?'/'+f.dataset.id:''}`,f.dataset.id?'PUT':'POST',body,f.dataset.id?Number(f.dataset.version):undefined);}
+  const reason=data.reason;delete data.reason;if(!data.status)data.status='active';data.subscriber_birth_date=data.subscriber_birth_date||null;data.end_date=data.end_date||null;data.copay_cents=cents(data.copay,true);delete data.copay;const body={content:data,reason};if(!f.dataset.id){body.request_id=f.dataset.request;body.source_history_id=f.dataset.source||null;}await api(`/api/v1/patients/${f.dataset.patient||selected}/coverages${f.dataset.id?'/'+f.dataset.id:''}`,f.dataset.id?'PUT':'POST',body,f.dataset.id?Number(f.dataset.version):undefined);}
   // A record from the previous system still becomes a draft through one reviewed step; the
  // reason and the acknowledgement travel with it. Editing a draft saves itself.
  if(f.id==='billing-account-form'){
@@ -1642,7 +1742,12 @@ document.addEventListener('click',e=>{const b=e.target.closest('button');if(!b||
   billingChargeSaved(f,a,submitted);billingSelected=a.id;
  }
  if(f.id==='billing-account-action'){const a=workspace.billing.accounts.find(a=>a.id===(f.dataset.account||billingSelected));if(!data.action)throw new Error('Choose the action to record.');data.local_only=data.local_only==='true';await api(`${billingBase()}/${a.id}/actions`,'POST',data,a.version);}
- if(f.id==='billing-ledger-form'){const a=workspace.billing.accounts.find(a=>a.id===billingSelected);const body=f.dataset.reverses?{request_id:f.dataset.request,kind:'reversal',amount_cents:null,reverses_id:f.dataset.reverses,party:'other',method:'none',reference:'',occurred_on:data.occurred_on,reason:data.reason}:{request_id:f.dataset.request,kind:data.kind,amount_cents:cents(data.amount),reverses_id:null,party:data.party,method:data.method,reference:data.reference,occurred_on:data.occurred_on,reason:data.reason};await api(`${billingBase()}/${a.id}/entries`,'POST',body,a.version);}
+ if(f.id==='billing-ledger-form'){
+  const a=workspace.billing.accounts.find(a=>a.id===(f.dataset.account||billingSelected));
+  if(!a||f.dataset.account&&(f.revenueIdentity!==me||f.dataset.patient!==selected||f.dataset.visit!==activeVisit?.id||a.content.visit_id!==f.dataset.visit||Number(f.dataset.version)!==a.version))
+   throw new Error('The billing record changed. Reopen the payment history and review it before saving.');
+  const body=f.dataset.reverses?{request_id:f.dataset.request,kind:'reversal',amount_cents:null,reverses_id:f.dataset.reverses,party:'other',method:'none',reference:'',occurred_on:data.occurred_on,reason:data.reason}:{request_id:f.dataset.request,kind:data.kind,amount_cents:cents(data.amount),reverses_id:null,party:data.party,method:data.method,reference:data.reference,occurred_on:data.occurred_on,reason:data.reason};await api(`${billingBase()}/${a.id}/entries`,'POST',body,a.version);}
+ if(f.dataset.insuranceSheet){sheetClose(f.closest('dialog'));if(typeof scheduleRefreshAfter==='function'&&typeof scheduleState!=='undefined'){const appointment=scheduleState?.appointments?.find(a=>a.patient_id===f.dataset.patient&&a.id===scheduleSelected);if(appointment)await scheduleRefreshAfter(appointment);}if(selected===f.dataset.patient)await selectPatient(selected,activeVisit?.id);notice('Insurance saved.');return;}
  await selectPatient(selected,activeVisit?.id);showChartSection(returnSection==='insurance'?'insurance':returnSection==='visits'?'visits':'billing');if(returnSection==='visits'&&typeof showEncounterSection==='function')showEncounterSection('charges');notice(f.id==='billing-account-form'?'Charges saved.':f.id==='billing-account-action'?(data.action==='void'?'Charges removed.':'Charges posted.'):f.id==='billing-ledger-form'?'Payment or adjustment saved.':f.id==='coverage-payer-form'?'Insurer saved.':'Insurance saved.');});});
 // A code that names an injected drug shows its NDC fields inside the row as it is typed; any other code hides them unless they already hold something.
 document.addEventListener('input',event=>{
@@ -1651,6 +1756,7 @@ document.addEventListener('input',event=>{
  const typed=String(row.querySelector('[name="procedure"]')?.value||'').split(':')[0],code=event.target.name==='procedure'?typed:row.querySelector('[name="code"]')?.value||typed;
  const drug=row.querySelector('.charge-drug');if(drug){const kept=[...drug.querySelectorAll('input,select')].some(field=>field.value);drug.hidden=!chargeIsDrugCode(code)&&!kept;}
 });
+document.addEventListener('change',e=>{const field=e.target;if(field.name==='coverage_id'&&field.form?.id==='billing-account-form')chargeTableTotals(field.form);});
 document.addEventListener('change',e=>{const select=e.target.closest('#billing-filter select[name="status"]');if(!select)return;run(()=>showBillingQueue(select.value,undefined,true));});
 
 const accountDiagnosisLinkDrafts=new Map(),accountDiagnosisLinkBaselines=new WeakMap(),accountDiagnosisLinkPending=new Set();let accountDiagnosisLinkGeneration=0;
@@ -1671,11 +1777,11 @@ function accountDiagnosisEditorMarkup(a,data,patient){
 let accountDiagnosisLinkReview;
 async function editAccountDiagnosisLinks(){
  captureAccountDiagnosisLinkDraft();
- const patient=selected,old=workspace.billing.accounts.find(row=>row.id===billingSelected),host=$('billing-editor'),account=me,generation=++accountDiagnosisLinkGeneration;
+ const patient=selected,old=workspace.billing.accounts.find(row=>row.id===billingSelected),host=billingEditorHost(),account=me,generation=++accountDiagnosisLinkGeneration;
  if(!old?.content.visit_id||old.status!=='draft'||!billingCan())return;
- if(host.querySelector?.('form:not(#account-diagnoses-form)')&&!await confirmAction('Unsaved entries in the open billing form will be lost.',{title:'Open diagnosis linking?',confirmLabel:'Replace editor',tone:'danger'}))return;
+ if(host?.querySelector?.('form:not(#account-diagnoses-form)')&&!await confirmAction('Unsaved entries in the open billing form will be lost.',{title:'Open diagnosis linking?',confirmLabel:'Replace editor',tone:'danger'}))return;
  const [list,data]=await Promise.all([api(`/api/v1/patients/${patient}/billing`),api(`/api/v1/visits/${old.content.visit_id}/diagnoses`)]);
- if(selected!==patient||billingSelected!==old.id||$('billing-editor')!==host||me!==account||generation!==accountDiagnosisLinkGeneration)return;
+ if(selected!==patient||billingSelected!==old.id||billingEditorHost()!==host||me!==account||generation!==accountDiagnosisLinkGeneration)return;
  captureAccountDiagnosisLinkDraft();const a=list.accounts.find(row=>row.id===old.id);
  if(a&&a.status!=='draft'){openBillingEditor(accountDiagnosisSummary(a.diagnosis_snapshot)+accountDiagnosisDraftRecovery(a));return;}
  if(!a||a.content.visit_id!==old.content.visit_id)throw new Error('Account changed. Reload the patient chart before linking diagnoses.');
@@ -1783,3 +1889,79 @@ function showPatientInvoice(invoice){
  openBillingEditor('<div class="section-head"><h3>Patient invoice</h3><button type="button" data-print-patient-invoice>Print / save PDF</button></div><p class="muted">Saved copy of the invoice. Nothing was emailed, charged or submitted to insurance.</p><div id="patient-invoice-preview"></div>');
  const frame=document.createElement('iframe');frame.id='patient-invoice-frame';frame.title='Patient invoice print preview';frame.className='avs-print-frame';frame.setAttribute('sandbox','allow-same-origin allow-modals');frame.srcdoc=patientInvoiceDocument(invoice);$('patient-invoice-preview').append(frame);
 }
+
+// Finish the current table before a note refresh can replace it. A failed or incomplete
+// save never permits an older saved account to be posted in its place.
+async function flushVisitNoteCharges({allowUnpriced=false}={}){
+ const form=$('billing-account-form');if(!form)return;
+ const patient=selected,identity=me,id=activeVisit?.id;
+ clearTimeout(form.chargeSaveTimer);
+ for(let count=0;form.dataset.chargeSaving&&count<200;count++)await new Promise(resolve=>setTimeout(resolve,30));
+ if(selected!==patient||me!==identity||activeVisit?.id!==id)throw new Error('This page changed. Open the encounter again.');
+ if(form.dataset.chargeSaving)throw new Error('Charges are still saving. Wait, then try again.');
+ // The initial empty row is a convenience, not a service to post.
+ if(!chargeLiveRows(form).some(row=>row.querySelector('[name="code"]')?.value.trim())){
+  if(encounterChargeAccount()?.content?.lines?.length){
+   if($('visit-page-host')?.dataset?.encounterOnePage!==undefined&&typeof openEncounterCoding==='function')openEncounterCoding();
+   else{setEncounterSection('charges');if(typeof visitReviewOpen==='function')visitReviewOpen();}
+   throw new Error('No procedures are selected. Check Coding before posting charges.');
+  }
+  return;
+ }
+ if(form.dataset.mode==='correction'||form.dataset.draftReadOnly)return;
+ const waiting=chargeTableWaiting(form);
+ const unpriced=allowUnpriced&&!form.dataset.chargeConflict&&!form.dataset.draftStale&&chargeLiveRows(form).every(row=>!chargeRowUnsavable(row)||chargeRowUnsavable(row)==='add the amount');
+ if(!unpriced&&(waiting||form.dataset.chargeConflict||form.dataset.draftStale)){
+  if($('visit-page-host')?.dataset?.encounterOnePage!==undefined&&typeof openEncounterCoding==='function')openEncounterCoding();
+  else{setEncounterSection('charges');if(typeof visitReviewOpen==='function')visitReviewOpen();}
+  throw new Error(waiting||'Review the charge changes before billing.');
+ }
+ await saveChargeTable(form);
+ if(form.dataset.chargeSaveState==='error'||(!unpriced&&chargeTableWaiting(form)))throw new Error(form.querySelector('[data-charge-status]')?.textContent||'The charges could not be saved.');
+ return unpriced&&!!chargeTableWaiting(form);
+}
+function focusUnpricedVisitCharge(){
+ const inline=$('visit-page-host')?.dataset?.encounterOnePage!==undefined;
+ if(inline&&typeof encounterStepOpen==='function')encounterStepOpen(6,false);
+ else{
+  setEncounterSection('charges');
+  if(typeof visitReviewRestore==='function')visitReviewRestore();
+  if(typeof encounterCodesEditorOpen==='function')encounterCodesEditorOpen();
+  if(typeof billingPartSet==='function')billingPartSet('codes',false);
+  if(typeof encounterStepOpen==='function')encounterStepOpen(3,false);
+ }
+ const form=$('billing-account-form');if(!form)return;
+ if(typeof encounterStepOpen==='function')encounterStepOpen(1,false);
+ for(const row of chargeLiveRows(form)){
+  if(chargeRowUnsavable(row)!=='add the amount')continue;
+  const field=row.querySelector('[name="amount"]');
+  let warning=row.nextElementSibling;
+  if(!warning?.hasAttribute('data-sign-price-row')){warning=document.createElement('tr');warning.dataset.signPriceRow='';const cell=document.createElement('td');cell.colSpan=row.cells.length;warning.append(cell);row.after(warning);}
+  let message=warning.querySelector('[data-sign-price-needed]');
+  if(!message){message=document.createElement('p');message.dataset.signPriceNeeded='';message.className='notice error';warning.firstElementChild.append(message);}
+  message.textContent=inline&&typeof encounterStepSummary==='function'&&encounterStepSummary().insurance?.insured===false?'Add the amount for this line before posting charges.':'Add the amount for this line before sending.';
+  field?.scrollIntoView?.({block:'center'});field?.focus?.({preventScroll:true});break;
+ }
+}
+
+
+async function openPatientInsuranceSheet(patientId,encounterVisitId){
+ const identity=me;
+ const current=()=>me===identity&&billingCan('create')&&(!encounterVisitId||selected===patientId&&activeVisit?.id===encounterVisitId&&chartSection==='visits');
+ if(!current())return;
+ const [patient,payers]=await Promise.all([api(`/api/v1/patients/${encodeURIComponent(patientId)}`),api('/api/v1/billing/payers')]);
+ if(!current())return;
+ if(patient?.id!==patientId)throw new Error('The patient record changed. Open Add insurance again.');
+ billingPayers=payers.items;coverageEditor(null,null,{sheet:true,patient});
+}
+document.addEventListener('click',event=>{
+ const button=event.target.closest?.('[data-add-insurance-sheet]');if(!button)return;
+ event.preventDefault();
+ const fromEncounter=button.closest('#visit-page-host');
+ const patient=button.dataset.addInsuranceSheet||selected,visit=fromEncounter?activeVisit?.id:null;
+ if(fromEncounter&&(!visit||patient!==selected))return;
+ run(()=>openPatientInsuranceSheet(patient,visit));
+});
+
+
+document.addEventListener('input',event=>{if(event.target.name!=='amount')return;const row=event.target.closest?.('.billing-charge-row');if(row?.nextElementSibling?.hasAttribute('data-sign-price-row'))row.nextElementSibling.remove();});

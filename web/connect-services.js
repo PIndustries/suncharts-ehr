@@ -14,7 +14,7 @@ function applyConnectionStatus(data,identity){
  connectionStatusSnapshot=data;
  for(const card of document.querySelectorAll?.('[data-connect-summary]')||[])card.outerHTML=connectStatusCard(data);
  const badge=$('shell-connect-status'),label=$('shell-connect-label');
- if(badge&&label){badge.setAttribute('data-state',data.status);const text='SunCharts: '+(connectionStates[data.status]||'Status unavailable');if(label.textContent!==text)label.textContent=text;badge.title='Connection to '+(data.origin||'SunCharts Connect')+(data.transport?.configured?' · Outbound secure connection · '+(data.transport.last_seen_at?'Last contact '+date(data.transport.last_seen_at):'Waiting for connection'):(data.services?.last_verified_at?' · Last verified '+date(data.services.last_verified_at):' · Open connection details'));}
+ if(badge&&label){badge.hidden=data.status==='connected';badge.setAttribute('data-state',data.status);const text='SunCharts: '+(connectionStates[data.status]||'Status unavailable');if(label.textContent!==text)label.textContent=text;badge.title='Connection to '+(data.origin||'SunCharts Connect')+(data.transport?.configured?' · Outbound secure connection · '+(data.transport.last_seen_at?'Last contact '+date(data.transport.last_seen_at):'Waiting for connection'):(data.services?.last_verified_at?' · Last verified '+date(data.services.last_verified_at):' · Open connection details'));}
  return data;
 }
 function clearConnectionStatusSession(){
@@ -33,7 +33,7 @@ function startConnectionStatusEvents(identity){
   if(me!==identity||connectionEventSource!==source){source.close();return;}
   // Loss of the browser health feed is not proof of an EHR/cloud disconnect.
   const badge=$('shell-connect-status'),label=$('shell-connect-label');
-  if(badge&&label){badge.setAttribute('data-state','unknown');label.textContent='SunCharts: Checking connection';}
+  if(badge&&label){badge.hidden=false;badge.setAttribute('data-state','unknown');label.textContent='SunCharts: Checking connection';}
   for(const card of document.querySelectorAll?.('[data-connect-summary]')||[])card.outerHTML=connectStatusCard(null);
  };
 }
@@ -47,7 +47,7 @@ async function refreshConnectionBadge(live=false){
   startConnectionStatusEvents(identity);
   return applyConnectionStatus(data,identity);
  }catch(error){
-  if(me===identity){const badge=$('shell-connect-status'),label=$('shell-connect-label');if(badge&&label){badge.setAttribute('data-state','unknown');label.textContent='SunCharts: Status unavailable';}}
+  if(me===identity){const badge=$('shell-connect-status'),label=$('shell-connect-label');if(badge&&label){badge.hidden=false;badge.setAttribute('data-state','unknown');label.textContent='SunCharts: Status unavailable';}}
   if(me===identity)for(const card of document.querySelectorAll?.('[data-connect-summary]')||[])card.outerHTML=connectStatusCard(null);
   if(live)throw error;return null;
  }

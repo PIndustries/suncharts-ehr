@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 'use strict';
+require('./chart_test_context.cjs');
 const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
 // Staff display helpers load before every feature script, exactly as index.html loads them.
 {const createContext=vm.createContext;vm.createContext=(...args)=>{const context=createContext(...args);vm.runInContext(require('fs').readFileSync('web/display-format.js','utf8'),context);return context;};}
@@ -19,13 +20,26 @@ let bannerPaints=0;ctx.renderPatientBanner=()=>{bannerPaints++;};
 const change=id=>handlers.change.forEach(fn=>fn({target:{id:'insurance-appointment',value:id}}));
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
 const count=(s,needle)=>s.split(needle).length-1;
+const opened=[];
+ctx.openInsuranceCopayModal=options=>{opened.push(options);return true;};
+function openCopay(appointment,patient='patient'){
+ const button={dataset:{insuranceCopayCollect:appointment,patient},hasAttribute:()=>false};
+ const event={target:{closest:selector=>selector==='button'?button:null},preventDefault(){}};
+ for(const handler of handlers.click)handler(event);
+}
 (async()=>{
  ctx.workspace.billing.coverages.push({...coverage,id:'secondary',content:{...coverage.content,priority:'secondary',member_id:'SECONDARY-PLAN'}},{...coverage,id:'tertiary',content:{...coverage.content,priority:'tertiary',member_id:'TERTIARY-PLAN'}},{...coverage,id:'old-coverage',content:{...coverage.content,end_date:'2025-01-01',member_id:'PRIOR-PLAN'}});
  ctx.renderPatientInsurance();await tick();
  let html=node('insurance-workspace').innerHTML;
- // The Insurance tab holds insurance only: no appointment steps, copay or encounter actions.
- assert(html.indexOf('SECONDARY-PLAN')<html.indexOf('Inactive &amp; prior coverage'));assert(html.indexOf('TERTIARY-PLAN')<html.indexOf('Inactive &amp; prior coverage'));assert(html.indexOf('PRIOR-PLAN')>html.indexOf('Inactive &amp; prior coverage'));
- assert.match(html,/<h2>Insurance</);assert.match(html,/Plans on file/);assert.doesNotMatch(html,/Collect copay|Start the encounter|insurance-workflow-stages|data-visit=|data-record-copay|insurance-hosted-copay/,'copay and encounter actions live with the appointment and the encounter, not on the Insurance tab');
+ // The chart has one scoped entry and keeps tender controls inside the payment window.
+ assert(html.indexOf('SECONDARY-PLAN')<html.indexOf('PRIOR-PLAN'));assert(html.indexOf('TERTIARY-PLAN')<html.indexOf('PRIOR-PLAN'));
+ assert.match(html,/>Insurance &amp; copay<\/h2>/);
+ assert.equal(count(html,'data-insurance-copay-collect='),1);
+ assert.match(html,/data-insurance-copay-collect="appointment-old" data-patient="patient"/);
+ assert.doesNotMatch(html,/Start the encounter|data-visit=|data-record-copay|data-reader-copay|data-saved-card-copay|data-collect-card-copay|insurance-page-hosted-copay/);
+ const oldReadout=ctx.insuranceCopayReadout(ctx.insuranceCopayContext(old),ctx.hostedCopayStateFor(old.id));
+ assert.equal(oldReadout.action,'Review payment');
+ assert.equal(oldReadout.amount,'$23.11 payment pending');
  // Before an encounter exists the appointment's copay is on the Encounters tab; once it exists, in its Billing.
  assert.ok(bannerPaints>0,'the banner is repainted with the insurance workspace');
  let panel=ctx.hostedCopayMarkup(ctx.hostedCopayStateFor(old.id));
@@ -35,16 +49,64 @@ const count=(s,needle)=>s.split(needle).length-1;
  assert.equal(ctx.hostedCopayStateFor(old.id).items.length,1,'server response items remain filtered to the exact selected appointment');
  change(next.id);await tick();html=node('insurance-workspace').innerHTML;
  assert.doesNotMatch(html,/data-visit="signed-visit"|data-insurance-check-in/);
- assert.match(html,/2026|Nov/,'eligibility names the visit date it checks');
+ openCopay(old.id);openCopay(next.id,'previous-patient');
+ assert.equal(opened.length,0);
+ openCopay(next.id);
+ assert.equal(opened.length,1);
+ assert.equal(opened[0].appointment,next.id);
+ assert.equal(opened[0].identity,ctx.me);
+ assert.equal(opened[0].due,2311);
+ assert.equal(opened[0].coverage,'coverage');
+ assert.equal(opened[0].canCollect,true);
+ ctx.billingCan=()=>false;ctx.renderPatientInsurance();openCopay(next.id);
+ assert.equal(opened.at(-1).canCollect,false);
+ ctx.billingCan=()=>true;
+ const collectScope=opened[0],available={items:[],availability:{available:true}};
+ assert.equal(ctx.insuranceCopayTenderAvailable(collectScope,'cash',available),true);
+ next.status='cancelled';
+ assert.equal(ctx.insuranceCopayTenderAvailable(collectScope,'cash',available),false,'an already-open window respects a newly cancelled appointment');
+ assert.equal(ctx.insuranceCopayReadout(ctx.insuranceCopayContext(next),available).action,'View payments');
+ next.status='booked';
+ ctx.workspace.patient={archived:true};
+ assert.equal(ctx.insuranceCopayTenderAvailable(collectScope,'cash',available),false,'an already-open window respects a newly archived patient');
+ ctx.workspace.patient.archived=false;
+
  assert.equal(ctx.activeVisit,signed,'insurance selection does not relabel or replace the selected clinical encounter');
  assert.equal(signed.note.subjective,'Immutable synthetic original');
  assert.equal(ctx.revenueAppointment().id,next.id);assert.equal(ctx.revenueServiceDate(ctx.revenueAppointment()),'2026-11-12');
  assert(calls.some(([url])=>url.includes('/appointments/appointment-next/copay-checkouts')));
  assert(calls.every(([,method])=>method==='GET'),'viewing/changing the appointment must not create or reconcile a payment');
+ ctx.resetInsuranceCopayAppointment(ctx.selected,signed,{...signed,version:2});
+ assert.equal(ctx.revenueAppointment().id,next.id,'a refresh of the same encounter retains an explicit appointment choice');
+ change(old.id);
+ const nextVisit={...signed,id:'next-visit',appointment_id:next.id};
+ ctx.resetInsuranceCopayAppointment(ctx.selected,signed,nextVisit);
+ ctx.activeVisit=nextVisit;ctx.renderPatientInsurance();
+ assert.equal(ctx.revenueAppointment().id,next.id,'switching chart encounters uses its linked appointment over the previous selection');
+ assert.match(node('insurance-workspace').innerHTML,/data-insurance-copay-collect="appointment-next"/);
+ const unlinked={...nextVisit,id:'visit-without-appointment',appointment_id:null};
+ ctx.resetInsuranceCopayAppointment(ctx.selected,nextVisit,unlinked);
+ ctx.activeVisit=unlinked;ctx.renderPatientInsurance();
+ assert.equal(ctx.revenueAppointment(),undefined);
+ assert.match(node('insurance-workspace').innerHTML,/Choose an appointment/);
+ assert.doesNotMatch(node('insurance-workspace').innerHTML,/data-insurance-copay-collect|For the visit on/);
+ const beforeUnlinked=opened.length;
+ openCopay(next.id);assert.equal(opened.length,beforeUnlinked,'a stale launcher cannot collect for a different booking');
+ change(old.id);openCopay(old.id);assert.equal(opened.at(-1).appointment,old.id,'an explicit appointment selection remains available');
+ ctx.resetInsuranceCopayAppointment(ctx.selected,unlinked,signed);
+ ctx.activeVisit=signed;change(next.id);
  // Verified old-appointment receipt must not appear under the new appointment.
  const receipt={id:'receipt-old',appointment_id:old.id,amount_cents:2311,allocated_cents:0,reversed_cents:0,voided:false,occurred_on:'2026-11-12',method:'external',hosted_checkout:{id:pending.id,status:'paid',livemode:false,refunded_cents:0}};
  ctx.workspace.billing.copays=[receipt];const oldState=ctx.hostedCopayStateFor(old.id);oldState.items=[{...pending,status:'paid',receipt_id:receipt.id,checkout_url:null}];
  const nextState=ctx.hostedCopayStateFor(next.id);nextState.items=[];
+ const payment=ctx.insuranceCopayContext(old);
+ assert.equal(payment.due,0);
+ assert.equal(payment.paid,2311);
+ assert.equal(ctx.insuranceCopayReadout(payment,oldState).action,'View payments');
+ const partial={...receipt,amount_cents:1000,cash_refunded_cents:200,hosted_checkout:null};
+ ctx.workspace.billing.copays=[partial];
+ assert.equal(ctx.insuranceCopayContext(old).due,1511,'a cash refund restores only the refunded portion of the copay');
+ ctx.workspace.billing.copays=[receipt];
  assert.doesNotMatch(ctx.hostedCopayMarkup(nextState),/receipt-old|23\.11/);
  change(old.id);await tick();panel=ctx.hostedCopayMarkup(oldState);
  assert.equal(count(panel,'data-copay-receipt="receipt-old"'),1);assert.equal(count(panel,'View / print receipt'),1);assert.match(panel,/class="primary" data-copay-receipt/);

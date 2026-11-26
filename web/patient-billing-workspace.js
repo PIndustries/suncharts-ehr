@@ -33,8 +33,9 @@ async function restorePatientBillingRoute(route){
 }
 function patientBillingShell(s){
  const patient=s.patient;
+ const practice=s.surface==='global'&&!s.patientId;
  const selector=s.surface==='global'&&s.patientId?'<p class="patient-billing-back"><button type="button" class="text-button" data-hub-all>← All patients</button></p>':s.surface==='global'?`<section class="patient-billing-selector" aria-label="Choose patient"><form id="billing-patient-search-form"><label for="billing-patient-search">Find a patient</label><div class="patient-billing-search-row"><input id="billing-patient-search" name="q" type="search" maxlength="100" autocomplete="off" placeholder="Name or medical record number"><button type="submit">Search</button>${s.patientId?'<button type="button" data-hub-all>All patients</button>':''}</div></form><div id="billing-patient-results" aria-live="polite"></div></section>`:'';
- return `<header class="patient-billing-header"><div><p class="chart-record-label">PATIENT BILLING</p><h2 id="patient-billing-heading">${esc((s.patientId&&!patient?'Selected patient':patientBillingName(patient)))}</h2><p id="patient-billing-context">${s.patientId?(patient?`MRN ${esc(patient.mrn)}${patient.archived?' · Archived patient':''}`:'Loading selected patient…'):'Practice overview · choose a patient to manage their billing'}</p></div><div class="actions">${s.surface==='global'?'<button type="button" data-hub-tools>Practice billing tools</button>':''}${me.role==='owner'?'<button type="button" data-payment-settings>Practice payment settings</button>':''}</div></header>${selector}<nav class="patient-billing-tabs" role="tablist" aria-label="Patient billing">${patientBillingTabs.map(([key,label])=>`<button type="button" id="patient-billing-tab-${key}" role="tab" aria-controls="patient-billing-panel" aria-selected="${s.tab===key}" tabindex="${s.tab===key?0:-1}" data-hub-tab="${key}">${label}</button>`).join('')}</nav><div class="patient-billing-scope" ${['methods','subscriptions'].includes(s.tab)?'hidden':''}><label>Showing<select id="patient-billing-mode"><option value="recorded" ${s.mode==='recorded'?'selected':''}>Live payments</option><option value="test" ${s.mode==='test'?'selected':''}>Test payments</option></select></label></div><section id="patient-billing-panel" role="tabpanel" aria-labelledby="patient-billing-tab-${s.tab}" aria-live="polite"><p role="status">Loading billing records…</p></section><section id="patient-billing-preview" aria-live="polite" hidden></section>`;
+ return `${s.surface==='chart'?chartListHeader('Billing & payments',billingCan('create')?'<button type="button" class="primary" data-chart-payment>Take payment</button>':'','<button type="button" data-hub-tools>Practice billing tools</button>'+(me.role==='owner'?'<button type="button" data-payment-settings>Practice payment settings</button>':'')):''}${practice?`<div class="section-head"><div><h2>Billing</h2>${typeof billingClaimShortcuts==='function'?billingClaimShortcuts():''}</div>${typeof billingPageMore==='function'?billingPageMore():''}</div>`:''}${s.surface==='global'&&!practice?`<header class="patient-billing-header"><div><p class="chart-record-label">PATIENT BILLING</p><h2 id="patient-billing-heading">${esc((s.patientId&&!patient?'Selected patient':patientBillingName(patient)))}</h2><p id="patient-billing-context">${s.patientId?(patient?`MRN ${esc(patient.mrn)}${patient.archived?' · Archived patient':''}`:'Loading selected patient…'):'Practice overview · choose a patient to manage their billing'}</p></div><div class="actions">${s.surface==='global'?'<button type="button" data-hub-tools>Practice billing tools</button>':''}${me.role==='owner'?'<button type="button" data-payment-settings>Practice payment settings</button>':''}</div></header>`:''}${selector}<nav class="patient-billing-tabs" role="tablist" aria-label="Patient billing">${patientBillingTabs.map(([key,label])=>`<button type="button" id="patient-billing-tab-${key}" role="tab" aria-controls="patient-billing-panel" aria-selected="${s.tab===key}" tabindex="${s.tab===key?0:-1}" data-hub-tab="${key}">${label}</button>`).join('')}</nav><div class="patient-billing-scope" ${['methods','subscriptions'].includes(s.tab)?'hidden':''}><label>Payment records<select id="patient-billing-mode"><option value="recorded" ${s.mode==='recorded'?'selected':''}>Live payments</option><option value="test" ${s.mode==='test'?'selected':''}>Test payments</option></select></label></div><section id="patient-billing-panel" role="tabpanel" aria-labelledby="patient-billing-tab-${s.tab}" aria-live="polite"><p role="status">Loading billing records…</p></section><section id="patient-billing-preview" aria-live="polite" hidden></section>`;
 }
 function patientBillingState(host,surface,options={}){
  const previous=patientBillingWorkspace?.identity===me?patientBillingWorkspace:null;
@@ -44,7 +45,7 @@ function patientBillingState(host,surface,options={}){
   patient:surface==='chart'?workspace.patient:options.patient|| (same?previous.patient:null),
   tab:patientBillingTabs.some(([key])=>key===options.tab)?options.tab:same?previous.tab:'overview',
   mode:['recorded','test'].includes(options.mode)?options.mode:same?previous.mode:'recorded',
-  modeAuto:!['recorded','test'].includes(options.mode)&&!same,
+  modeAuto:surface!=='chart'&&!['recorded','test'].includes(options.mode)&&!same,
   accountsAfter:options.accountsAfter||null,copaysAfter:options.copaysAfter||null,invoicesAfter:options.invoicesAfter||null,paymentsAfter:options.paymentsAfter||null,
   planTargetId:options.planId||null,native:null,profile:null,profileCursors:{},searchRequest:0,panelRequest:0,profileRequest:0};
 }
@@ -78,12 +79,64 @@ function patientBillingQuery(s,extra={}){
 }
 async function patientBillingNative(s){
  if(s.native)return s.native;
+ const mode=s.mode,request=s.panelRequest;
+ const current=()=>patientBillingCurrent(s)&&s.mode===mode&&s.panelRequest===request;
  const q=patientBillingQuery(s);
- if(s.accountsAfter)q.set('accounts_after',s.accountsAfter);
+ if(s.surface!=='chart'&&s.accountsAfter)q.set('accounts_after',s.accountsAfter);
  if(s.copaysAfter)q.set('copays_after',s.copaysAfter);
  const data=await api('/api/v1/billing/overview?'+q);
- if(!patientBillingCurrent(s))return null;
+ if(!current())return null;
  if(s.patientId&&data.patient?.id!==s.patientId)throw new Error('The returned billing records do not match the selected patient.');
+ if(s.surface==='chart'){
+  const rows=[...data.accounts.items];let after=data.accounts.next_cursor;
+  while(after){
+   const page=await api('/api/v1/billing/overview?'+patientBillingQuery(s,{accounts_after:after}));
+   if(!current())return null;
+   if(page.patient?.id!==s.patientId)throw new Error('The returned billing records do not match the selected patient.');
+   rows.push(...page.accounts.items);after=page.accounts.next_cursor;
+  }
+  // Totals remain scoped to the selected payment mode, before adding chart history.
+  data.summary.accounts.insurance_pending_cents=rows.reduce((sum,row)=>sum+(row.insurance_pending_cents||0),0);
+  if(mode==='test')for(const row of rows)row.test_activity=true;
+  if(mode==='recorded'){
+   let testAfter=null;
+   do{
+    const extra={mode:'test'};if(testAfter)extra.accounts_after=testAfter;
+    const page=await api('/api/v1/billing/overview?'+patientBillingQuery(s,extra));
+    if(!current())return null;
+    if(page.patient?.id!==s.patientId)throw new Error('The returned billing records do not match the selected patient.');
+    for(const row of page.accounts.items){
+     const existing=rows.find(item=>item.id===row.id);
+     if(existing)existing.test_activity=true;else rows.push({...row,test_activity:true});
+    }
+    testAfter=page.accounts.next_cursor;
+   }while(testAfter);
+  }
+  rows.sort((a,b)=>String(b.service_date||b.created_at||'').localeCompare(String(a.service_date||a.created_at||''))||String(b.id).localeCompare(String(a.id)));
+  const first=s.accountsAfter?Math.max(0,rows.findIndex(row=>row.id===s.accountsAfter)+1):0;
+  data.accounts={items:rows.slice(first,first+50),next_cursor:rows.length>first+50?rows[first+49].id:null};
+  // Receipts carry the recorded method; history also includes account and installment payments.
+  const receipts=[...data.copays.items];after=data.copays.next_cursor;
+  while(after){
+   const page=await api('/api/v1/billing/overview?'+patientBillingQuery(s,{copays_after:after}));
+   if(!current())return null;
+   if(page.patient?.id!==s.patientId)throw new Error('The returned billing records do not match the selected patient.');
+   receipts.push(...page.copays.items);after=page.copays.next_cursor;
+  }
+  s.receipts=receipts;
+  s.claims=null;
+  if(patientBillingAllowed('claims'))try{
+   const claims=[];after=null;
+   do{
+    const query=new URLSearchParams({patient_id:s.patientId});if(after)query.set('after',after);
+    const page=await api('/api/v1/billing/claims?'+query);
+    if(!current())return null;
+    claims.push(...page.items);after=page.next_cursor;
+   }while(after);
+   s.claims=claims;
+  }catch{/* A restricted or unavailable claim stays explicitly unavailable. */}
+ }
+ if(!current())return null;
  // A practice that has only taken test payments has no live clinic records yet. Open on the
  // test view the first time instead of an empty page; an explicit choice is never overridden.
  if(s.modeAuto){
@@ -92,7 +145,7 @@ async function patientBillingNative(s){
   if(s.mode==='recorded'&&empty(data)){
    const sandboxQuery=new URLSearchParams({mode:'test'});if(s.patientId)sandboxQuery.set('patient_id',s.patientId);
    const sandbox=await api('/api/v1/billing/overview?'+sandboxQuery).catch(()=>null);
-   if(!patientBillingCurrent(s))return null;
+   if(!current())return null;
    if(sandbox&&!empty(sandbox)&&(!s.patientId||sandbox.patient?.id===s.patientId)){
     s.mode='test';const select=s.host.querySelector('#patient-billing-mode');if(select)select.value='test';
     return patientBillingAdopt(s,sandbox);
@@ -104,7 +157,7 @@ async function patientBillingNative(s){
 function patientBillingAdopt(s,data){
  s.native=data;if(data.patient)s.patient=data.patient;
  const heading=s.host.querySelector('#patient-billing-heading'),context=s.host.querySelector('#patient-billing-context');
- if(heading)heading.textContent=patientBillingName(s.patient);
+ if(heading)heading.textContent=s.surface==='chart'?'Billing & payments':patientBillingName(s.patient);
  if(context&&s.patient)context.textContent=`MRN ${s.patient.mrn}${s.patient.archived?' · Archived patient':''}`;
  return data;
 }
@@ -113,10 +166,39 @@ function patientBillingTestTag(){return typeof testPaymentLabel==='function'?tes
 function patientBillingTestNotice(s){const tag=patientBillingTestTag();return s.mode==='test'&&tag?`<p class="copay-mode-label">${tag}</p>`:'';}
 function patientBillingSummary(data){
  const a=data.summary.accounts,c=data.summary.copays;
- return `<div class="patient-billing-totals"><section><span>Patient owes now</span><strong>${money(a.reviewed_patient_due_cents)}</strong><small>Across posted encounters. Money still with insurance is not counted</small></section><section><span>Paid by patient</span><strong>${money(c.net_received_cents)}</strong><small>${esc(c.receipts)} ${c.receipts===1?'receipt':'receipts'} · after refunds</small></section><section><span>Credit on account</span><strong>${money(c.usable_unapplied_cents)}</strong><small>${c.review_count?`${esc(c.review_count)} receipts to re-check`:'Paid but not yet applied to an encounter'}</small></section></div>`;
+ return `<div class="patient-billing-totals"><section><button type="button" class="billing-total-action" data-hub-tab="payments"><span>Patient owes now</span><strong>${money(a.reviewed_patient_due_cents)}</strong><small>Across posted encounters. Money still with insurance is not counted</small></button></section><section><button type="button" class="billing-total-action" data-hub-tab="payments"><span>Paid by patient</span><strong>${money(c.net_received_cents)}</strong><small>${esc(c.receipts)} ${c.receipts===1?'receipt':'receipts'} · after refunds</small></button></section><section><button type="button" class="billing-total-action" data-hub-tab="payments"><span>Credit on account</span><strong>${money(c.usable_unapplied_cents)}</strong><small>${c.review_count?`${esc(c.review_count)} receipts to re-check`:'Paid but not yet applied to an encounter'}</small></button></section></div>`;
+}
+function patientBillingChartTable(columns,rows,empty){
+ return `<div class="chart-list-table"><table><thead><tr>${columns.map(c=>`<th scope="col">${esc(c)}</th>`).join('')}</tr></thead><tbody>${rows.map(cells=>`<tr>${cells.map(c=>`<td>${c}</td>`).join('')}</tr>`).join('')||`<tr><td colspan="${columns.length}">${esc(empty)}</td></tr>`}</tbody></table></div>`;
+}
+function patientBillingClaimPill(row,s){
+ const claims=s.claims?.filter(c=>c.account_id===row.id).sort((a,b)=>String(b.created_at||'').localeCompare(String(a.created_at||'')));
+ const status=row.claim_status||claims?.[0]?.status;
+ const label=status?({draft:'Not sent',ready:'Not sent',queued:'Not sent',submitted:'Sent',sent:'Sent',accepted:'Accepted',rejected:'Denied',denied:'Denied',paid:'Paid'}[status]||displayStatus(status)):claims?'Not sent':'Status unavailable';
+ return `<span class="patient-billing-pill" data-status="${esc(label.toLowerCase().replaceAll(' ','-'))}">${esc(label)}</span>`;
+}
+function patientBillingChartOverview(data,s){
+ const a=data.summary.accounts,c=data.summary.copays;
+ const totals=`<div class="patient-billing-totals patient-billing-chart-totals"><section><button type="button" class="billing-total-action" data-hub-tab="payments"><span>Patient owes</span><strong>${money(a.reviewed_patient_due_cents)}</strong><small>Across posted encounters. Money still with insurance is not counted</small></button></section><section><button type="button" class="billing-total-action" data-hub-tab="payments"><span>Insurance pending</span><strong>${money(a.insurance_pending_cents)}</strong><small>With insurance · not included in patient owes</small></button></section><section><button type="button" class="billing-total-action" data-hub-tab="payments"><span>Paid</span><strong>${money(c.net_received_cents)}</strong><small>${esc(c.receipts)} ${c.receipts===1?'receipt':'receipts'} · after refunds</small></button></section><section><button type="button" class="billing-total-action" data-hub-tab="payments"><span>Credit</span><strong>${money(c.usable_unapplied_cents)}</strong><small>${c.review_count?`${esc(c.review_count)} receipts to re-check`:'Paid but not yet applied to an encounter'}</small></button></section></div>`;
+ return patientBillingTestNotice(s)+totals+'<div class="actions"><button type="button" data-hub-tab="payments">Payments and statements</button><button type="button" data-hub-tab="methods">Save a card on file</button><button type="button" data-hub-tab="subscriptions">Memberships &amp; payment plans</button></div><section id="patient-billing-balances" class="billing-section" hidden></section><section class="billing-section"><h3>Encounters and charges</h3>'+patientBillingChartTable(['Date','Encounter','Charges','Insurance','Patient owes','Next step'],data.accounts.items.map(row=>[
+  esc(displayDate(row.service_date)||'—'),esc(row.encounter_number?'ENC '+row.encounter_number:'Office visit')+(row.test_activity?'<br><span class="patient-billing-pill">Test payment</span>':''),
+  money(row.total_cents)+`<small>${row.account_balance_cents==null?'Not posted yet':'Balance '+money(row.account_balance_cents)}</small>`,
+  esc(row.payer_name||'Self-pay')+'<br>'+patientBillingClaimPill(row,s)+(row.insurance_pending_cents>0?`<small>Insurance pending: ${money(row.insurance_pending_cents)}</small>`:''),
+  (row.patient_owes_now_cents==null?'—':money(row.patient_owes_now_cents))+ (row.invoice_id?`<small>Statement of ${esc(displayDate(row.invoice_created_at))}: ${money(row.invoice_due_cents)} due then${row.invoice_needs_review&&row.patient_owes_now_cents!==0?'. Needs review: payments or charges changed since':''}</small>`:'<small>No statement prepared</small>'),
+  `<span>${esc(row.billing_state&&typeof visitBillingStateName==='function'?visitBillingStateName(row.billing_state):displayStatus(row.status))}</span><div class="actions">${billingOverviewAccountAction(row)}${row.invoice_id?`<button type="button" data-overview-invoice="${esc(row.invoice_id)}">View statement</button>`:''}</div>`
+ ]),'No encounters with charges recorded.')+(s.accountsAfter?'<button type="button" data-hub-accounts-first>First accounts page</button>':'')+(data.accounts.next_cursor?`<button type="button" data-hub-accounts="${esc(data.accounts.next_cursor)}">Next accounts</button>`:'')+'</section>';
+}
+function patientBillingRowActions(row,s){
+ const patient=row.patient_id||s.patientId;
+ return `<button type="button" data-hub-open="${esc(patient)}">Open</button>${billingCan('create')?`<button type="button" data-hub-collect="${esc(patient)}" data-account="${esc(row.id)}">Collect</button><button type="button" data-hub-statement="${esc(patient)}" data-account="${esc(row.id)}">Send statement</button>`:''}`;
+}
+function patientBillingActionAccountRows(rows,s){
+ if(!rows.length)return billingOverviewAccountRows(rows);
+ return rows.map(row=>billingOverviewAccountRows([row]).replace('</td></tr>',patientBillingRowActions(row,s)+'</td></tr>')).join('');
 }
 function patientBillingAccounts(data,s){
- return `<section class="billing-section"><h3>Encounters and charges</h3><p class="muted">Each encounter shows its next step. Open an encounter to take a payment, send its claim or print a statement.</p><div class="billing-table-wrap"><table class="billing-table"><thead><tr><th>Encounter</th><th>Next step</th><th>Charges</th><th>Patient owes now</th><th></th></tr></thead><tbody>${billingOverviewAccountRows(data.accounts.items)}</tbody></table></div>${s.accountsAfter?'<button type="button" data-hub-accounts-first>First accounts page</button>':''}${data.accounts.next_cursor?`<button type="button" data-hub-accounts="${esc(data.accounts.next_cursor)}">Next accounts</button>`:''}</section>`;
+ if(s.surface==='global'&&!s.patientId)return `<section class="billing-section"><div class="billing-table-wrap"><table class="billing-table"><thead><tr><th>Patient</th><th>Encounter date</th><th>Charges</th><th>Insurance</th><th>Patient owes</th><th>Next step</th><th>Open</th></tr></thead><tbody>${data.accounts.items.map(r=>`<tr><td>${esc(r.patient_name)}</td><td>${esc(displayDate(r.service_date))}</td><td>${money(r.total_cents)}</td><td>${r.insurance_pending_cents==null?'—':money(r.insurance_pending_cents)}</td><td>${r.patient_owes_now_cents==null?'—':money(r.patient_owes_now_cents)}</td><td>${esc(r.billing_state&&typeof visitBillingStateName==='function'?visitBillingStateName(r.billing_state):displayStatus(r.status))}</td><td>${patientBillingRowActions(r,s)}</td></tr>`).join('')||'<tr><td colspan="7">No patient balances.</td></tr>'}</tbody></table></div>${data.accounts.next_cursor?`<button type="button" data-hub-accounts="${esc(data.accounts.next_cursor)}">Next accounts</button>`:''}${s.accountsAfter?'<button type="button" data-hub-accounts-first>First accounts page</button>':''}</section>`;
+ return `<section class="billing-section"><h3>Encounters and charges</h3><p class="muted">Each encounter shows its next step. Open an encounter to take a payment, send its claim or print a statement.</p><div class="billing-table-wrap"><table class="billing-table"><thead><tr><th>Encounter</th><th>Next step</th><th>Charges</th><th>Patient owes now</th><th></th></tr></thead><tbody>${patientBillingActionAccountRows(data.accounts.items,s)}</tbody></table></div>${s.accountsAfter?'<button type="button" data-hub-accounts-first>First accounts page</button>':''}${data.accounts.next_cursor?`<button type="button" data-hub-accounts="${esc(data.accounts.next_cursor)}">Next accounts</button>`:''}</section>`;
 }
 function patientBillingReceipts(data,s){
  return `<section class="billing-section"><h3>Receipts</h3><p class="muted">Money already received from this patient.</p><div class="billing-table-wrap"><table class="billing-table"><thead><tr><th>Received</th><th>How / status</th><th>Amount</th><th>Credit left</th><th></th></tr></thead><tbody>${billingOverviewCopayRows(data.copays.items)}</tbody></table></div>${s.copaysAfter?'<button type="button" data-hub-copays-first>First receipts page</button>':''}${data.copays.next_cursor?`<button type="button" data-hub-copays="${esc(data.copays.next_cursor)}">Next receipts</button>`:''}</section>`;
@@ -126,8 +208,9 @@ async function patientBillingPaymentHistory(s){
  const data=await api(`/api/v1/billing/patients/${encodeURIComponent(s.patientId)}/payment-history?${query}`);
  if(!patientBillingCurrent(s))return null;
  if(data.patient_id!==s.patientId||data.mode!==s.mode||!Array.isArray(data.items))throw new Error('The payment history does not match the selected patient and activity view.');
+ if(s.surface==='chart'&&!s.native){if(!await patientBillingNative(s))return null;}
  const kinds={copay:'Copay receipt',account_payment:'Account card payment',recorded_payment:'Recorded account payment',invoice_checkout:'Invoice installment payment'};
- return `<section class="billing-section"><h3>Payment history</h3><p class="muted">Every payment from this patient, newest first, with the encounter it was taken for.</p><div class="billing-table-wrap"><table class="billing-table"><thead><tr><th>Date</th><th>Encounter</th><th>Status</th><th>Received</th><th>Refunded / not applied</th><th></th></tr></thead><tbody>${data.items.map(item=>`<tr><td>${esc(date(item.created_at))}<small>${esc(kinds[item.kind]||'Payment record')}${item.test_activity&&patientBillingTestTag()?' · '+patientBillingTestTag():''}</small></td><td>${patientBillingPaymentEncounter(item,s)}</td><td>${esc(human(item.status||'Status unavailable'))}<small>${item.ledger_recorded?'Applied to charges':'Not applied to charges yet'}</small>${item.reference?`<small>${esc(item.reference)}</small>`:''}</td><td>${item.received_cents==null?'Not verified':money(item.received_cents)}</td><td>${item.refunded_cents==null?'Refund not available':money(item.refunded_cents)+' refunded'}<small>${item.unapplied_cents==null?'Unapplied credit not available':money(item.unapplied_cents)+' not applied'}</small></td><td>${item.kind==='copay'&&item.receipt_id?`<button type="button" data-overview-receipt="${esc(item.receipt_id)}">View receipt</button>`:''}${item.kind==='invoice_checkout'?`<button type="button" data-invoice-checkout-review="${esc(item.id)}">Review installment payment</button>`:''}${item.account_id&&patientBillingAllowed('clinical')?`<button type="button" data-billing-patient="${esc(s.patientId)}" data-account="${esc(item.account_id)}">Review encounter billing</button>`:''}</td></tr>`).join('')||'<tr><td colspan="6">No payments in this view.</td></tr>'}</tbody></table></div>${s.paymentsAfter?'<button type="button" data-hub-payments-first>First payments page</button>':''}${data.next_cursor?`<button type="button" data-hub-payments="${esc(data.next_cursor)}">Next payments</button>`:''}</section>`;
+ return `<section class="billing-section"><h3>Payments</h3><p class="muted">Every payment from this patient, newest first, with the encounter it was taken for.</p><div class="billing-table-wrap"><table class="billing-table"><thead><tr><th>Date</th><th>Encounter</th><th>Method</th><th>Status</th><th>Amount</th><th>Refund state / credit</th><th>Receipt / actions</th></tr></thead><tbody>${data.items.map(item=>`<tr><td>${esc(displayDate(item.created_at))}<small>${esc(kinds[item.kind]||'Payment record')}${item.test_activity&&patientBillingTestTag()?' · '+patientBillingTestTag():''}</small></td><td>${patientBillingPaymentEncounter(item,s)}</td><td>${esc(item.method?invoicePaymentMethod(item.method):item.kind==='copay'?(s.receipts?.find(r=>r.id===item.receipt_id)?.method?invoicePaymentMethod(s.receipts.find(r=>r.id===item.receipt_id).method):'Not recorded'):item.kind==='recorded_payment'?'Recorded payment':'Card')}</td><td>${displayStatusPill(item.status||'Status unavailable')}<small>${item.ledger_recorded?'Applied to charges':'Not applied to charges yet'}</small>${item.reference?`<small>${esc(item.reference)}</small>`:''}</td><td>${item.received_cents==null?'Not verified':money(item.received_cents)}</td><td>${item.refunded_cents==null?'Refund not available':item.refunded_cents===0?'No refund':money(item.refunded_cents)+(item.received_cents!=null&&item.refunded_cents>=item.received_cents?' · Refunded':' · Partially refunded')}<small>${item.unapplied_cents==null?'Unapplied credit not available':money(item.unapplied_cents)+' not applied'}</small></td><td>${item.kind==='copay'&&item.receipt_id?`<button type="button" data-overview-receipt="${esc(item.receipt_id)}">View receipt</button>`:''}${item.kind==='invoice_checkout'?`<button type="button" data-invoice-checkout-review="${esc(item.id)}">Review installment payment</button>`:''}${item.account_id&&patientBillingAllowed('clinical')?`<button type="button" data-billing-patient="${esc(s.patientId)}" data-account="${esc(item.account_id)}">Review encounter billing</button>`:''}</td></tr>`).join('')||'<tr><td colspan="7">No payments in this view.</td></tr>'}</tbody></table></div>${s.paymentsAfter?'<button type="button" data-hub-payments-first>First payments page</button>':''}${data.next_cursor?`<button type="button" data-hub-payments="${esc(data.next_cursor)}">Next payments</button>`:''}</section>`;
 }
 // The encounter a payment was taken for, from the open patient's chart. Pressing it opens a
 // short preview of that encounter with a way to go to it.
@@ -159,8 +242,8 @@ async function patientBillingInvoices(s){
  const native=await patientBillingNative(s).catch(()=>null);
  if(!patientBillingCurrent(s))return null;
  const encounters=native?.accounts?.items||[],clinical=typeof billingOverviewAllowed!=='function'||billingOverviewAllowed('clinical');
- const create=`<section class="billing-section"><h3>Encounters</h3><p class="muted">A statement is prepared from the encounter’s billing when you print or send it. Nothing has to be created first.</p>${encounters.length?`<div class="patient-billing-cards">${encounters.map(row=>`<article class="patient-billing-card"><h4>Visit ${esc(typeof visitBillingDate==='function'?visitBillingDate(row.service_date):row.service_date)}</h4><p>${money(row.total_cents)} charges · ${esc(row.billing_state&&typeof visitBillingStateName==='function'?visitBillingStateName(row.billing_state):human(row.status))}${row.patient_owes_now_cents>0?' · patient owes '+money(row.patient_owes_now_cents):''}</p>${clinical?`<button type="button" data-billing-patient="${esc(row.patient_id)}" data-account="${esc(row.id)}">Open invoice</button>`:''}</article>`).join('')}</div>`:'<p>No charges for this patient yet. Add procedures and charges in an encounter first.</p>'}</section>`;
- return create+`<section class="billing-section"><h3>Statements sent</h3><p class="muted">Each statement keeps the charges, payments and amount due from the day it was prepared.</p><div class="billing-table-wrap"><table class="billing-table"><thead><tr><th>Prepared / encounter</th><th>Amount due then</th><th>Status</th><th></th></tr></thead><tbody>${data.items.map(i=>`<tr><td>${esc(date(i.created_at))}<small>${esc(i.snapshot?.service_date||'Service date in invoice')}</small></td><td>${money(i.snapshot?.amount_due_cents)}</td><td>${i.needs_review?'Needs review: payments or charges changed since':i.is_latest?'Latest statement':'Earlier statement, kept'}</td><td><button type="button" data-overview-invoice="${esc(i.id)}">View / print statement</button></td></tr>`).join('')||'<tr><td colspan="4">No statements have been sent.</td></tr>'}</tbody></table></div>${s.invoicesAfter?'<button type="button" data-hub-invoices-first>First invoices page</button>':''}${data.next_cursor?`<button type="button" data-hub-invoices="${esc(data.next_cursor)}">Next invoices</button>`:''}</section><section id="patient-billing-stripe-invoices" class="billing-section"><h3>Other invoices</h3><p role="status">Loading separately recorded invoices…</p></section>`;
+ const create=`<section class="billing-section"><h3>Encounters</h3><p class="muted">Open the encounter to prepare or print its statement.</p>${encounters.length?`<div class="patient-billing-cards">${encounters.map(row=>`<article class="patient-billing-card"><h4>Visit ${esc(typeof visitBillingDate==='function'?visitBillingDate(row.service_date):row.service_date)}</h4><p>${money(row.total_cents)} charges · ${esc(row.billing_state&&typeof visitBillingStateName==='function'?visitBillingStateName(row.billing_state):human(row.status))}${row.patient_owes_now_cents>0?' · patient owes '+money(row.patient_owes_now_cents):''}</p>${clinical?`<button type="button" data-billing-patient="${esc(row.patient_id)}" data-account="${esc(row.id)}">Open invoice</button>`:''}</article>`).join('')}</div>`:'<p>No charges for this patient yet. Add procedures and charges in an encounter first.</p>'}</section>`;
+ return create+`<section class="billing-section"><h3>Saved statements</h3><p class="muted">Each statement keeps the charges, payments and amount due from the day it was prepared.</p><div class="billing-table-wrap"><table class="billing-table"><thead><tr><th>Prepared / encounter</th><th>Amount due then</th><th>Status</th><th></th></tr></thead><tbody>${data.items.map(i=>`<tr><td>${esc(date(i.created_at))}<small>${esc(displayDate(i.snapshot?.service_date)||'Service date in invoice')}</small></td><td>${money(i.snapshot?.amount_due_cents)}</td><td>${i.needs_review?'Needs review: payments or charges changed since':i.is_latest?'Latest statement':'Earlier statement, kept'}</td><td><button type="button" data-overview-invoice="${esc(i.id)}">View / print statement</button></td></tr>`).join('')||'<tr><td colspan="4">No statements have been prepared.</td></tr>'}</tbody></table></div>${s.invoicesAfter?'<button type="button" data-hub-invoices-first>First invoices page</button>':''}${data.next_cursor?`<button type="button" data-hub-invoices="${esc(data.next_cursor)}">Next invoices</button>`:''}</section><section id="patient-billing-stripe-invoices" class="billing-section"><h3>Other invoices</h3><p role="status">Loading separately recorded invoices…</p></section>`;
 }
 async function loadPatientBillingTab(s){
  const panel=s.host.querySelector('#patient-billing-panel');if(!panel||!patientBillingCurrent(s))return;
@@ -170,10 +253,15 @@ async function loadPatientBillingTab(s){
   if(s.modeAuto&&!await patientBillingNative(s))return;
   if(s.patientId&&!s.patient){if(!await patientBillingNative(s))return;}
   if(s.tab==='invoices')s.tab='payments';
-  if(s.tab==='payments'&&s.patientId){html=patientBillingTestNotice(s)+await patientBillingPaymentHistory(s);const statements=await patientBillingInvoices(s).catch(()=>'');if(statements)html+=`<section class="patient-billing-statements">${statements}</section>`;}
+  if(s.surface==='chart'&&s.tab==='overview'){const data=await patientBillingNative(s);if(!data)return;html=patientBillingChartOverview(data,s)+await patientBillingPaymentHistory(s).catch(()=>'<section class="billing-section"><h3>Payments</h3><p role="alert">Payments could not be loaded.</p><button type="button" data-hub-refresh>Try again</button></section>');}
+  else if(s.tab==='payments'&&s.patientId){html=patientBillingTestNotice(s)+await patientBillingPaymentHistory(s);const statements=await patientBillingInvoices(s).catch(()=>'');if(statements)html+=`<section class="patient-billing-statements">${statements}</section>`;}
   else if(s.tab==='overview'||s.tab==='payments'){
    const data=await patientBillingNative(s);if(!data)return;
    html=patientBillingTestNotice(s)+patientBillingSummary(data)+(s.tab==='overview'?`${s.patientId?'<div class="actions"><button type="button" class="primary" data-hub-tab="payments">Payments and statements</button><button type="button" data-hub-tab="methods">Save a card on file</button><button type="button" data-hub-tab="subscriptions">Memberships & payment plans</button></div><section id="patient-billing-balances" class="billing-section" hidden></section>':''}${patientBillingAccounts(data,s)}`:patientBillingReceipts(data,s));
+   if(s.surface==='global'&&!s.patientId){
+    const overview=billingOverviewRecordsMarkup(data,{accountsAfter:s.accountsAfter,copaysAfter:s.copaysAfter});
+    html=patientBillingSummary(data)+overview.replace(billingOverviewAccountRows(data.accounts.items),patientBillingActionAccountRows(data.accounts.items,s)).replaceAll('data-overview-accounts','data-hub-accounts').replaceAll('data-overview-copays','data-hub-copays');
+   }
   }else if(s.tab==='invoices')html=patientBillingTestNotice(s)+await patientBillingInvoices(s);
   else if(s.tab==='subscriptions'&&s.patientId&&typeof loadPatientPaymentPlans==='function')html='<section id="patient-billing-memberships" class="billing-section"><p role="status">Loading memberships…</p></section><section id="patient-billing-installments" class="billing-section"><p role="status">Loading payment plans…</p></section><details class="billing-section patient-billing-more"><summary>More</summary><div class="actions"><button type="button" data-memberships-refresh>Refresh memberships</button><button type="button" data-installments-refresh>Refresh payment plans</button></div><section id="patient-billing-profile-section"><p role="status">Loading other subscription records…</p></section></details>';
   else html=s.patientId?`<section id="patient-billing-profile-section"><p role="status">Loading ${s.tab==='methods'?'payment methods':'subscriptions'}…</p></section>`:patientBillingChoosePatient(s.tab==='methods'?'payment methods':'subscriptions');
@@ -396,14 +484,14 @@ async function loadPatientBillingBalances(s,request){
  let data;try{data=await api(`/api/v1/billing/patients/${encodeURIComponent(s.patientId)}/installment-plans`);}catch{return;}
  if(!patientBillingCurrent(s)||s.panelRequest!==request||s.host.querySelector('#patient-billing-balances')!==host)return;
  const plans=data.items||[];
- const rows=(data.eligible_invoices||[]).map(invoice=>{
+ const rows=(data.eligible_invoices||[]).filter(invoice=>!s.collectInvoiceId||invoice.invoice_id===s.collectInvoiceId).map(invoice=>{
   const plan=plans.find(item=>item.id===invoice.existing_plan_id),single=plan&&plan.reason===patientBillingBalanceReason&&plan.installments?.length===1&&plan.status==='active'&&!(plan.attempts||[]).some(op=>['creating','open','needs_review'].includes(op.status));
   return invoice.eligible||single?{invoice:invoice.invoice_id,issued:invoice.invoice_created_at,amount:invoice.remaining_cents}:null;
  }).filter(row=>row&&row.amount>=50);
  s.balances=rows;
  if(!data.availability?.available||!rows.length){host.hidden=true;host.replaceChildren();return;}
  host.hidden=false;
- host.innerHTML=`<h3>Balance due</h3><p class="muted">Charge a reviewed invoice balance to a card the patient saved.</p>${rows.map(row=>`<div class="timeline-row"><div><b>${money(row.amount)}</b><small>Invoice issued ${esc(date(row.issued))}</small></div><div class="actions"><button type="button" data-balance-saved-card="${esc(row.invoice)}">Charge card on file</button></div></div><div data-balance-slot="${esc(row.invoice)}"></div>`).join('')}`;
+ host.innerHTML=`<h3>Balance due</h3><p class="muted">Charge a reviewed invoice balance to a card the patient saved.</p>${rows.map(row=>`<div class="timeline-row"><div><b>${money(row.amount)}</b><small>Invoice issued ${esc(displayDate(row.issued))}</small></div><div class="actions"><button type="button" data-balance-saved-card="${esc(row.invoice)}">Charge card on file</button></div></div><div data-balance-slot="${esc(row.invoice)}"></div>`).join('')}`;
 }
 function patientBillingBalanceSlot(s,invoiceId){return [...s.host.querySelectorAll('[data-balance-slot]')].find(node=>node.dataset.balanceSlot===invoiceId)||null;}
 async function openBalanceSavedCard(s,invoiceId){
@@ -471,8 +559,11 @@ async function changePatientBillingTab(tab){
  s.tab=tab;s.paymentsAfter=null;const scope=s.host.querySelector('.patient-billing-scope');if(scope)scope.hidden=['methods','subscriptions'].includes(tab);s.invoicesAfter=null;s.accountsAfter=null;s.copaysAfter=null;s.native=null;s.profileCursors={};s.profileRequest++;
  for(const button of s.host.querySelectorAll('[role="tab"]')){const active=button.dataset.hubTab===tab;button.setAttribute('aria-selected',String(active));button.tabIndex=active?0:-1;}
  const panel=s.host.querySelector('#patient-billing-panel');panel.setAttribute('aria-labelledby','patient-billing-tab-'+tab);
- const preview=s.host.querySelector('#patient-billing-preview');preview.hidden=true;preview.replaceChildren();
+ closePatientBillingPreview(s);
  await loadPatientBillingTab(s);
+}
+function closePatientBillingPreview(s){
+ const preview=s.host.querySelector('#patient-billing-preview');preview.billingRequest=null;preview.hidden=true;preview.replaceChildren();
 }
 async function showPatientBillingDocument(kind,id,options={}){
  const s=patientBillingWorkspace;if(!patientBillingCurrent(s))return;
@@ -493,16 +584,17 @@ async function showPatientBillingDocument(kind,id,options={}){
     renderCopayReceiptCard(body,data.receipt,data.context,()=>patientBillingCurrent(s)&&dialog.isConnected);
     const actions=document.createElement('div');actions.className='actions';
     actions.innerHTML=`${patientBillingAllowed('clinical')&&data.receipt.appointment_id?`<button type="button" class="primary" data-receipt-encounter="${esc(data.receipt.appointment_id)}" data-patient="${esc(data.receipt.patient_id)}">Go to encounter</button>`:''}<button type="button" data-sheet-close>Close</button>`;
-    panel.append(actions);return;
+    panel.append(actions);if(typeof mountReceiptActions==='function')mountReceiptActions(panel,data.receipt,()=>patientBillingCurrent(s)&&dialog.isConnected);return;
    }
    renderCopayReceiptCard(host,data.receipt,data.context,()=>patientBillingCurrent(s)&&host.billingRequest===request&&s.host.querySelector('#patient-billing-preview')===host);
-   const close=document.createElement('button');close.type='button';close.setAttribute('data-hub-preview-close','');close.textContent='Close receipt';host.append(close);return;
+   const close=document.createElement('button');close.type='button';close.setAttribute('data-hub-preview-close','');close.textContent='Close receipt';host.append(close);if(typeof mountReceiptActions==='function')mountReceiptActions(host,data.receipt,()=>patientBillingCurrent(s)&&host.billingRequest===request);return;
   }
   host.innerHTML=`<div class="section-head"><h3>${kind==='invoice'?'Saved patient invoice':'Copay receipt'}</h3><div class="actions"><button type="button" data-hub-print>Print / save PDF</button><button type="button" data-hub-preview-close>Close preview</button></div></div><p class="muted">Saved record · viewing does not collect payment.</p>`;
   const frame=document.createElement('iframe');frame.id='patient-billing-print-frame';frame.title=kind==='invoice'?'Patient invoice print preview':'Copay receipt print preview';frame.className='avs-print-frame';frame.setAttribute('sandbox','allow-same-origin allow-modals');frame.srcdoc=kind==='invoice'?patientInvoiceDocument(data):copayReceiptDocument(data.receipt,data.context);host.append(frame);host.scrollIntoView({block:'start'});
  }catch(error){if(patientBillingCurrent(s)&&host.billingRequest===request)host.innerHTML=`<p role="alert">${esc(error.message||'Saved document is unavailable.')}</p>`;}
 }
 document.addEventListener('submit',event=>{
+ if(event.target.hasAttribute?.('data-hub-collect-form')){event.preventDefault();const s=patientBillingWorkspace,f=event.target;if(!patientBillingCurrent(s)||f.closest('.patient-billing-hub')!==s.host||f.saving)return;f.saving=true;run(async()=>{try{const d=Object.fromEntries(new FormData(f));await api(`/api/v1/patients/${encodeURIComponent(s.patientId)}/billing/accounts/${encodeURIComponent(f.dataset.account)}/entries`,'POST',{request_id:f.dataset.request,kind:'payment',amount_cents:cents(d.amount),reverses_id:null,party:'patient',method:d.method,reference:d.reference,occurred_on:new Date().toLocaleDateString('en-CA'),reason:d.reason},Number(f.dataset.version));if(patientBillingCurrent(s)){s.native=null;await loadPatientBillingTab(s);const preview=s.host.querySelector('#patient-billing-preview');preview.innerHTML='<p role="status">Payment recorded. Review the updated balance above before collecting another payment.</p>';}}finally{f.saving=false;}});return;}
  if(event.target.hasAttribute?.('data-balance-charge-form')){event.preventDefault();const s=patientBillingWorkspace,form=event.target;if(patientBillingCurrent(s)&&form.closest('.patient-billing-hub')===s.host){const button=form.querySelector('button[type="submit"]');if(button)button.disabled=true;run(async()=>{try{await chargeBalanceSavedCard(s,form);}finally{if(button)button.disabled=false;}});}return;}
  if(event.target.id==='patient-billing-setup-form'){event.preventDefault();const s=patientBillingWorkspace;if(patientBillingCurrent(s)&&event.target.closest('.patient-billing-hub')===s.host&&event.target.elements.consent.checked)run(()=>patientBillingCreateSetup(s));return;}
  if(event.target.id!=='billing-patient-search-form')return;
@@ -512,6 +604,7 @@ document.addEventListener('submit',event=>{
 document.addEventListener('change',event=>{
  if(event.target.id!=='patient-billing-mode')return;
  const s=patientBillingWorkspace;if(!patientBillingCurrent(s))return;
+ closePatientBillingPreview(s);
  s.mode=event.target.value==='test'?'test':'recorded';s.native=null;s.accountsAfter=null;s.copaysAfter=null;s.invoicesAfter=null;s.paymentsAfter=null;run(()=>loadPatientBillingTab(s));
 });
 document.addEventListener('click',event=>{
@@ -519,7 +612,10 @@ document.addEventListener('click',event=>{
  if(!button?.closest('.patient-billing-hub'))return;
  const s=patientBillingWorkspace;if(!patientBillingCurrent(s)||button.closest('.patient-billing-hub')!==s.host)return;
  const d=button.dataset;
- if(d.hubTab){event.preventDefault();run(()=>changePatientBillingTab(d.hubTab));}
+ if(d.hubOpen){run(()=>showPatientBillingWorkspace({patientId:d.hubOpen,tab:'overview',mode:s.mode}));}
+ else if(d.hubCollect){run(()=>patientBillingCollect(d.hubCollect,d.account,s.mode));}
+ else if(d.hubStatement){run(()=>patientBillingStatement(d.hubStatement,d.account,s.mode));}
+ else if(d.hubTab){event.preventDefault();run(()=>changePatientBillingTab(d.hubTab));}
  else if(d.hubPatient){const patient=s.searchResults?.find(p=>p.id===d.hubPatient);if(patient)run(async()=>{await showPatientBillingWorkspace({patientId:patient.id,patient,tab:'overview',mode:s.mode});});}
  else if(button.hasAttribute('data-hub-all'))run(()=>showPatientBillingWorkspace({patientId:null,tab:'overview',mode:s.mode}));
  else if(d.hubPatientNext)void searchPatientBillingPatients(s,s.searchQuery||'',d.hubPatientNext);
@@ -540,10 +636,15 @@ document.addEventListener('click',event=>{
  else if(button.hasAttribute('data-hub-setup-dismiss')){const op=patientBillingSetupFor(s);if(['succeeded','expired'].includes(op?.status)){patientBillingSetups.delete(s.patientId);run(()=>loadPatientBillingProfile(s,s.panelRequest));}}
  else if(d.hubProfileNext||button.hasAttribute('data-hub-profile-first')){s.profileCursors[patientBillingProfileKey(s.tab)]=d.hubProfileNext||null;run(()=>loadPatientBillingProfile(s,s.panelRequest));}
  else if(button.hasAttribute('data-hub-tools'))run(()=>showBillingQueue('',undefined,true));
+ else if(d.overviewAccountReview){
+  const preview=s.host.querySelector('#patient-billing-preview');
+  const row=s.native?.accounts.items.find(row=>row.id===d.overviewAccountReview&&row.patient_id===d.accountPatient&&(!s.patientId||row.patient_id===s.patientId));
+  run(()=>showBillingAccountReview(preview,row,()=>patientBillingCurrent(s)&&s.host.querySelector('#patient-billing-preview')===preview));
+ }
+ else if(button.hasAttribute('data-billing-account-close')||button.hasAttribute('data-hub-preview-close'))closePatientBillingPreview(s);
  else if(d.overviewInvoice)run(()=>showPatientBillingDocument('invoice',d.overviewInvoice));
  else if(d.overviewReceipt)run(()=>showPatientBillingDocument('receipt',d.overviewReceipt));
  else if(button.hasAttribute('data-hub-print')){const frame=s.host.querySelector('#patient-billing-print-frame');frame?.contentWindow?.focus();frame?.contentWindow?.print();}
- else if(button.hasAttribute('data-hub-preview-close')){const host=s.host.querySelector('#patient-billing-preview');host.billingRequest=null;host.hidden=true;host.replaceChildren();}
  else for(const [field,attribute] of [['accountsAfter','hubAccounts'],['copaysAfter','hubCopays'],['invoicesAfter','hubInvoices'],['paymentsAfter','hubPayments']])if(d[attribute]||button.hasAttribute('data-hub-'+attribute.slice(3).toLowerCase()+'-first')){s[field]=d[attribute]||null;s.native=null;run(()=>loadPatientBillingTab(s));break;}
 });
 document.addEventListener('keydown',event=>{
@@ -552,3 +653,27 @@ document.addEventListener('keydown',event=>{
  const next=event.key==='ArrowRight'?(index+1)%tabs.length:event.key==='ArrowLeft'?(index+tabs.length-1)%tabs.length:event.key==='Home'?0:event.key==='End'?tabs.length-1:null;
  if(next===null)return;event.preventDefault();tabs[next].focus();run(()=>changePatientBillingTab(tabs[next].dataset.hubTab));
 });
+
+async function patientBillingStatement(patient,account,mode){
+ const identity=me;
+ const result=await api(`/api/v1/patients/${encodeURIComponent(patient)}/billing/accounts/${encodeURIComponent(account)}/statement`,'POST',{});
+ if(me!==identity)return;
+ await showPatientBillingWorkspace({patientId:patient,tab:'payments',mode});
+ if(me!==identity||patientBillingWorkspace?.patientId!==patient)return;
+ await showPatientBillingDocument('invoice',result.invoice.id);
+ const host=patientBillingWorkspace.host.querySelector('#patient-billing-preview');
+ host.insertAdjacentHTML('afterbegin','<p role="status">Electronic sending is not available here. Use Print / save PDF to print the statement or save a copy for the patient.</p>');
+}
+async function patientBillingCollect(patient,account,mode){
+ await showPatientBillingWorkspace({patientId:patient,tab:'overview',mode});
+ const s=patientBillingWorkspace;if(!patientBillingCurrent(s)||s.patientId!==patient)return;
+ let row=s.native?.accounts.items.find(r=>r.id===account),after=s.native?.accounts.next_cursor;
+ while(!row&&after){const page=await api('/api/v1/billing/overview?'+patientBillingQuery(s,{accounts_after:after}));if(!patientBillingCurrent(s))return;if(page.patient?.id!==patient)throw new Error('These balances do not belong to the selected patient.');row=page.accounts.items.find(r=>r.id===account);after=page.accounts.next_cursor;}
+ if(!row)throw new Error('Open this patient’s encounter list and choose the balance again.');
+ const host=s.host.querySelector('#patient-billing-preview');host.hidden=false;
+ s.collectInvoiceId=row.invoice_id||null;
+ if(!s.collectInvoiceId&&row.status==='posted'){const statement=await api(`/api/v1/patients/${encodeURIComponent(patient)}/billing/accounts/${encodeURIComponent(account)}/statement`,'POST',{});if(!patientBillingCurrent(s))return;s.collectInvoiceId=statement.invoice.id;}
+ host.innerHTML=`<h3>Collect payment</h3><p>Record cash or check already received, or charge a saved card below.</p><form data-hub-collect-form data-account="${esc(account)}" data-version="${esc(row.version)}" data-request="${crypto.randomUUID()}"><label>Amount (USD)<input name="amount" inputmode="decimal" required value="${esc(dollars(row.patient_owes_now_cents||0))}"></label><label>Paid by<select name="method"><option value="cash">Cash</option><option value="check">Check</option></select></label><label>Receipt or check reference<input name="reference" required maxlength="200"></label><label>Reason<input name="reason" required maxlength="1000" value="Patient payment"></label><label><input type="checkbox" required> I received this payment.</label><button type="submit">Record payment received</button></form>`;
+ await loadPatientBillingBalances(s,s.panelRequest);
+ host.scrollIntoView?.({block:'start'});
+}

@@ -6,15 +6,36 @@ const sunOrbPositionKey='suncharts.sun.position.v1';
 function sunOrbClamp(value){return Number.isFinite(value)?Math.max(0,Math.min(1,value)):1;}
 function placeSunOrb(){
  const orb=$('sun-presence');if(!orb)return;
+ const chart=$('clinical-workspace'),actions=$('frame-user-menu')?.parentElement;
+ if(actions&&chart){
+  const dock=window.matchMedia('(max-width:600px)').matches&&!chart.hidden&&chart.classList.contains('frame-chart-open');
+  if(dock!==Boolean(orb.dataset.chartDocked)){
+   const focused=orb.contains(document.activeElement)?document.activeElement:null;
+   if(dock){orb.dataset.chartDocked='true';actions.prepend(orb);}
+   else{delete orb.dataset.chartDocked;document.body.append(orb);}
+   $('sun-orb-help').hidden=dock;
+   if(dock)$('sun-open').removeAttribute('aria-describedby');else $('sun-open').setAttribute('aria-describedby','sun-orb-help');
+   $('sun-close')?.setAttribute('aria-label',dock?'Close Sun chat':'Collapse Sun to orb');
+   focused?.focus({preventScroll:true});
+  }
+  if(dock){orb.style.left='';orb.style.top='';placeSunChat();return;}
+ }
  const viewport=window.visualViewport,width=viewport?.width||window.innerWidth,height=viewport?.height||window.innerHeight;
  const left=viewport?.offsetLeft||0,top=viewport?.offsetTop||0;
- orb.style.left=`${left+12+sunOrbPosition.x*Math.max(0,width-orb.offsetWidth-24)}px`;
- orb.style.top=`${top+12+sunOrbPosition.y*Math.max(0,height-orb.offsetHeight-24)}px`;
+ const frame=Boolean($('frame-patient-tabs'));
+ orb.style.left=`${left+(frame?Math.max(16,width-orb.offsetWidth-16):12+sunOrbPosition.x*Math.max(0,width-orb.offsetWidth-24))}px`;
+ orb.style.top=`${top+(frame?Math.max(16,height-orb.offsetHeight-16):12+sunOrbPosition.y*Math.max(0,height-orb.offsetHeight-24))}px`;
  placeSunChat();
 }
 function placeSunChat(){
  const panel=$('sun-panel'),orb=$('sun-presence');if(!panel||panel.hidden||sunPanelView!=='chat'||!orb)return;
  const viewport=window.visualViewport,width=viewport?.width||window.innerWidth,height=viewport?.height||window.innerHeight,left=viewport?.offsetLeft||0,top=viewport?.offsetTop||0;
+ if(orb.dataset.chartDocked){
+  const chatTop=Math.max(top+8,orb.getBoundingClientRect().bottom+6);
+  panel.style.left=`${left+12}px`;panel.style.top=`${chatTop}px`;
+  panel.style.width=`${Math.max(0,width-24)}px`;panel.style.height=`${Math.max(0,Math.min(640,top+height-chatTop-8))}px`;
+  return;
+ }
  const panelWidth=Math.min(460,Math.max(0,width-24)),panelHeight=Math.min(640,Math.max(0,height-24)),orbLeft=parseFloat(orb.style.left)||left+12,orbTop=parseFloat(orb.style.top)||top+12;
  const preferredLeft=orbLeft-left>width/2?orbLeft-panelWidth-14:orbLeft+orb.offsetWidth+14;
  panel.style.width=`${panelWidth}px`;panel.style.height=`${panelHeight}px`;
@@ -33,8 +54,13 @@ function mountSunWorkspace(){
  panel.dataset.sunView=sunPanelView;
  if(panel.parentElement!==host)host.append(panel);
  panel.classList.remove('sun-inline-workspace',page?'sun-floating-chat':'sun-page-workspace');panel.classList.add(page?'sun-page-workspace':'sun-floating-chat');
- panel.setAttribute('aria-label',page?'Sun assistant':'Sun chat');$('sun-close').setAttribute('aria-label','Collapse Sun to orb');
+ panel.setAttribute('aria-label',page?'Sun assistant':'Sun chat');$('sun-close').setAttribute('aria-label',$('sun-presence')?.dataset.chartDocked?'Close Sun chat':'Collapse Sun to orb');
  if(!$('sun-settings')){
+  panel.onkeydown=event=>{
+   if(event.key==='Escape'&&!event.defaultPrevented&&!event.isComposing&&$('sun-presence')?.dataset.chartDocked&&!sunListening){
+    event.preventDefault();event.stopPropagation();$('sun-close').click();
+   }
+  };
   const header=panel.querySelector('header'),actions=document.createElement('div');actions.className='sun-panel-actions';
   const expand=document.createElement('button');expand.id='sun-expand-page';expand.type='button';actions.append(expand,$('sun-close'));header?.append(actions);
   const settings=document.createElement('details');settings.id='sun-settings';const summary=document.createElement('summary');summary.textContent='Settings & capabilities';settings.append(summary);
@@ -101,12 +127,13 @@ function initSunOrb(){
  $('sun-open').onclick=event=>{if(sunOrbSuppressClick&&event.detail!==0){sunOrbSuppressClick=false;return;}if($('sun-panel')&&!$('sun-panel').hidden)$('sun-close').click();else void openSun();};
  $('sun-orb-stop').onclick=()=>{stopSunListening();window.speechSynthesis?.cancel();sunStatus('Voice stopped.');updateSunOrb();};
  const button=$('sun-open');
- button.onpointerdown=event=>{if(event.button!==0)return;sunOrbDrag={id:event.pointerId,x:event.clientX,y:event.clientY,position:{...sunOrbPosition},moved:false};button.setPointerCapture(event.pointerId);sunOrbSuppressClick=false;};
+ button.onpointerdown=event=>{if(event.button!==0||orb.dataset.chartDocked)return;sunOrbDrag={id:event.pointerId,x:event.clientX,y:event.clientY,position:{...sunOrbPosition},moved:false};button.setPointerCapture(event.pointerId);sunOrbSuppressClick=false;};
  button.onpointermove=event=>{const drag=sunOrbDrag;if(!drag||drag.id!==event.pointerId)return;const dx=event.clientX-drag.x,dy=event.clientY-drag.y;if(!drag.moved&&Math.hypot(dx,dy)<6)return;drag.moved=true;sunOrbSuppressClick=true;const viewport=window.visualViewport;sunOrbPosition={x:sunOrbClamp(drag.position.x+dx/Math.max(1,(viewport?.width||window.innerWidth)-orb.offsetWidth-24)),y:sunOrbClamp(drag.position.y+dy/Math.max(1,(viewport?.height||window.innerHeight)-orb.offsetHeight-24))};placeSunOrb();};
  const endDrag=()=>{if(sunOrbDrag?.moved)saveSunOrbPosition();sunOrbDrag=null;};button.onpointerup=endDrag;button.onpointercancel=()=>{sunOrbSuppressClick=false;endDrag();};button.onlostpointercapture=endDrag;
- button.onkeydown=event=>{const steps={ArrowLeft:[-.05,0],ArrowRight:[.05,0],ArrowUp:[0,-.05],ArrowDown:[0,.05]};if(event.key==='Home'){event.preventDefault();sunOrbPosition={x:1,y:1};}else if(steps[event.key]){event.preventDefault();sunOrbPosition={x:sunOrbClamp(sunOrbPosition.x+steps[event.key][0]),y:sunOrbClamp(sunOrbPosition.y+steps[event.key][1])};}else return;saveSunOrbPosition();placeSunOrb();};
+ button.onkeydown=event=>{if(orb.dataset.chartDocked)return;const steps={ArrowLeft:[-.05,0],ArrowRight:[.05,0],ArrowUp:[0,-.05],ArrowDown:[0,.05]};if(event.key==='Home'){event.preventDefault();sunOrbPosition={x:1,y:1};}else if(steps[event.key]){event.preventDefault();sunOrbPosition={x:sunOrbClamp(sunOrbPosition.x+steps[event.key][0]),y:sunOrbClamp(sunOrbPosition.y+steps[event.key][1])};}else return;saveSunOrbPosition();placeSunOrb();};
  sunOrbObserver=new MutationObserver(()=>{updateSunOrb();finishSunNavigation();});
  for(const id of ['page-title','shell-loading','notice'])if($(id))sunOrbObserver.observe($(id),{childList:true,subtree:true,characterData:true,attributes:true,attributeFilter:['hidden','class']});
+ if($('clinical-workspace'))sunOrbObserver.observe($('clinical-workspace'),{attributes:true,attributeFilter:['hidden','class']});
  updateSunOrb();
 }
 document.addEventListener('suncharts:sun-navigation',event=>{

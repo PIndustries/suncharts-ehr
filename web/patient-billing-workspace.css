@@ -49,3 +49,17 @@
 .card-form{display:grid;gap:10px}
 .card-form-mount{min-height:420px;border-radius:10px;overflow:hidden;background:var(--paper)}
 .card-setup.is-saved{border-color:var(--success-line);background:var(--success-bg);color:var(--success-text)}
+
+.patient-billing-chart-totals{grid-template-columns:repeat(4,minmax(0,1fr))}
+.patient-billing-hub .chart-list-table small{display:block;color:var(--muted);margin-top:4px}
+.patient-billing-pill{display:inline-block;padding:3px 9px;margin-top:4px;border:1px solid var(--line);border-radius:20px;font-size:var(--fs-sm);background:var(--surface-alt,var(--accent));color:var(--text)}
+.patient-billing-pill[data-status="sent"]{background:var(--accent);color:var(--blue);border-color:var(--blue)}
+.patient-billing-pill[data-status="accepted"],.patient-billing-pill[data-status="paid"]{background:var(--success-bg);color:var(--success-text);border-color:var(--success-line)}
+.patient-billing-pill[data-status="denied"]{background:var(--danger-bg,#fde8e8);color:var(--danger-text,#9b1c1c);border-color:var(--danger-line,#f5b4b4)}
+.patient-billing-pill[data-status="not-sent"]{background:var(--warning-bg,#fff5d6);color:var(--warning-text,#775300);border-color:var(--warning-line,#d8ba69)}
+@media(max-width:1000px){.patient-billing-chart-totals{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:600px){.patient-billing-chart-totals{grid-template-columns:1fr}}
+
+.patient-billing-totals .billing-total-action{display:block;width:100%;padding:0;border:0;background:transparent;color:inherit;text-align:left;white-space:normal}
+.patient-billing-totals .billing-total-action:focus-visible{outline:2px solid var(--blue);outline-offset:6px}
+.receipt-actions form{display:grid;gap:12px;max-width:560px}

@@ -147,6 +147,21 @@ impl Broker for FakeBroker {
         Ok(value)
     }
 }
+async fn migrate_through(pool: &PgPool, revision: i64) {
+    sqlx::migrate::Migrator {
+        migrations: std::borrow::Cow::Owned(
+            crate::MIGRATOR
+                .iter()
+                .filter(|m| m.version <= revision)
+                .cloned()
+                .collect(),
+        ),
+        ..sqlx::migrate::Migrator::DEFAULT
+    }
+    .run(pool)
+    .await
+    .unwrap();
+}
 async fn setup_at(revision: i64) -> (PgPool, Actor, Uuid, Uuid, State) {
     let url = std::env::var("TEST_DATABASE_URL").expect("disposable database required");
     let schema = format!("invoice_installments_{}", Uuid::new_v4().simple());
@@ -165,19 +180,7 @@ async fn setup_at(revision: i64) -> (PgPool, Actor, Uuid, Uuid, State) {
         .connect(&url)
         .await
         .unwrap();
-    sqlx::migrate::Migrator {
-        migrations: std::borrow::Cow::Owned(
-            crate::MIGRATOR
-                .iter()
-                .filter(|m| m.version <= revision)
-                .cloned()
-                .collect(),
-        ),
-        ..sqlx::migrate::Migrator::DEFAULT
-    }
-    .run(&pool)
-    .await
-    .unwrap();
+    migrate_through(&pool, revision).await;
     let tenant = Uuid::new_v4();
     let mut a = crate::delivery::worker(tenant);
     a.role = crate::auth::Role::Owner;
@@ -264,6 +267,16 @@ async fn payment_history(state: &State, a: &Actor, patient: Uuid) -> Value {
     serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap()
 }
 
+async fn signed_visit(pool: &PgPool, a: &Actor, patient: Uuid, appointment: Uuid) -> Uuid {
+    let visit = Uuid::new_v4();
+    sqlx::query("INSERT INTO visits(tenant_id,id,patient_id,appointment_id,clinician_id,status,version,note,signed_by,signed_at) VALUES($1,$2,$3,$4,$5,'signed',3,'{}',$5,now())").bind(a.tenant_id).bind(visit).bind(patient).bind(appointment).bind(a.sub).execute(pool).await.unwrap();
+    visit
+}
+
+fn synthetic_charge_content(visit: Uuid) -> Value {
+    json!({"visit_id":visit,"coverage_id":null,"service_date":"2026-10-25","currency":"USD","lines":[{"code_system":"local","code":"SYN","description":"Synthetic office service","units":1,"amount_cents":10000,"modifiers":"","diagnosis_codes":["Z00.00"]}],"notes":"Synthetic"})
+}
+
 async fn posted_account(
     pool: &PgPool,
     a: &Actor,
@@ -271,9 +284,8 @@ async fn posted_account(
     appointment: Uuid,
     state: &State,
 ) -> Uuid {
-    let visit = Uuid::new_v4();
-    sqlx::query("INSERT INTO visits(tenant_id,id,patient_id,appointment_id,clinician_id,status,version,note,signed_by,signed_at) VALUES($1,$2,$3,$4,$5,'signed',3,'{}',$5,now())").bind(a.tenant_id).bind(visit).bind(patient).bind(appointment).bind(a.sub).execute(pool).await.unwrap();
-    let content = json!({"visit_id":visit,"coverage_id":null,"service_date":"2026-10-25","currency":"USD","lines":[{"code_system":"local","code":"SYN","description":"Synthetic office service","units":1,"amount_cents":10000,"modifiers":"","diagnosis_codes":["Z00.00"]}],"notes":"Synthetic"});
+    let visit = signed_visit(pool, a, patient, appointment).await;
+    let content = synthetic_charge_content(visit);
     let (status, account) = call(
         state,
         a,
@@ -303,10 +315,7 @@ fn policy(live: bool) -> Policy {
     }
 }
 async fn fixture() -> (PgPool, Actor, Uuid, Uuid, Uuid, State) {
-    fixture_at(i64::MAX).await
-}
-async fn fixture_at(revision: i64) -> (PgPool, Actor, Uuid, Uuid, Uuid, State) {
-    let (pool, a, p, appointment, s) = setup_at(revision).await;
+    let (pool, a, p, appointment, s) = setup_at(i64::MAX).await;
     let account = posted_account(&pool, &a, p, appointment, &s).await;
     let(code,i)=call(&s,&a,&format!("/api/v1/patients/{p}/billing/accounts/{account}/invoices"),json!({"request_id":Uuid::new_v4(),"responsibility_cents":3000,"reason":"Reviewed synthetic patient share"}),Some(2)).await;
     assert_eq!(code, 200, "{i}");
@@ -1242,41 +1251,91 @@ async fn cancelling_a_plan_stops_collection_keeps_payments_and_frees_the_stateme
 }
 #[tokio::test]
 async fn the_cancel_migration_applies_over_existing_plans() {
-    let (pool, a, patient, _, invoice, _) = fixture_at(120).await;
+    let (pool, a, patient, appointment, state) = setup_at(120).await;
+    // Seed the stored records as they existed before cancellation was introduced. The current
+    // posting endpoint requires later migrations for receipt allocation and invoice operations.
+    let visit = signed_visit(&pool, &a, patient, appointment).await;
+    let account: billing::Account = sqlx::query_as(
+        "INSERT INTO billing_accounts
+         (tenant_id,id,patient_id,visit_id,content,total_cents,status,version,request_id,creation_hash)
+         VALUES($1,$2,$3,$4,$5,10000,'posted',2,$6,'synthetic-charge') RETURNING *",
+    )
+    .bind(a.tenant_id)
+    .bind(Uuid::new_v4())
+    .bind(patient)
+    .bind(visit)
+    .bind(synthetic_charge_content(visit))
+    .bind(Uuid::new_v4())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let invoice = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO patient_invoice_snapshots
+         (tenant_id,id,patient_id,account_id,request_id,creation_hash,account_version,snapshot,actor_id)
+         VALUES($1,$2,$3,$4,$5,'synthetic-invoice',$6,$7,$8)",
+    )
+    .bind(a.tenant_id)
+    .bind(invoice)
+    .bind(patient)
+    .bind(account.id)
+    .bind(Uuid::new_v4())
+    .bind(account.version)
+    .bind(json!({"format_version":2,"currency":"USD","responsibility_cents":3000,"amount_due_cents":3000,"patient_activity":[]}))
+    .bind(a.sub)
+    .execute(&pool)
+    .await
+    .unwrap();
     let plan_id = Uuid::new_v4();
-    sqlx::query("INSERT INTO patient_installment_plans(tenant_id,id,patient_id,account_id,invoice_id,request_id,creation_hash,requested_by,reason,livemode,total_cents,responsibility_cents,baseline_version,account_snapshot,ledger_ids,schedule) SELECT tenant_id,$2,patient_id,account_id,id,$3,'synthetic-hash',$4,'Agreed synthetic finite plan',false,3000,3000,2,'{}'::jsonb,'[]'::jsonb,$5 FROM patient_invoice_snapshots WHERE id=$1")
-        .bind(invoice).bind(plan_id).bind(Uuid::new_v4()).bind(a.sub)
-        .bind(json!([{"due_on":"2030-01-01","amount_cents":3000}]))
-        .execute(&pool).await.unwrap();
-    let before: Value = sqlx::query_scalar(
-        "SELECT jsonb_strip_nulls(to_jsonb(p)) FROM patient_installment_plans p WHERE id=$1",
+    sqlx::query(
+        "INSERT INTO patient_installment_plans
+         (tenant_id,id,patient_id,account_id,invoice_id,request_id,creation_hash,requested_by,reason,
+          livemode,total_cents,responsibility_cents,baseline_version,account_snapshot,ledger_ids,schedule)
+         VALUES($1,$2,$3,$4,$5,$6,'synthetic-plan',$7,'Agreed synthetic finite plan',
+                false,3000,3000,$8,$9,'[]'::jsonb,$10)",
     )
+    .bind(a.tenant_id)
     .bind(plan_id)
-    .fetch_one(&pool)
+    .bind(patient)
+    .bind(account.id)
+    .bind(invoice)
+    .bind(Uuid::new_v4())
+    .bind(a.sub)
+    .bind(account.version)
+    .bind(json!(account))
+    .bind(json!([{"due_on":"2030-01-01","amount_cents":3000}]))
+    .execute(&pool)
     .await
     .unwrap();
+    let stored_plan = || {
+        sqlx::query_scalar::<_, Value>(
+            "SELECT jsonb_strip_nulls(to_jsonb(p)) FROM patient_installment_plans p
+             WHERE tenant_id=$1 AND id=$2",
+        )
+        .bind(a.tenant_id)
+        .bind(plan_id)
+        .fetch_one(&pool)
+    };
+    let before = stored_plan().await.unwrap();
+    migrate_through(&pool, 121).await;
+    assert_eq!(stored_plan().await.unwrap(), before);
     crate::MIGRATOR.run(&pool).await.unwrap();
     crate::MIGRATOR.run(&pool).await.unwrap();
-    let after: Value = sqlx::query_scalar(
-        "SELECT jsonb_strip_nulls(to_jsonb(p)) FROM patient_installment_plans p WHERE id=$1",
-    )
-    .bind(plan_id)
-    .fetch_one(&pool)
-    .await
-    .unwrap();
-    assert_eq!(before, after);
-    let cancelled = cancel_with(
-        &pool,
+    assert_eq!(stored_plan().await.unwrap(), before);
+
+    let (status, cancelled) = call(
+        &state,
         &a,
-        patient,
-        plan_id,
-        cancel_input(),
-        1,
-        policy(false),
+        &format!("/api/v1/billing/patients/{patient}/installment-plans/{plan_id}/cancel"),
+        json!({"reason":cancel_input().reason}),
+        Some(1),
     )
-    .await
-    .unwrap();
+    .await;
+    assert_eq!(status, 200, "{cancelled}");
     assert_eq!(cancelled["status"], "cancelled");
+    assert_eq!(cancelled["version"], 2);
+    assert_eq!(cancelled["remaining_cents"], 3000);
+    assert_eq!(cancelled["installments"][0]["amount_cents"], 3000);
 }
 
 include!("installments_reader_tests.rs");

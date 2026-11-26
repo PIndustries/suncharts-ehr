@@ -47,6 +47,7 @@ function partnersBillingSection(data){
 function renderPartners(){
  const data=partnersState;if(!data)return;
  $('tools').innerHTML=`<header class="integration-hero"><div><p class="eyebrow">PRACTICE SETUP</p><h2>Partners</h2><p>Set up payments and choose the billing partner that works this practice’s claims. SunCharts Connect holds the agreement; this EHR keeps no copy of it.</p></div><button type="button" data-partners-refresh>Refresh</button></header><section class="integration-section">${partnersPaymentStep(data.partners?.payments)}<div class="billing-section"><div class="section-head"><div><h3>2 · Billing partner</h3><p class="muted">Partners listed for this practice. Enrolling shares claims, payments and support access with one partner at a time.</p></div></div>${partnersBillingSection(data)}</section>`;
+ if(typeof practiceAdminFrame==='function')practiceAdminFrame('partners');
 }
 async function showPartners(){
  if(me?.role!=='owner')throw new Error('Practice owner access is required.');

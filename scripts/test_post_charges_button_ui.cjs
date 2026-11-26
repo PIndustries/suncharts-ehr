@@ -21,7 +21,7 @@ const html=ctx.billingAccountActionForm(account,false,'Reason','helper','Post ch
 assert.match(html,/<form id="billing-account-action"/,'the action form renders');
 assert.match(html,/<button type="submit" class="primary" name="action" value="post">Post charges<\/button><button type="submit" name="action" value="void">Remove these charges<\/button>/,'both action buttons carry name and value');
 const form={id:'billing-account-action',dataset:{account:'account',version:'4'},querySelectorAll:()=>[],closest:()=>null};
-const chargeForm={id:'billing-account-form',dataset:{patient:'patient'},querySelectorAll:()=>[]};
+const chargeForm={id:'billing-account-form',dataset:{patient:'patient'},hasAttribute:()=>false,querySelectorAll:()=>[]};
 function runSubmit(target,submitter,entries){const pending=Promise.withResolvers();ctx.pending=pending;
  ctx.FormData=class{constructor(){this[Symbol.iterator]=entries[Symbol.iterator].bind(entries);}};
  for(const handler of handlers.submit||[])handler({target,submitter,preventDefault(){}});return ctx.pending.promise;}

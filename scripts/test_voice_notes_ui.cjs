@@ -16,8 +16,8 @@ function fixture({role='clinician',status='in_progress',values={},list={availabl
   sections[key]=section;boxes[key]=box;
  }
  for(const key of keys)sections[key].remove=undefined;
- const mkCard=()=>({set innerHTML(v){this.html=v;},get innerHTML(){return this.html||'';},setAttribute(){},remove(){for(const k of keys)if(sections[k].cards===this)sections[k].cards=null;},className:''});
- const form={querySelector:sel=>{const m=/textarea\[name="(\w+)"\]/.exec(sel);return m?boxes[m[1]]:null;}};
+ const mkCard=()=>({contains:()=>false,querySelectorAll:()=>[],set innerHTML(v){this.html=v;},get innerHTML(){return this.html||'';},setAttribute(){},remove(){for(const k of keys)if(sections[k].cards===this)sections[k].cards=null;},className:''});
+ const form={dataset:{visitId:'v1'},querySelector:sel=>{const m=/textarea\[name="(\w+)"\]/.exec(sel);return m?boxes[m[1]]:null;}};
  const state={me:{role,user_id:'u1',tenant_id:'t1'},rec:null};
  class FakeRecorder{static isTypeSupported(t){return t==='audio/webm;codecs=opus';}
   constructor(stream,opts){this.stream=stream;this.opts=opts;this.state='inactive';this.mimeType=opts?.mimeType||'';recorders.push(this);}
@@ -39,7 +39,7 @@ function fixture({role='clinician',status='in_progress',values={},list={availabl
   navigator:{mediaDevices:{getUserMedia:async c=>{gum.push(c);if(context.micError)throw context.micError;return {getTracks:()=>[{stop:()=>stopped.push(1)}]};}}},
   window:{addEventListener:(n,fn)=>{(handlers['w:'+n]??=[]).push(fn);},removeEventListener:(n,fn)=>{handlers['w:'+n]=(handlers['w:'+n]||[]).filter(f=>f!==fn);}},
   document:{querySelector:sel=>sel==='[data-voice-note-panel]'&&hostVisible?host:null,querySelectorAll:()=>[],addEventListener:(n,fn)=>{(handlers[n]??=[]).push(fn);},createElement:()=>mkCard()},
-  notice:(m,e)=>notices.push({m,e}),sheetOpen:(title,node)=>{sheets.push({title,html:node.innerHTML});return {};},
+  notice:(m,e)=>notices.push({m,e}),sheetOpen:(title,node)=>{const dialog={title,open:true,get html(){return node.innerHTML;},addEventListener(type,fn){if(type==='close')this.closed=fn;}};sheets.push(dialog);return dialog;},sheetClose:dialog=>{dialog.open=false;dialog.closed?.();},
   Event:class{constructor(type,o){this.type=type;this.bubbles=o?.bubbles;}},URL:{createObjectURL:()=>'blob:x',revokeObjectURL(){}},
  });
  vm.runInContext(source,context);
@@ -50,7 +50,7 @@ function fixture({role='clinician',status='in_progress',values={},list={availabl
   click(action,extra={}){const el={dataset:{voiceAction:action,...extra}};for(const h of handlers.click)h({target:{closest:()=>el}});return flush();},
   mode(m){const el={dataset:{voiceMode:m}};for(const h of handlers.click)h({target:{closest:()=>el}});},
   consent(checked){const el={checked};for(const h of handlers.change)h({target:{closest:sel=>sel==='[data-voice-consent]'?el:null}});},
-  card(key){return sections[key].cards?.html||'';}};
+  card(key){return sections[key].cards?.html||'';},review(){return sheets.find(sheet=>sheet.title==='Review recording draft'&&sheet.open)?.html||'';}};
  return f;
 }
 const at=(s)=>new Date(Date.now()-s*1000).toISOString();
@@ -124,7 +124,7 @@ const draft={subjective:'Cough for <3> days',objective:'Lungs clear',assessment:
  f=fixture({list:{available:true,items:[note('transcribing')]}});await f.mount();
  assert.deepEqual(steps(f.host.innerHTML),['is-done','is-done','is-now','is-later','is-later']);assert.match(f.host.innerHTML,/data-voice-skipped/);assert.match(f.host.innerHTML,/Turning speech into text… <span[^>]*data-voice-elapsed>14 s</);
  f=fixture({list:{available:true,items:[note('drafting')]}});await f.mount();assert.deepEqual(steps(f.host.innerHTML),['is-done','is-done','is-done','is-now','is-later']);assert.match(f.host.innerHTML,/Drafting the note…/);
- f=fixture({list:{available:true,items:[note('ready',{draft})]}});await f.mount();assert.deepEqual(steps(f.host.innerHTML),Array(5).fill('is-done'));
+ f=fixture({list:{available:true,items:[note('ready',{draft})]}});await f.mount();assert.deepEqual(steps(f.host.innerHTML),[]);assert.match(f.host.innerHTML,/data-voice-pending-count="3"/);
  console.log('PASS each stage maps to the right steps, with the place in line and no wait shown');
 
  // Elapsed text ticks on the client.
@@ -139,7 +139,7 @@ const draft={subjective:'Cough for <3> days',objective:'Lungs clear',assessment:
  assert.equal(f.calls.length,before);assert.deepEqual(steps(f.host.innerHTML),['is-done','is-done','is-now','is-later','is-later']);
  f.context.replies['GET /api/v1/visits/v1/voice-notes']={available:true,items:[note('ready',{draft})]};
  f.context.voiceNotesEvent({visit_id:'v1',voice_note_id:'n1',stage:'ready'});await f.flush();await f.flush();
- assert.equal(f.calls.length,before+1);assert.match(f.host.innerHTML,/Draft ready from your recording/);assert.match(f.card('subjective'),/Suggested from your recording/);
+ assert.equal(f.calls.length,before+1);assert.match(f.host.innerHTML,/data-voice-review-draft/);assert.equal(f.card('subjective'),'');
  console.log('PASS a live event updates the strip and a ready event brings the draft');
 
  // Poll fallback schedules every 2 s while unfinished, and stops.
@@ -153,22 +153,47 @@ const draft={subjective:'Cough for <3> days',objective:'Lungs clear',assessment:
  f=fixture({list:{available:true,items:[note('failed',{error:'timeout'})]}});await f.mount();assert.equal([...f.timers.values()].filter(x=>x.delay===2000).length,0);
  console.log('PASS polling runs every 2 s while unfinished and stops at ready or failed');
 
- // Ready: cards under the right sections with the right labels.
+ // Open review deliberately, with the actual edited note available for comparison.
  f=fixture({values:{plan:'Existing plan'},list:{available:true,items:[note('ready',{draft})]}});await f.mount();
- assert.match(f.host.innerHTML,/Use all four/);assert.match(f.host.innerHTML,/Show transcript/);assert.match(f.host.innerHTML,/Dismiss draft/);assert.match(f.host.innerHTML,/Record another/);assert.match(f.host.innerHTML,/Read it against what was said before you sign/);
- assert.match(f.card('subjective'),/Cough for &lt;3&gt; days/);assert.match(f.card('subjective'),/>Use this</);assert.doesNotMatch(f.card('subjective'),/Add below/);
- assert.match(f.card('plan'),/Replace what’s there/);assert.match(f.card('plan'),/Add below what’s there/);
- assert.equal(f.card('assessment'),'','no card for an empty section');
- // Use this fills and fires input without saving.
- f.calls.length=0;await f.click('use',{key:'subjective'});assert.equal(f.boxes.subjective.value,'Cough for <3> days');assert.deepEqual(f.inputs[0],{key:'subjective',type:'input',bubbles:true});assert.equal(f.card('subjective'),'');assert.equal(f.calls.length,0);
+ assert.match(f.host.innerHTML,/data-voice-pending-count="3"/);assert.doesNotMatch(f.host.innerHTML,/Lungs clear|Rest and fluids|data-voice-steps/);
+ assert.equal(f.card('plan'),'');assert.equal(f.sheets.length,0);assert.equal(f.inputs.length,0);
+ await f.click('review');
+ assert.match(f.review(),/Current note/);assert.match(f.review(),/Existing plan/);assert.match(f.review(),/Cough for &lt;3&gt; days/);
+ assert.match(f.review(),/Use suggestion/);assert.match(f.review(),/Append to section/);assert.match(f.review(),/Replace section/);
+ assert.doesNotMatch(f.review(),/data-voice-card="assessment"/);
+ for(const text of ['Show transcript','Dismiss draft','Record another'])assert.ok(f.review().includes(text));
+ assert.equal(f.inputs.length,0,'reading the comparison does not change the note');
+ f.calls.length=0;await f.click('use',{key:'subjective'});assert.equal(f.boxes.subjective.value,'Cough for <3> days');assert.deepEqual(f.inputs[0],{key:'subjective',type:'input',bubbles:true});assert.equal(f.calls.length,0);
  await f.click('add',{key:'plan'});assert.equal(f.boxes.plan.value,'Existing plan\n\nRest and fluids');
- console.log('PASS ready shows cards under the right boxes; Use this and Add below fill them and fire input');
- f=fixture({values:{plan:'Old',objective:'  '},list:{available:true,items:[note('ready',{draft})]}});await f.mount();
+ assert.match(f.host.innerHTML,/data-voice-pending-count="1"/);
+ f=fixture({values:{plan:'Old'},list:{available:true,items:[note('ready',{draft})]}});await f.mount();await f.click('review');
  await f.click('use',{key:'plan'});assert.equal(f.boxes.plan.value,'Rest and fluids');
- f=fixture({values:{plan:'Old'},list:{available:true,items:[note('ready',{draft})]}});await f.mount();await f.click('use-all');
- assert.equal(f.boxes.subjective.value,'Cough for <3> days');assert.equal(f.boxes.objective.value,'Lungs clear');assert.equal(f.boxes.plan.value,'Old\n\nRest and fluids');assert.equal(f.boxes.assessment.value,'');assert.equal(f.inputs.length,3);
- f=fixture({list:{available:true,items:[note('ready',{draft})]}});await f.mount();await f.click('dismiss-card',{key:'objective'});assert.equal(f.card('objective'),'');assert.notEqual(f.card('plan'),'');
- console.log('PASS Use all four fills empty boxes and appends to others, and a card can be dismissed');
+ console.log('PASS recording review compares the current note with suggestions and changes only the chosen section');
+
+ // An already-applied paragraph remains resolved on reload; skipped fields stay untouched.
+ f=fixture({values:{plan:'Old\n\nRest and fluids'},list:{available:true,items:[note('ready',{draft})]}});await f.mount();await f.click('review');
+ assert.match(f.host.innerHTML,/data-voice-pending-count="2"/);assert.doesNotMatch(f.review(),/Already in note|Rest and fluids/);
+ await f.click('toggle-reviewed');assert.match(f.review(),/Already in note/);assert.equal(f.review().split('Rest and fluids').length-1,1,'matches appear once on request');await f.click('toggle-reviewed');
+ await f.click('dismiss-card',{key:'objective'});assert.doesNotMatch(f.review(),/data-voice-card="objective"/);await f.click('toggle-reviewed');assert.match(f.review(),/Dismissed/);await f.click('toggle-reviewed');assert.match(f.host.innerHTML,/data-voice-pending-count="1"/);
+ await f.click('use-all');assert.equal(f.boxes.subjective.value,'Cough for <3> days');assert.equal(f.boxes.objective.value,'');assert.equal(f.boxes.plan.value,'Old\n\nRest and fluids');assert.equal(f.inputs.length,1);
+ assert.match(f.host.innerHTML,/data-voice-pending-count="0"/);assert.match(f.host.innerHTML,/View recording/);
+ f=fixture({values:{plan:'Old'},list:{available:true,items:[note('ready',{draft})]}});await f.mount();await f.click('review');await f.click('use-all');
+ assert.equal(f.boxes.subjective.value,'Cough for <3> days');assert.equal(f.boxes.objective.value,'Lungs clear');assert.equal(f.boxes.plan.value,'Old\n\nRest and fluids');assert.equal(f.inputs.length,3);
+ console.log('PASS batch apply skips identical and dismissed suggestions and appends without replacing existing sections');
+
+ // Match complete lines and paragraphs only, regardless of newline convention.
+ const full={subjective:'History A',objective:'Observation B',assessment:'Finding C\r\nFinding D',plan:'Counsel E'};
+ f=fixture({values:{...full,subjective:'Other paragraph\nHistory A',assessment:'Finding C\nFinding D'},list:{available:true,items:[note('ready',{draft:full,transcript:'Recorded source'})]}});await f.mount();
+ assert.match(f.host.innerHTML,/data-voice-recording/);assert.doesNotMatch(f.host.innerHTML,/data-voice-review-draft|sections to review|Recording draft/);
+ await f.click('recording');let recording=f.sheets.at(-1);assert.equal(recording.title,'Recording and transcript');
+ assert.match(recording.html,/All suggestions are already in the note/);assert.match(recording.html,/<audio controls/);assert.match(recording.html,/Recorded source/);
+ assert.doesNotMatch(recording.html,/data-voice-card=|Current note|Replace section|Append to section|Finding C/);
+ assert.match(recording.html,/View reviewed sections \(4\)/);
+ await f.click('toggle-reviewed');assert.equal(recording.html.split('Observation B').length-1,1);assert.match(recording.html,/data-voice-card="assessment"/);
+ await f.click('toggle-reviewed');assert.doesNotMatch(recording.html,/Observation B/);assert.equal(f.inputs.length,0);
+ f=fixture({values:{...full,objective:'No Observation B',plan:'counsel E'},list:{available:true,items:[note('ready',{draft:full})]}});await f.mount();
+ assert.match(f.host.innerHTML,/data-voice-pending-count="2"/);await f.click('review');assert.match(f.review(),/No Observation B/);assert.match(f.review(),/counsel E/);assert.doesNotMatch(f.review(),/History A/);assert.equal(f.inputs.length,0);
+ console.log('PASS exact incorporated sections disappear from decisions, partial and case-changed matches still need review, recording stays available');
 
  // Transcript sheet and dismiss.
  f=fixture({list:{available:true,items:[note('ready',{draft,transcript:'Patient says <hello>'})]}});await f.mount();await f.click('transcript');

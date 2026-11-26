@@ -204,17 +204,17 @@ const click=node=>dispatch('click',node);
 const type=(node,value)=>{node.value=value;dispatch('input',node);};
 const change=(node,value)=>{node.value=value;dispatch('change',node);};
 const openHost=html=>{const host=makeNode('div');host.innerHTML=html;return host;};
-// The editor sits where the page puts it: inside the encounter revenue panel, which is what
-// tells billing.js's click dispatcher that this charge table is on screen.
-const revenue=openHost('<div id="encounter-revenue"><div id="encounter-billing-editor"></div></div>');
-nodes['encounter-revenue']=revenue.children[0];
-nodes['encounter-billing-editor']=revenue.children[0].children[0];
+// The encounter mounts the CPT editor beside its diagnoses, outside the payment panel.
+const documentation=openHost('<section id="encounter-documentation"><div id="encounter-billing-editor"></div></section>');
+nodes['encounter-revenue']=openHost('<div id="encounter-revenue"></div>').children[0];
+nodes['encounter-billing-editor']=documentation.children[0].children[0];
 nodes['billing-editor']=openHost('<div id="billing-editor"></div>').children[0];
 nodes['billing-detail']=openHost('<div id="billing-detail"></div>').children[0];
 
 // ---- the vm page -----------------------------------------------------------------------
 const sent=[];
-let apiReply=()=>({id:'account',version:7,status:'draft',content:{visit_id:'visit-a',service_date:'2026-11-13',lines:[]}});
+const savedAccount=(url,method,body,version)=>({id:'account',version:(version??6)+1,status:'draft',content:body.content});
+let apiReply=savedAccount;
 // The vm's timers come back as plain tokens: the realm hands them out to nothing but this
 // test, and a host Timeout object does not survive the vm boundary intact.
 const liveTimers=new Map();let tokenSeq=0;
@@ -231,7 +231,7 @@ const ctx={console,setTimeout:vmSetTimeout,clearTimeout:vmClearTimeout,Date,Intl
  visitBillingDate:v=>new Intl.DateTimeFormat('en-US',{month:'short',day:'numeric',year:'numeric',timeZone:'UTC'}).format(new Date(`${v}T00:00:00`)),
  revenueCoverage:()=>null,accountDiagnosisSummary:()=>'',billingChargeDraftRecovery:()=>'',accountDiagnosisDraftRecovery:()=>'',
  notice(message){ctx.noticed=message;},run:fn=>fn(),showChartSection(){},setEncounterSection(){},
- api:async(url,method='GET',body,version)=>{sent.push({url,method,body,version});return apiReply(url,method,body);}};
+ api:async(url,method='GET',body,version)=>{sent.push({url,method,body,version});return apiReply(url,method,body,version);}};
 const context=vm.createContext(ctx);
 vm.runInContext(fs.readFileSync('web/display-format.js','utf8'),context);
 vm.runInContext(fs.readFileSync('web/billing.js','utf8'),context);
@@ -271,7 +271,9 @@ const advance=async()=>{
  ctx.activeVisit={id:'visit-a',appointment_id:'appt-a',status:'in_progress'};
  ctx.revenueServiceDate=()=>'2026-11-13';
  ctx.billingCoverageOrderMarkup=()=>'';
- ctx.visitPlanCopayCents=()=>2500;
+ const coverage={id:'synthetic-coverage',content:{payer_id:'synthetic-payer',member_id:'synthetic-member',priority:'primary',copay_cents:2500}};
+ ctx.workspace.billing.coverages=[coverage];
+ ctx.revenueCoverage=()=>coverage;
  // A brand-new table for an encounter: one blank row, totals at zero, nothing typed yet.
  let form=await openTable([]);
  assert.ok(form,'the editor opened');
@@ -341,6 +343,13 @@ const advance=async()=>{
  assert.ok(!openForm().outerHTML.includes('Line total'),'the row holds no total column to make it wide');
  assert.equal(form.querySelector('[data-charge-total]').textContent,'$159.00','the total moves as lines move, and is what the claim carries: a line amount is its total, whatever the units');
  assert.match(form.querySelector('[data-charge-pays]').textContent,/Patient pays now \$25\.00/,'the copay is shown as what the patient pays now');
+ const previousElements=form.elements;
+ form.elements={namedItem:name=>name==='coverage_id'?{value:''}:null};
+ ctx.chargeTableTotals(form);
+ assert.equal(form.querySelector('[data-charge-copay]').textContent,'Self-pay');
+ assert.doesNotMatch(form.querySelector('[data-charge-pays]').textContent,/insurer|copay/i);
+ form.elements=previousElements;
+ ctx.chargeTableTotals(form);
  // Row problems in plain words: an incomplete row says what is missing, nothing more.
  const problemLine=rowsNow()[1];
  assert.match(problemLine.querySelector('[data-charge-problem]').textContent,/Choose the diagnoses this service was for\./,'what the row still needs, in plain words');
@@ -386,7 +395,7 @@ const advance=async()=>{
  await advance();
  const lastPut=sent.filter(call=>call.method==='PUT').at(-1);
  assert.equal(lastPut.version,9,'the next change saves against the version the refresh read');
- apiReply=()=>({id:'account',version:7,status:'draft',content:{visit_id:'visit-a',service_date:'2026-11-13',lines:[]}});
+ apiReply=savedAccount;
  // A finished account is read-only: the table is shown, no editing controls.
  ctx.workspace.billing.accounts=[{id:'account',version:9,status:'posted',content:{visit_id:'visit-a',service_date:'2026-11-13',currency:'USD',lines:[{code_system:'CPT',code:'99213',description:'Office visit',units:1,amount_cents:15000,diagnosis_codes:['Z00.00']}]}}];
  await vm.runInContext('accountEditor(workspace.billing.accounts[0],null,true)',ctx);
@@ -411,5 +420,12 @@ const advance=async()=>{
  assert.equal(vm.runInContext('chargeRowValue(document.getElementById("billing-charge-lines").querySelectorAll(".billing-charge-row")[0])',ctx).description,'Office visit, established patient','the description field is what the line saves');
  blank.querySelector('[name="description"]').value='';
  assert.ok(vm.runInContext('chargeRowProblems(document.getElementById("billing-charge-lines").querySelectorAll(".billing-charge-row")[0])',ctx).includes('Add what this service was.'),'a code without a description still asks for one');
+ assert(form.querySelectorAll('[data-charge-insurance-detail]').every(detail=>detail.open),'insurance fields are visible for insured visits');
+ ctx.revenueCoverage=()=>null;
+ form=await openTable([]);
+ assert.equal(form.querySelector('[data-charge-copay]').textContent,'Self-pay');
+ assert.equal(form.querySelector('[data-charge-pays]').textContent,'');
+ assert.equal(form.querySelector('[data-add-charge]').textContent,'+ Add procedure');
+ assert(form.querySelectorAll('[data-charge-insurance-detail]').every(detail=>!detail.open),'claim-only fields are collapsed for self-pay');
  console.log('PASS charge table: add and focus, debounced POST then PUT with the server version, live totals and copay, plain-worded row problems, remove with undo, 409 refresh, and a read-only finished table');
 })().catch(error=>{console.error(error);process.exit(1);});

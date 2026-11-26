@@ -1,33 +1,81 @@
 /* SPDX-License-Identifier: AGPL-3.0-only */
-/* Practice overview: tiles that open their lists, three small charts and what needs attention. Theme tokens only. */
-.practice-dashboard{display:grid;gap:14px;margin:0 0 16px}
-.practice-tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px}
-.practice-tile{display:grid;gap:2px;justify-items:start;text-align:left;padding:12px 14px;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--ink);cursor:pointer}
-.practice-tile span{font-size:var(--fs-sm);color:var(--muted)}
-.practice-tile b{font-size:1.5rem;line-height:1.2}
-.practice-tile small{color:var(--muted)}
-.practice-tile.is-attention{border-color:var(--warning-line);background:var(--warning-bg)}
+/* Home and patient directory share the Stage 1 frame tokens. */
+.practice-dashboard{margin:0 0 16px}
+.practice-tiles{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:1px;border:1px solid var(--line);border-radius:6px;background:var(--line);overflow:hidden}
+.practice-tile{display:grid;gap:2px;justify-items:start;text-align:left;padding:9px 12px;min-height:64px;border:0;border-radius:0;background:var(--surface);color:var(--ink)}
+.practice-tile:focus-visible{outline-offset:-2px}
+.directory-table th{font-size:var(--fs-eyebrow);color:var(--muted);text-transform:uppercase;letter-spacing:.06em;font-weight:600}
+.practice-tile span{font-size:var(--fs-xs);color:var(--muted);font-weight:500}.practice-tile b{font-size:var(--fs-xl);line-height:1.2;color:var(--ink);font-variant-numeric:tabular-nums}
+.practice-home .practice-board-layout{display:grid;grid-template-columns:minmax(0,2fr) minmax(320px,1fr);gap:16px;align-items:start}
+.practice-home .practice-board,.practice-needs{min-width:0;border:1px solid var(--line);border-radius:6px;background:var(--surface);box-shadow:none}
+.practice-needs{padding:16px}
+.practice-needs h3{margin:0 0 12px}
+.practice-needs ul{list-style:none;margin:0;padding:0}
+.practice-needs li{display:grid;grid-template-columns:minmax(0,1fr) auto auto;align-items:center;gap:8px;padding:12px 0;border-top:1px solid var(--line);font-size:var(--fs-sm)}
+.practice-needs button{font-size:var(--fs-xs);white-space:nowrap}
+.practice-home .status-badge{background:var(--surface-soft);border:1px solid var(--line);color:var(--ink)}
+#app .workspace-header:has(~#tools #practice-home){display:none}
+#app #patient-directory{width:100%;padding:16px}
+.directory-toolbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:16px}
+.directory-toolbar .search-label{flex:1;min-width:180px;margin:0}
+.directory-toolbar input{width:100%}
+.directory-status{display:flex;border:1px solid var(--line);border-radius:6px;overflow:hidden}
+.directory-status button{border:0;border-radius:0;background:var(--surface);color:var(--muted)}
+.directory-status button[aria-pressed=true]{background:var(--accent);color:var(--blue)}
+#patients.patients{display:block;max-height:none;overflow:visible}
+.directory-table{width:100%;border-collapse:collapse;text-align:left}
+.directory-table th,.directory-table td{padding:12px 16px;border-bottom:1px solid var(--line)}
+.directory-table tbody tr{cursor:pointer}
+.directory-table tbody tr:hover,.directory-table tr.selected{background:var(--surface-soft)}
+.directory-table small{display:block;color:var(--muted)}
+.directory-table button{font-weight:600;text-align:left}
+#patient-directory{overflow-x:auto}
+@media(max-width:1000px){.practice-home .practice-board-layout{grid-template-columns:1fr}}
+@media(max-width:600px){.directory-toolbar{gap:8px}.directory-toolbar .search-label{flex-basis:100%}.directory-table th,.directory-table td{padding:10px 8px}.practice-needs li{grid-template-columns:minmax(0,1fr) auto}.practice-needs li button{grid-column:1/-1;justify-self:start}}
+.practice-tile.is-attention{background:var(--warning-bg)}
 .practice-tile.is-attention b{color:var(--warning-text)}
-.practice-tile.is-good b{color:var(--success-text)}
-.practice-charts{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
-.practice-chart-card,.practice-needs{padding:12px 14px;border:1px solid var(--line);border-radius:8px;background:var(--surface);min-width:0}
-.practice-chart-card h3,.practice-needs h3{margin:0 0 8px;font-size:var(--fs-body)}
-.practice-chart{width:100%;height:auto;display:block}
-.practice-chart-label,.practice-chart-value{font-size:var(--fs-xs,12px);fill:var(--ink)}
-.practice-chart-bar{fill:var(--blue)}
-.practice-chart-bar.attention{fill:var(--warning-line)}
-.practice-chart-bar.good{fill:var(--success-line)}
-.practice-chart-bar.neutral{fill:var(--muted)}
-.practice-chart-line{fill:none;stroke-width:2}
-.practice-chart-line.charges{stroke:var(--blue)}
-.practice-chart-line.collected{stroke:var(--success-line)}
-.practice-chart-key{display:flex;gap:14px;margin:6px 0 0;font-size:var(--fs-sm)}
-.practice-chart-key .charges{color:var(--blue)}
-.practice-chart-key .collected{color:var(--success-text)}
-.practice-needs ul{list-style:none;margin:0;padding:0;display:grid;gap:6px}
-.practice-needs li{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:10px;align-items:center}
-@media(max-width:900px){.practice-charts{grid-template-columns:1fr}}
-.practice-bars{display:grid;gap:6px}
-.practice-bar-row{display:grid;grid-template-columns:minmax(90px,auto) minmax(0,1fr) 3ch;gap:8px;align-items:center;font-size:var(--fs-sm)}
-.practice-bar-row svg{width:100%;height:12px;display:block}
-.practice-bar-row b{text-align:right}
+.practice-charts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;margin:16px 0}
+.practice-chart-card{padding:16px;border:1px solid var(--line);border-radius:6px;background:var(--surface);min-width:0}
+.practice-bar-row{display:grid;grid-template-columns:140px minmax(0,1fr) 30px;align-items:center;gap:8px;font-size:var(--fs-xs);margin:8px 0}
+.practice-bar-row svg{width:100%;height:10px}
+.practice-chart-bar{fill:var(--blue)}.practice-chart-bar.attention{fill:var(--warning-text)}.practice-chart-bar.good{fill:var(--success-text)}.practice-chart-bar.neutral{fill:var(--muted)}
+.practice-chart{width:100%;height:auto}.practice-chart text{fill:var(--muted);font-size:14px}.practice-daily-bar.charges{fill:var(--blue)}.practice-daily-bar.collected{fill:var(--success-text)}
+.practice-chart-key{display:flex;gap:16px;font-size:var(--fs-xs)}.practice-chart-key .charges{color:var(--blue)}.practice-chart-key .collected{color:var(--success-text)}
+@media(max-width:800px){.practice-charts{grid-template-columns:1fr}}
+
+/* Override the shared panel frame so Home has one level of cards. */
+#app #tools:has(>.practice-home){padding:0;border:0;background:transparent;box-shadow:none}
+#app .practice-home{max-width:1280px;width:100%;margin-inline:auto;padding:0;border:0;background:transparent;box-shadow:none}
+.practice-home h3{font-size:var(--fs-md);font-weight:600;text-transform:none;letter-spacing:normal;color:var(--ink)}
+.practice-home .practice-commandbar{flex-wrap:wrap;padding:4px 0 16px;gap:12px}
+.practice-home .practice-commandbar h2{margin:0;font-size:var(--fs-xl)}
+.practice-home .actions{display:flex;flex-wrap:wrap;gap:8px}
+.practice-home .practice-side-column{display:grid;gap:16px}
+.practice-money-card{border:1px solid var(--line);border-radius:6px;background:var(--surface);padding:16px;min-width:0}
+.practice-money-card h3{margin:0 0 12px}
+.practice-money-card dl{display:grid;grid-template-columns:fit-content(55%) minmax(0,1fr);gap:12px 8px;margin:0 0 16px;font-size:var(--fs-sm)}
+.practice-money-card dt{color:var(--muted)}
+.practice-money-card dd{margin:0;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+.practice-money-card dd button{max-inline-size:100%;white-space:normal;overflow-wrap:anywhere}
+.practice-money-card small{display:block;font-size:var(--fs-xs);color:var(--muted)}
+.practice-home .practice-table-wrap{position:relative;margin:0;overflow-x:auto}
+.practice-home .practice-table-wrap:focus-visible{outline-offset:-2px}
+.practice-home .practice-table th,.practice-home .practice-table td{padding:12px;text-align:left;border-color:var(--line)}
+.practice-home .practice-table th:first-child,.practice-home .practice-table td:first-child{padding-left:16px}
+.practice-home .practice-table th{background:var(--surface-soft);text-transform:none;letter-spacing:normal}
+.practice-home .practice-board-toolbar,.practice-home .practice-board-footer{background:transparent}
+.practice-home .practice-board-toolbar .practice-status-strip{gap:4px;border:0;background:transparent;overflow:visible}
+.practice-home .practice-status-strip>button{background:transparent;border:0;border-radius:3px;color:var(--muted)}
+.practice-home .practice-status-strip>button[aria-pressed=true]{background:var(--accent);color:var(--blue)}
+.practice-home .practice-status-strip[hidden]{display:none}
+.practice-home .practice-table tr:hover td{background:var(--surface-soft)}
+.practice-stage{display:inline-block;white-space:nowrap;border-radius:20px;padding:3px 8px;font-size:var(--fs-xs);background:var(--accent);color:var(--blue)}
+.practice-stage.stage-intake,.practice-stage.stage-wrap-up{background:var(--warning-bg);color:var(--warning-text)}
+.practice-stage.stage-ready,.practice-stage.stage-done{background:var(--success-bg);color:var(--success-text)}
+.practice-stage.stage-claim{background:var(--surface-soft);color:var(--muted)}
+#billing-overview-trends .practice-chart-card{border:0;padding:0;background:transparent}
+@media(max-width:600px){.practice-tiles{grid-template-columns:repeat(2,minmax(0,1fr))}.practice-commandbar .actions{width:100%}.practice-needs li{gap:6px}}
+
+.practice-home a.practice-tile{cursor:pointer;text-decoration:none}
+.practice-home .practice-tile:hover{border-color:var(--blue);background:var(--accent)}
+.practice-home .practice-tile:focus-visible{outline:2px solid var(--blue);outline-offset:3px}

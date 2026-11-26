@@ -24,7 +24,7 @@ function fixture(readers=[frontDesk]){
   api:async(...args)=>{calls.push(args);if(args[0]===readersPath)return ctx.readers;if(args[0]===base&&!args[1])return {items:ctx.items||[],availability:ctx.availability};if(typeof ctx.next==='function')return ctx.next(...args);return {operation:ctx.next};}};
  // One slot directly under each copay panel; whatever is drawn there is what staff see in place.
  for(const id of ['encounter-hosted-copay-reader','insurance-hosted-copay-reader'])nodes[id]={id,_html:'',scrolled:0,get innerHTML(){return this._html;},set innerHTML(html){this._html=html;if(html.includes('id="reader-payment-live"'))nodes['reader-payment-live']={innerHTML:''};else delete nodes['reader-payment-live'];},scrollIntoView(){this.scrolled++;}};
- ctx.window=ctx;vm.createContext(ctx);
+ ctx.window=Object.assign(new EventTarget(),{localStorage:ctx.localStorage});vm.createContext(ctx);
  const billing=fs.readFileSync('web/billing.js','utf8');vm.runInContext(billing.slice(billing.indexOf('function patientPrintBranding('),billing.indexOf('function patientInvoiceDocument(')),ctx);
  vm.runInContext(fs.readFileSync('web/patient-revenue.js','utf8'),ctx);vm.runInContext(fs.readFileSync('web/card-readers.js','utf8'),ctx);
  const click=(dataset,panel)=>{for(const handler of handlers.click)handler({target:{closest:selector=>selector==='button'?{dataset,hasAttribute:name=>name in dataset,closest:()=>panel?{id:panel}:null}:null},preventDefault(){}});return ctx.pending;};

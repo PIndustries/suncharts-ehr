@@ -25,12 +25,12 @@ function patientBannerAllergies(clinical=workspace.clinical||{items:[],reviews:[
  }
  if(review==='no_known')return {state:'none',names:[],text:'No known allergies',title:'Reviewed: no known allergies. Open the allergy list.'};
  if(review==='reviewed')return {state:'empty',names:[],text:'No allergies recorded',title:'The allergy list was reviewed and has no active allergies. Open the allergy list.'};
- return {state:'unreviewed',names:[],text:'Allergies not reviewed',title:'Nobody has reviewed this patient\'s allergies yet. Open the allergy list to review it.'};
+ return {state:'unreviewed',names:[],text:'Allergy list unconfirmed',title:'This chart has no confirmed allergy-list review. Open Allergies to review the list.'};
 }
 // Coverage in force today, primary first, from the coverage the chart already loaded.
-function patientBannerCoverages(now=new Date()){
+function patientBannerCoverages(now=new Date(),serviceDate=null){
  if(!workspace.billing)return null;
- const today=`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`,order=['primary','secondary','tertiary'];
+ const today=serviceDate||`${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`,order=['primary','secondary','tertiary'];
  return (workspace.billing.coverages||[]).filter(c=>c.content?.status==='active'&&(!c.content.effective_date||c.content.effective_date<=today)&&(!c.content.end_date||c.content.end_date>=today)).sort((a,b)=>order.indexOf(a.content.priority)-order.indexOf(b.content.priority));
 }
 function patientBannerPayer(coverage){
@@ -38,13 +38,16 @@ function patientBannerPayer(coverage){
  return payer?.content?.name||(typeof payerName==='function'?payerName(id):'')||'Insurance';
 }
 // The insurer's latest answer, in the same four words the eligibility card uses.
-function patientBannerEligibility(coverage){
+function patientBannerEligibility(coverage,serviceDate){
  const checks=patientBanner.data?.eligibility;if(!Array.isArray(checks)||!patientBannerCurrent())return null;
- const check=checks.find(item=>item.coverage_id===coverage.id);
- if(!check)return {state:'none',icon:'–',label:'Not checked',title:'Eligibility has not been checked with the insurer. Open Insurance to check it.',differs:[]};
+ const check=checks.find(item=>item.coverage_id===coverage.id&&(!serviceDate||(item.request_snapshot?.service_date||item.service_date)===serviceDate));
+ const appointment=(workspace.appointments||[]).find(a=>a.id===(typeof activeVisit!=='undefined'?activeVisit?.appointment_id:null));
+ const reason=typeof scheduleInsuranceCheckMessage==='function'?scheduleInsuranceCheckMessage(appointment):'';
+ if(!check)return {state:'none',icon:'–',label:reason||'Not checked',title:reason||'Eligibility has not been checked with the insurer. Open Insurance to check it.',differs:[]};
  const when=displayDate(check.completed_at||check.created_at),label=typeof claimmdStatusLabel==='function'?claimmdStatusLabel(check):'Could not confirm';
- if(check.status==='pending')return {state:'none',icon:'…',label,title:`Asked the insurer ${when}. No answer yet.`,differs:[]};
- if(check.status!=='completed')return {state:'unknown',icon:'!',label,title:`The check on ${when} did not get an answer. Open Insurance to try again.`,differs:[]};
+ if(check.status==='pending')return {state:'pending',icon:'…',label:'Waiting for the insurer',title:`Asked the insurer ${when}. No answer yet.`,differs:[]};
+ if(check.status==='failed')return {state:'failed',icon:'!',label:'Check failed',title:`Eligibility check failed on ${when}. Open Insurance to review the recorded result.`,differs:[]};
+ if(check.status!=='completed')return {state:'unknown',icon:'!',label,title:`The status of the check on ${when} is unavailable.`,differs:[]};
  const summary=typeof claimmdEligibilitySummary==='function'?claimmdEligibilitySummary(check):{status:'unknown',differs:[]};
  if(summary.status==='active')return {state:'active',icon:'✓',label,title:`Active as of ${when}`,differs:summary.differs||[]};
  if(summary.status==='inactive')return {state:'inactive',icon:'✕',label,title:`The insurer answered "not active" on ${when}`,differs:summary.differs||[]};
@@ -65,7 +68,7 @@ function patientBannerFlags(insurance){
  const flags=[],data=patientBannerCurrent()?patientBanner.data:null,f=data?.flags||{},portal=['owner','clinician','front_desk'].includes(me?.role);
  const add=(key,text,tone,attrs,title)=>flags.push({key,text,tone,attrs,title});
  if(patientBanner.stale&&patientBannerCurrent())add('stale','Updated — refresh','info','data-action="reload" aria-label="This chart was updated elsewhere. Refresh"','Someone changed this chart after you opened it. Refresh to see the latest.');
- if(workspace.patient.archived)add('archived','Archived','muted','','This chart is archived. Restore it to book or start an encounter.');
+ if(workspace.patient.archived)add('archived','Archived','muted','data-patient-lifecycle-open','This chart is archived. Restore it to book or start an encounter.');
  if(insurance?.eligibility?.differs?.length)add('differs','Insurer has different details','warning','data-chart-section="insurance"',`The insurer's answer shows a different ${insurance.eligibility.differs.join(', ')}. Open Insurance to compare.`);
  if(f.intake_to_review>0)add('intake-review','Intake form to review','warning',patientBannerArea('documents')?'data-patient-intakes-open':'',f.intake_to_review===1?'The patient sent in an intake form that nobody has reviewed yet.':`${displayCount(f.intake_to_review,'intake form')} are waiting for review.`);
  if(f.intake_sent>0)add('intake-sent','Intake form sent','muted',patientBannerArea('documents')?'data-patient-intakes-open':'','An intake form was sent and the patient has not finished it yet.');
@@ -78,20 +81,40 @@ function patientBannerFlags(insurance){
  return flags;
 }
 // One primary button for what usually comes next, using the same actions the chart already has.
+function patientBannerNewEncounter(){
+ if(!patientBannerArea('visits')||!patientBannerCan('clinical')||typeof canStartEncounterFlow!=='function'||!canStartEncounterFlow())return '';
+ return '<button type="button" class="primary" data-start-encounter-flow="new" aria-haspopup="dialog">New encounter</button>';
+}
 function patientBannerPrimary(now=new Date()){
  const v=typeof activeVisit==='undefined'?null:activeVisit,archived=workspace.patient.archived,rooming=typeof isRoomingStaff==='function'&&isRoomingStaff(),clinician=['owner','clinician'].includes(me?.role);
- if(v)return `<button type="button" class="primary" data-chart-section="visits">${v.status==='signed'?'Review encounter':'Continue encounter'}</button>`;
+ const create=patientBannerNewEncounter();
+ if(v)return create;
  // A note left open is picked up again before anything new is started.
  const open=(workspace.visits||[]).filter(visit=>visit.status==='in_progress'),mine=open.find(visit=>visit.clinician_id===me?.user_id)||open[0];
- if(mine)return `<button type="button" class="primary" data-visit="${esc(mine.id)}">Continue encounter</button>`;
+ if(mine)return `<button type="button" class="quiet" data-visit="${esc(mine.id)}">Continue encounter</button>${create}`;
  if(archived)return '';
  const today=(workspace.appointments||[]).filter(a=>patientBannerSameDay(new Date(a.starts_at),now)).sort((a,b)=>String(a.starts_at).localeCompare(String(b.starts_at)));
  const ready=today.find(a=>a.status==='checked_in'&&(rooming||(clinician&&a.clinician_id===me.user_id)));
- if(ready)return `<button type="button" class="primary" data-start="${esc(ready.id)}">Start encounter</button>`;
+ if(ready)return create||`<button type="button" class="primary" data-start="${esc(ready.id)}">Start encounter</button>`;
+ if(create)return create;
  const booked=today.find(a=>a.status==='booked');
  if(booked&&['owner','clinician','front_desk'].includes(me?.role))return `<button type="button" class="primary" data-check-in="${esc(booked.id)}">Check in</button>`;
- if(typeof canStartEncounterFlow==='function'&&canStartEncounterFlow())return '<button type="button" class="primary" data-start-encounter-flow>Start encounter</button>';
  return '';
+}
+// Keep the visit being worked on visible in every part of this patient's chart.
+function patientBannerEncounterContext(){
+ if(!patientBannerArea('visits')||!patientBannerCan('clinical'))return '';
+ const visit=typeof activeVisit==='undefined'?null:activeVisit;
+ if(!visit&&!workspace.visits?.length)return '';
+ const appointment=visit&&(workspace.appointments||[]).find(a=>a.id===visit.appointment_id);
+ const number=visit&&typeof encounterNumberText==='function'?encounterNumberText(visit):'';
+ const when=appointment?.starts_at||visit?.created_at||visit?.signed_at;
+ const title=appointment?.title||visit?.category||'Encounter';
+ const summary=visit?[number,title].filter(Boolean).join(' · '):'No encounter selected';
+ const detail=visit?[when?displayDateTime(when):'',displayStatus(visit.status)].filter(Boolean).join(' · '):'';
+ const onVisit=typeof chartSection!=='undefined'&&chartSection==='visits';
+ const label=visit&&!onVisit?`<button type="button" class="text-button" data-banner-item="current-encounter" data-chart-section="visits" title="Open the selected encounter">${esc(summary)}</button>`:`<strong>${esc(summary)}</strong>`;
+ return `<div class="patient-banner-encounter" data-banner-encounter="${esc(visit?.id||'')}"><div><span class="patient-banner-encounter-caption">${visit?'Current encounter':'Encounter'}</span>${label}${detail?`<small>${esc(detail)}</small>`:''}</div><button type="button" class="quiet" data-banner-item="switch-encounter" data-encounter-switch aria-haspopup="dialog">${visit?'Switch encounter':'Choose encounter'}</button></div>`;
 }
 function patientBannerMenu(facts){
  const items=[],lifecycle=typeof patientLifecycleStates==='undefined'?null:patientLifecycleStates.get(selected);
@@ -102,7 +125,7 @@ function patientBannerMenu(facts){
  const help=typeof supportHelpButton==='function'?supportHelpButton('patient','role="menuitem"'):'';if(help)items.push(help);
  // Archiving keeps today's rule: only people the server says may manage the chart see it.
  if(lifecycle?.can_manage&&!lifecycle.archived&&!workspace.patient.archived)items.push('<button type="button" role="menuitem" class="patient-banner-danger" data-patient-lifecycle-open>Archive this patient…</button>');
- return `<details class="patient-banner-more" data-banner-pop="more"${patientBanner.open==='more'?' open':''}><summary aria-label="More patient actions">More</summary><div class="patient-banner-menu" role="menu" aria-label="More patient actions">${facts?`<div class="patient-banner-menu-facts">${facts}</div>`:''}${items.join('')}</div></details>`;
+ return `<details data-menu class="patient-banner-more" data-banner-pop="more"${['more','details'].includes(patientBanner.open)?' open':''}><summary aria-label="More patient actions">More</summary><div class="patient-banner-menu" role="menu" aria-label="More patient actions">${items.join('')}${facts?`<div class="patient-banner-menu-facts">${facts}</div>`:''}</div></details>`;
 }
 function patientBannerDetails(allergies,coverages,visits,flags){
  const p=workspace.patient,c=patientBannerCan('clinical')?workspace.demographics?.content||{}:{},a=c.address,data=patientBannerCurrent()?patientBanner.data:null;
@@ -123,17 +146,19 @@ function patientBannerDetails(allergies,coverages,visits,flags){
 }
 function patientBannerMarkup(now=new Date()){
  const p=workspace.patient,contact=patientBannerCan('clinical')?workspace.demographics?.content||{}:{};
- const age=displayAge(p.birth_date,now),sex={female:'F',male:'M',other:'Other'}[contact.administrative_gender]||'',sexWord={female:'Female',male:'Male',other:'Other'}[contact.administrative_gender]||'';
- const name=`${p.family_name}, ${p.given_name}`,ageSex=[age===null?'':String(age),sex].filter(Boolean).join(' · ');
- const allergies=patientBannerAllergies(),coverages=patientBannerArea('insurance')?patientBannerCoverages(now):null,visits=patientBannerVisits(now);
+ const onEncounter=typeof chartSection!=='undefined'&&chartSection==='visits'&&typeof activeVisit!=='undefined'&&activeVisit?.patient_id===p.id;
+ const age=displayAge(p.birth_date,now),sexWord={female:'Female',male:'Male',other:'Other'}[contact.administrative_gender]||'';
+ const name=`${p.family_name}, ${p.given_name}`;
+ const encounterDate=onEncounter&&typeof revenueServiceDate==='function'?(typeof encounterChargeAccount==='function'?encounterChargeAccount()?.content?.service_date:null)||revenueServiceDate((workspace.appointments||[]).find(a=>a.id===activeVisit.appointment_id)||{starts_at:activeVisit.created_at}):null;
+ const allergies=patientBannerAllergies(),coverages=patientBannerArea('insurance')?patientBannerCoverages(now,encounterDate):null,visits=patientBannerVisits(now);
  const item=(key,attrs,body,title,cls='')=>attrs?`<button type="button" class="patient-banner-item ${cls}" data-banner-item="${key}" ${attrs} title="${esc(title)}">${body}</button>`:`<span class="patient-banner-item ${cls}" data-banner-item="${key}" title="${esc(title)}">${body}</span>`;
- const who=`<div class="patient-banner-who"><span class="avatar" aria-hidden="true">${esc((p.given_name||'')[0]||'')}${esc((p.family_name||'')[0]||'')}</span><div class="patient-banner-identity"><h2 class="patient-banner-name" title="${esc(name)}">${esc(name)}</h2><p class="patient-banner-facts">${ageSex?`<span title="${esc([age===null?'':age+' years old',sexWord].filter(Boolean).join(', '))}">${esc(ageSex)}</span>`:''}<span title="Date of birth">${esc(displayDate(p.birth_date))}</span><span class="patient-banner-mrn patient-banner-mid">MRN ${esc(p.mrn)}</span>${contact.preferred_name?`<span class="patient-banner-goes-by patient-banner-mid">goes by ${esc(contact.preferred_name)}</span>`:''}</p></div></div>`;
+ const who=`<div class="patient-banner-who"><span class="avatar" aria-hidden="true">${esc((p.given_name||'')[0]||'')}${esc((p.family_name||'')[0]||'')}</span><div class="patient-banner-identity"><h2 class="patient-banner-name" title="${esc(name)}">${esc(name)}</h2><p class="patient-banner-facts"><span class="patient-banner-mrn">MRN ${esc(p.mrn)}</span><span title="Date of birth">${esc(displayDate(p.birth_date))}${age===null?'':` (${age})`}</span>${sexWord?`<span>${esc(sexWord)}</span>`:''}</p></div></div>`;
  const allergyIcon={recorded:'⚠',unreviewed:'!',none:'✓',empty:'✓'}[allergies.state];
  const allergy=item('allergies','data-clinical-focus="allergy"',`<span class="patient-banner-icon" aria-hidden="true">${allergyIcon}</span><span class="patient-banner-text">${esc(allergies.text)}</span>${allergies.more?`<span class="patient-banner-count">${esc(allergies.more)}</span>`:''}`,allergies.title,`patient-banner-allergies is-${allergies.state}`);
  let insurance=null,insuranceHtml='';
  if(coverages){
   if(coverages.length){
-   const primary=coverages[0],eligibility=patientBannerEligibility(primary),payer=patientBannerPayer(primary),plan=primary.content.plan_name,copay=Number.isSafeInteger(primary.content.copay_cents)?patientBannerMoney(primary.content.copay_cents).replace(/\.00$/,'')+' copay':'',more=coverages.length-1;
+   const primary=coverages[0],eligibility=patientBannerEligibility(primary,encounterDate),payer=patientBannerPayer(primary),plan=primary.content.plan_name,copay=!onEncounter&&Number.isSafeInteger(primary.content.copay_cents)?patientBannerMoney(primary.content.copay_cents).replace(/\.00$/,'')+' copay':'',more=coverages.length-1;
    insurance={eligibility};
    const title=[`${displayStatus(primary.content.priority)} insurance: ${payer}${plan?' · '+plan:''}`,eligibility?.title,copay,more?`${displayCount(more,'more coverage')}: ${coverages.slice(1).map(patientBannerPayer).join(', ')}`:'','Open Insurance.'].filter(Boolean).join('. ');
    insuranceHtml=item('insurance','data-chart-section="insurance"',`<span class="patient-banner-text"><b>${esc(payer)}</b>${plan?` <span class="patient-banner-plan patient-banner-wide">${esc(plan)}</span>`:''}</span>${eligibility?`<span class="eligibility-pill patient-banner-pill ${eligibility.state==='none'?'':eligibility.state}" data-eligibility-state="${eligibility.state}"><span aria-hidden="true">${eligibility.icon}</span> ${esc(eligibility.label)}</span>`:''}${copay?`<span class="patient-banner-sub patient-banner-mid">${esc(copay)}</span>`:''}${more?`<span class="patient-banner-sub patient-banner-more-count">+${more} more</span>`:''}`,title,'patient-banner-insurance');
@@ -141,24 +166,27 @@ function patientBannerMarkup(now=new Date()){
  }
  const billing=patientBannerCurrent()&&patientBannerArea('billing')&&patientBannerCan('billing')?patientBanner.data?.billing:null;
  let balanceHtml='';
- if(billing&&Number.isSafeInteger(billing.patient_due_cents)){
+ if(onEncounter&&billing?.card_on_file){
+  balanceHtml=item('balance','data-chart-section="billing"','Card on file','Open the patient’s billing record.','patient-banner-balance');
+ }else if(!onEncounter&&billing&&Number.isSafeInteger(billing.patient_due_cents)){
   const owes=billing.patient_due_cents>0,count=Number(billing.open_invoice_count)||0,recheck=Number(billing.invoice_review_count)||0;
   const title=[owes?`Patient owes ${patientBannerMoney(billing.patient_due_cents)} across their visits. Money still with insurance is not counted`:'Nothing is owed by the patient. Money still with insurance is not counted',recheck?`${displayCount(recheck,'invoice')} to re-check`:'',billing.card_on_file?'A card is saved on file':'','Open Billing.'].filter(Boolean).join('. ');
   balanceHtml=item('balance','data-chart-section="billing"',`<span class="patient-banner-text ${owes?'patient-banner-owes':'patient-banner-quiet'}">${owes?'Owes '+esc(patientBannerMoney(billing.patient_due_cents)):'No balance'}</span>${billing.card_on_file?'<span class="patient-banner-sub patient-banner-card">Card on file</span>':''}`,title,'patient-banner-balance');
  }
  let visitHtml='';
  if(visits){
-  const book=!visits.next&&typeof canSchedule==='function'&&canSchedule()&&!p.archived?`<button type="button" class="text-button patient-banner-book" data-chart-book="${esc(selected)}">Book</button>`:'';
+  const book=(onEncounter||!visits.next)&&typeof canSchedule==='function'&&canSchedule()&&!p.archived?`<button type="button" class="text-button patient-banner-book" data-chart-book="${esc(selected)}">${onEncounter?'Book next visit':'Book'}</button>`:'';
   const nextText=visits.next?visits.next.text:'No upcoming appointment';
-  visitHtml=`<span class="patient-banner-visit" data-banner-item="visit">${item('visit-link','data-chart-section="visits"',`<span class="patient-banner-text${visits.next?.today?' patient-banner-today':visits.next?'':' patient-banner-quiet'}">${visits.last?`<span class="patient-banner-wide">${esc(visits.last.text)} · </span>`:''}${esc(nextText)}${visits.next?.extra?`<span class="patient-banner-wide"> · ${esc(visits.next.extra)}</span>`:''}</span>`,[visits.last?.title,visits.next?.title,'Open appointments and visits.'].filter(Boolean).join('. '),'patient-banner-visit-link')}${book}</span>`;
+  visitHtml=onEncounter&&!visits.next?book:`<span class="patient-banner-visit" data-banner-item="visit">${item('visit-link','data-chart-section="visits"',`<span class="patient-banner-text${visits.next?.today?' patient-banner-today':visits.next?'':' patient-banner-quiet'}">${visits.last&&!onEncounter?`<span class="patient-banner-wide">${esc(visits.last.text)} · </span>`:''}${esc(nextText)}${visits.next?.extra?`<span class="patient-banner-wide"> · ${esc(visits.next.extra)}</span>`:''}</span>`,[visits.last?.title,visits.next?.title,'Open appointments and visits.'].filter(Boolean).join('. '),'patient-banner-visit-link')}${book}</span>`;
  }
- const flags=patientBannerFlags(insurance),flagHtml=flags.length?`<span class="patient-banner-flags" data-banner-item="flags">${flags.map(f=>f.attrs?`<button type="button" class="patient-banner-flag is-${f.tone}" data-banner-flag="${f.key}" ${f.attrs} title="${esc(f.title)}">${esc(f.text)}</button>`:`<span class="patient-banner-flag is-${f.tone}" data-banner-flag="${f.key}" title="${esc(f.title)}">${esc(f.text)}</span>`).join('')}</span>`:'';
- // The same facts again inside More, shown there only when the row has no room for them.
- const menuFacts=[flagHtml&&`<div data-banner-collapsed="flags">${flagHtml}</div>`,visitHtml&&`<div data-banner-collapsed="visit">${visitHtml}</div>`,balanceHtml&&`<div data-banner-collapsed="balance">${balanceHtml}</div>`,insuranceHtml&&`<div data-banner-collapsed="insurance">${insuranceHtml}</div>`].filter(Boolean).join('');
+ const flags=patientBannerFlags(insurance),visibleFlags=onEncounter?flags.filter(f=>f.key!=='unsigned'):flags;
+ const flagHtml=visibleFlags.length?`<span class="patient-banner-flags" data-banner-item="flags">${visibleFlags.map(f=>f.attrs?`<button type="button" class="patient-banner-flag is-${f.tone}" data-banner-flag="${f.key}" ${f.attrs} title="${esc(f.title)}">${esc(f.text)}</button>`:`<span class="patient-banner-flag is-${f.tone}" data-banner-flag="${f.key}" title="${esc(f.title)}">${esc(f.text)}</span>`).join('')}</span>`:'';
  const loading=!patientBannerCurrent()||(!patientBanner.data&&!patientBanner.failed)?'<span class="patient-banner-loading" role="status">Loading…</span>':patientBanner.failed&&!patientBanner.data?'<span class="patient-banner-loading" role="status">Some details could not be loaded. Use Refresh in More.</span>':'';
- return `<div class="patient-banner-row patient-banner-top">${who}${flagHtml}<div class="patient-banner-actions">${patientBannerPrimary(now)}${patientBannerDetails(allergies,coverages,visits,flags)}${patientBannerMenu(menuFacts)}</div></div><div class="patient-banner-row patient-banner-bottom">${allergy}${insuranceHtml}${balanceHtml}${visitHtml}${loading}</div>${patientBannerClaimMarkup()}`;
+ return `<div class="patient-banner-row patient-banner-top">${who}${patientBannerEncounterContext()}<div class="patient-banner-actions">${patientBannerPrimary(now)}${patientBannerMenu(patientBannerDetails(allergies,coverages,visits,flags)+loading)}</div></div><div class="patient-banner-bottom">${allergy}${insuranceHtml}${balanceHtml}${visitHtml}${flagHtml}${loading}${patientBannerClaimMarkup()}</div>`;
+
 }
 function patientBannerStickyOffset(host){
+ const chart=$('chart');if(chart?.style?.setProperty&&host?.getBoundingClientRect)chart.style.setProperty('--frame-banner-height',Math.round(host.getBoundingClientRect().height)+'px');
  const header=document.querySelector?.('.workspace-header'),style=header&&typeof getComputedStyle==='function'?getComputedStyle(header):null;
  if(host?.style?.setProperty)host.style.setProperty('--patient-banner-top',(style?.position==='sticky'?Math.round(header.getBoundingClientRect().height):0)+'px');
 }
@@ -170,9 +198,9 @@ function renderPatientBanner(){
   const focus=typeof document!=='undefined'&&document.activeElement&&host.contains?.(document.activeElement)?document.activeElement:null,key=focus?.dataset?.bannerItem,flag=focus?.dataset?.bannerFlag,pop=focus?.tagName==='SUMMARY'?focus.parentElement?.dataset?.bannerPop:null;
   host.innerHTML=html;patientBannerPainted={host,html};
   // Keep the keyboard where it was when the banner repaints under it.
-  if(pop)host.querySelector?.(`[data-banner-pop="${pop}"]>summary`)?.focus?.();
-  else if(key)host.querySelector?.(`[data-banner-item="${key}"]`)?.focus?.();
-  else if(flag)host.querySelector?.(`[data-banner-flag="${flag}"]`)?.focus?.();
+  if(pop)host.querySelector?.(`[data-banner-pop="${pop}"]>summary`)?.focus?.({preventScroll:true});
+  else if(key)host.querySelector?.(`[data-banner-item="${key}"]`)?.focus?.({preventScroll:true});
+  else if(flag)host.querySelector?.(`[data-banner-flag="${flag}"]`)?.focus?.({preventScroll:true});
  }
  // A redrawn header keeps the open encounter's timeline: it is put back from the money already read.
  if(typeof activeVisit!=='undefined'&&activeVisit&&typeof encounterRevenueState!=='undefined'&&encounterRevenueState?.visit===activeVisit.id&&encounterRevenueState.data?.summary&&typeof patientBannerEncounterSync==='function'&&!host.querySelector?.('.encounter-timeline'))patientBannerEncounterSync(encounterRevenueState.data.summary,activeVisit);
@@ -225,7 +253,7 @@ function patientBannerClosePop(focus=false){
  if(!open)return;open.open=false;if(focus)open.querySelector('summary')?.focus();
 }
 if(typeof document!=='undefined'&&document.addEventListener){
- document.addEventListener('toggle',event=>{const pop=event.target;if(!pop?.dataset?.bannerPop)return;if(pop.open){patientBanner.open=pop.dataset.bannerPop;for(const other of $('patient-banner')?.querySelectorAll?.('details[data-banner-pop][open]')||[])if(other!==pop)other.open=false;}else if(patientBanner.open===pop.dataset.bannerPop)patientBanner.open=null;},true);
+ document.addEventListener('toggle',event=>{const pop=event.target;if(!pop?.dataset?.bannerPop)return;if(pop.open){patientBanner.open=pop.dataset.bannerPop;for(const other of $('patient-banner')?.querySelectorAll?.('details[data-banner-pop][open]')||[])if(other!==pop&&!other.contains?.(pop)&&!pop.contains?.(other))other.open=false;}else if(patientBanner.open===pop.dataset.bannerPop)patientBanner.open=null;},true);
  // Listens ahead of the action handlers (several of them stop the click) and only closes.
  (typeof window!=='undefined'&&window.addEventListener?window:document).addEventListener('click',event=>{
   const inside=event.target.closest?.('details[data-banner-pop]');
@@ -260,18 +288,10 @@ function patientBannerEncounterOpen(){return typeof activeVisit!=='undefined'&&!
 // A line left over from another encounter's claim is taken down.
 function patientBannerEncounterSync(summary,visit){
  if(!visit)return;
- const node=typeof document!=='undefined'?document.getElementById?.('patient-banner-claim'):null,banner=typeof document!=='undefined'?document.getElementById?.('patient-banner'):null;
- const put=html=>{if(node){if(html)node.outerHTML=html;else node.remove?.();}else if(html&&banner?.insertAdjacentHTML)banner.insertAdjacentHTML('beforeend',html);};
- if(typeof encounterTimelineSteps==='function'&&typeof encounterTimelineMarkup==='function'){
-  const appointment=(typeof workspace!=='undefined'?workspace?.appointments:null)?.find?.(a=>a.id===visit.appointment_id)||null;
-  const steps=encounterTimelineSteps(summary||null,visit,appointment);
-  patientBannerClaim={patient:selected,claim:null,bar:'',now:'',timeline:true,visit:visit.id};
-  put(`<div class="patient-banner-row patient-banner-timeline" id="patient-banner-claim">${encounterTimelineMarkup(steps,encounterTimelineHeading(visit,appointment,summary||null))}</div>`);
-  return;
- }
- const shown=patientBannerClaim,claimVisit=shown.claim?.snapshot?.account?.content?.visit_id;
- if(shown.timeline||(shown.claim&&(!claimVisit||claimVisit!==visit.id)&&summary?.claim?.id!==shown.claim.id)){patientBannerClaim={patient:null,claim:null,bar:'',now:''};put('');}
+ // Encounter progress belongs to the stepper; keep the patient header at two lines.
+ if(typeof document!=='undefined')document.getElementById?.('patient-banner-claim')?.remove?.();
 }
+
 function patientBannerClaimSet(claim,bar,now){
  if(!claim||claim.patient_id!==selected)return;
  // With an encounter open the header shows its timeline instead of this strip.
@@ -280,5 +300,5 @@ function patientBannerClaimSet(claim,bar,now){
  const node=typeof document!=='undefined'?document.getElementById?.('patient-banner-claim'):null,html=patientBannerClaimMarkup();
  if(node){node.outerHTML=html;return;}
  const banner=typeof document!=='undefined'?document.getElementById?.('patient-banner'):null;
- if(banner?.insertAdjacentHTML)banner.insertAdjacentHTML('beforeend',html);
+ if(banner?.insertAdjacentHTML)(banner.querySelector?.('.patient-banner-bottom')||banner).insertAdjacentHTML('beforeend',html);
 }

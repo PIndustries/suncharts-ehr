@@ -54,5 +54,16 @@ const all={canCreate:true,canWrite:true,claimsAllowed:true};
  click({visitClaimResend:''});await settle();
  assert.equal(sent.length,1);
  assert.equal(JSON.stringify(log),JSON.stringify(['reload','open']),'the panel opens, no send');
+ // While preparation is pending, another visit for the same patient must never send its claim.
+ const priorApi=ctx.api;
+ let finish;
+ ctx.api=async(...args)=>{await new Promise(resolve=>{finish=resolve;});return priorApi(...args);};
+ ctx.checks=[];log.length=0;sent.length=0;
+ const request=ctx.visitClaimResend();
+ const previousVisit=ctx.activeVisit;
+ ctx.activeVisit={...previousVisit,id:'another-visit'};
+ finish();await request;assert.equal(log.some(entry=>entry==='open'||entry[0]==='run'),false);
+ assert.equal(sent.length,1,'only the original preparation was requested');
+ ctx.activeVisit=previousVisit;
  console.log('cancelled claim resend checks ok');
 })().catch(e=>{console.error(e);process.exit(1);});

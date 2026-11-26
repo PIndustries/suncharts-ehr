@@ -7,6 +7,7 @@
 use crate::{
     auth::{Actor, Role},
     browser::BrowserAuth,
+    connect_identity::{read_session_check, SESSION_CHECK_UNAVAILABLE},
     error::{Error, Result},
     State,
 };
@@ -255,7 +256,8 @@ pub(crate) async fn authenticate_hash(
     if session.issuer != configured_issuer()? || session.audience != auth.origin() {
         return Err(Error::Unauthorized);
     }
-    let response = http()?
+    let request = http()
+        .map_err(|_| SESSION_CHECK_UNAVAILABLE)?
         .post(format!(
             "{}/api/v1/managed-ehr/support/introspect",
             session.issuer
@@ -263,14 +265,21 @@ pub(crate) async fn authenticate_hash(
         .json(&IntrospectRequest {
             jti: session.grant_id,
             audience: auth.origin(),
-        })
-        .send()
-        .await
-        .map_err(|_| Error::Unauthorized)?;
-    if !response.status().is_success() {
-        return Err(Error::Unauthorized);
+        });
+    let introspection: Introspection = read_session_check(request).await?;
+    if introspection.active
+        && (introspection.jti.is_none()
+            || introspection.aud.is_none()
+            || introspection.role.is_none()
+            || introspection.tenant_id.is_none()
+            || introspection.partner_id.is_none()
+            || introspection.customer_id.is_none()
+            || introspection.order_id.is_none()
+            || introspection.sub.is_none()
+            || introspection.exp.is_none())
+    {
+        return Err(SESSION_CHECK_UNAVAILABLE);
     }
-    let introspection: Introspection = response.json().await.map_err(|_| Error::Unauthorized)?;
     let now = Utc::now().timestamp();
     let valid = introspection.active
         && introspection.jti == Some(session.grant_id)

@@ -39,17 +39,17 @@ function fixture(options={}){
   async fire(){for(const timer of timers.splice(0))if(!timer.cancelled)timer.fn();await run('patientBanner.request');await new Promise(resolve=>setImmediate(resolve));}};
 }
 const itemOf=(html,key)=>{const at=html.indexOf(`data-banner-item="${key}"`);if(at<0)return '';const start=html.lastIndexOf('<',at),tag=html.slice(start+1,start+7).startsWith('button')?'</button>':'</span>';return html.slice(start,html.indexOf(tag,at)+tag.length);};
-const flagsOf=html=>[...html.slice(0,html.indexOf('patient-banner-actions')).matchAll(/data-banner-flag="([a-z-]+)"[^>]*>([^<]+)</g)].map(match=>match[2]);
+const flagsOf=html=>[...html.matchAll(/data-banner-flag="([a-z-]+)"[^>]*>([^<]+)</g)].map(match=>match[2]);
 
 (async()=>{
  // ---- Who ------------------------------------------------------------------------------
  let f=fixture({now:NOW});f.c.workspace.demographics.content={administrative_gender:'female',preferred_name:'Mia'};
  let html=await f.open();
  assert.match(html,/<h2 class="patient-banner-name" title="Synthetic, Maria">Synthetic, Maria<\/h2>/);
- assert.match(html,/>36 · F</);assert.match(html,/title="Date of birth">Jan 1, 1990</);assert.match(html,/MRN SYN-1001/);assert.match(html,/goes by Mia/);
+ assert.match(html,/Jan 1, 1990 \(36\)/);assert.match(html,/>Female</);assert.match(html,/title="Date of birth">Jan 1, 1990 \(36\)</);assert.match(html,/MRN SYN-1001/);assert.match(html,/Mia/);
  assert.match(html,/<span class="avatar" aria-hidden="true">MS<\/span>/);
- for(const [gender,shown] of [['male','36 · M'],['other','36 · Other'],['unknown','36'],[undefined,'36']]){f.c.workspace.demographics.content={administrative_gender:gender};const who=f.markup();assert.ok(who.includes(`>${shown}<`),`${gender} shows ${shown}`);assert.doesNotMatch(who,/goes by/);}
- f.c.now=new Date(2026,0,1,0,0,0);assert.match(f.markup(),/>36</,'the birthday itself counts');f.c.now=new Date(2025,11,31,23,0,0);assert.match(f.markup(),/>35</);f.c.now=NOW;
+ for(const [gender,shown] of [['male','Male'],['other','Other'],['unknown',null],[undefined,null]]){f.c.workspace.demographics.content={administrative_gender:gender};const who=f.markup();if(shown)assert.ok(who.includes(`>${shown}<`),`${gender} shows ${shown}`);assert.match(who,/1990 \(36\)/);assert.doesNotMatch(who,/goes by/);}
+ f.c.now=new Date(2026,0,1,0,0,0);assert.match(f.markup(),/1990 \(36\)/,'the birthday itself counts');f.c.now=new Date(2025,11,31,23,0,0);assert.match(f.markup(),/1990 \(35\)/);f.c.now=NOW;
  console.log('PASS who: name, age and sex only when recorded, plain date of birth, MRN and the name the patient goes by');
 
  // ---- Allergies ------------------------------------------------------------------------
@@ -61,7 +61,7 @@ const flagsOf=html=>[...html.slice(0,html.indexOf('patient-banner-actions')).mat
  f.c.workspace.clinical={items:[allergy('Penicillin')],reviews:[]};assert.match(itemOf(f.markup(),'allergies'),/Allergies: Penicillin<\/span><\/button>/);
  f.c.workspace.clinical={items:[],reviews:[{kind:'allergy',review_state:'no_known'}]};item=itemOf(f.markup(),'allergies');assert.match(item,/is-none/);assert.match(item,/No known allergies/);
  // Only a recorded "no known allergies" may say so. Every other empty list says what is actually known.
- for(const [reviews,state,text] of [[[{kind:'allergy',review_state:'reviewed'}],'is-empty','No allergies recorded'],[[{kind:'allergy',review_state:'unknown'}],'is-unreviewed','Allergies not reviewed'],[[{kind:'allergy',review_state:'needs_review'}],'is-unreviewed','Allergies not reviewed'],[[],'is-unreviewed','Allergies not reviewed'],[[{kind:'medication',review_state:'no_known'}],'is-unreviewed','Allergies not reviewed']]){
+ for(const [reviews,state,text] of [[[{kind:'allergy',review_state:'reviewed'}],'is-empty','No allergies recorded'],[[{kind:'allergy',review_state:'unknown'}],'is-unreviewed','Allergy list unconfirmed'],[[{kind:'allergy',review_state:'needs_review'}],'is-unreviewed','Allergy list unconfirmed'],[[],'is-unreviewed','Allergy list unconfirmed'],[[{kind:'medication',review_state:'no_known'}],'is-unreviewed','Allergy list unconfirmed']]){
   f.c.workspace.clinical={items:[allergy('Stopped',{status:'inactive'})],reviews};item=itemOf(f.markup(),'allergies');assert.ok(item.includes(state)&&item.includes(text),`${JSON.stringify(reviews)} shows ${text}`);assert.doesNotMatch(item,/No known allergies/);assert.match(item,/data-clinical-focus="allergy"/,'the prompt goes to the place to review');
  }
  console.log('PASS allergies: recorded with +N and full list on hover, no known allergies only when recorded, and an amber prompt when never reviewed');
@@ -78,14 +78,14 @@ const flagsOf=html=>[...html.slice(0,html.indexOf('patient-banner-actions')).mat
  item=pill([check('cov-a','completed','6')]);assert.match(item,/eligibility-pill patient-banner-pill inactive" data-eligibility-state="inactive"><span aria-hidden="true">✕<\/span> Not active</);
  item=pill([check('cov-b','completed','1')]);assert.match(item,/data-eligibility-state="none"><span aria-hidden="true">–<\/span> Not checked</,'another coverage\'s answer is never borrowed');assert.doesNotMatch(item,/patient-banner-pill (active|inactive|unknown)"/);
  item=pill([]);assert.match(item,/Not checked/);
- item=pill([check('cov-a','failed')]);assert.match(item,/patient-banner-pill unknown" data-eligibility-state="unknown"><span aria-hidden="true">!<\/span> Could not confirm</);
+ item=pill([check('cov-a','failed')]);assert.match(item,/patient-banner-pill failed" data-eligibility-state="failed"><span aria-hidden="true">!<\/span> Check failed</);
  item=pill([check('cov-a','completed',null)]);assert.match(item,/data-eligibility-state="unknown"><span aria-hidden="true">!<\/span> Could not confirm</);
- item=pill([check('cov-a','pending')]);assert.match(item,/data-eligibility-state="none"><span aria-hidden="true">…<\/span> Waiting for the insurer</);
+ item=pill([check('cov-a','pending')]);assert.match(item,/data-eligibility-state="pending"><span aria-hidden="true">…<\/span> Waiting for the insurer</);
  // The words come from the eligibility card's own summary, so the two can never disagree.
  for(const sample of [check('cov-a','completed','1'),check('cov-a','completed','6'),check('cov-a','completed',null),check('cov-a','failed'),check('cov-a','pending')]){f.c.sample=sample;assert.ok(pill([sample]).includes(' '+f.run('claimmdStatusLabel(sample)')+'</span>'));}
  const withoutClaims={...f.c.answer};delete withoutClaims.eligibility;f.c.answer=withoutClaims;f.run('patientBanner.data=answer');item=itemOf(f.markup(),'insurance');assert.match(item,/Synthetic Health Plan/);assert.doesNotMatch(item,/eligibility-pill/,'no pill at all when the answer is not shared with this role');
  f.c.workspace.billing.coverages=[coverage('cov-b','secondary','payer-b')];item=itemOf(f.markup(),'insurance');assert.match(item,/Synthetic Silver HMO/);assert.doesNotMatch(item,/more</);
- f.c.workspace.billing.coverages=[coverage('cov-old','primary','payer-a',{end_date:'2026-06-30'})];item=itemOf(f.markup(),'insurance');assert.match(item,/>Self-pay</);assert.match(item,/data-chart-section="insurance"/);assert.doesNotMatch(item,/eligibility-pill/);
+ f.c.workspace.billing.coverages=[coverage('cov-old','primary','payer-a',{end_date:'2026-06-30'})];item=itemOf(f.markup(),'insurance');assert.match(item,/>Self-pay</);assert.doesNotMatch(f.markup().match(/<p class="patient-banner-facts">.*?<\/p>/)[0],/Self-pay/);assert.match(item,/data-chart-section="insurance"/);assert.doesNotMatch(item,/eligibility-pill/);
  f.c.workspace.billing=null;assert.equal(itemOf(f.markup(),'insurance'),'','no insurance item without billing access');
  console.log('PASS insurance: insurer and plan, the four eligibility answers with icon and words, copay, +N more, self-pay, and nothing for a role without billing');
 
@@ -146,19 +146,20 @@ const flagsOf=html=>[...html.slice(0,html.indexOf('patient-banner-actions')).mat
 
  // ---- Primary action and More menu -----------------------------------------------------
  f=fixture({now:NOW});html=await f.open();
- const actions=out=>out.slice(out.indexOf('patient-banner-actions'),out.indexOf('patient-banner-bottom'));
- assert.match(actions(html),/<button type="button" class="primary" data-start-encounter-flow>Start encounter<\/button>/);
- f.c.activeVisit={id:'v1',status:'in_progress'};assert.match(actions(f.markup()),/class="primary" data-chart-section="visits">Continue encounter</);f.c.activeVisit={id:'v1',status:'signed'};assert.match(actions(f.markup()),/data-chart-section="visits">Review encounter</);f.c.activeVisit=undefined;
- f.c.workspace.visits=[{id:'v-other',status:'in_progress',clinician_id:'someone'},{id:'v-mine',status:'in_progress',clinician_id:'owner1'}];assert.match(actions(f.markup()),/class="primary" data-visit="v-mine">Continue encounter</,'an open note is picked up before a new encounter is started');f.c.workspace.visits=[];
- f.c.workspace.appointments=[{id:'a-next-week',starts_at:iso(20),status:'checked_in',clinician_id:'owner1'},{id:'a-today',starts_at:iso(13,11),status:'checked_in',clinician_id:'owner1'}];assert.match(actions(f.markup()),/class="primary" data-start="a-today">Start encounter</);
- f.c.workspace.appointments=[{id:'a-today',starts_at:iso(13,11),status:'booked',clinician_id:'owner1'}];assert.match(actions(f.markup()),/class="primary" data-check-in="a-today">Check in</);
- f.c.workspace.appointments=[{id:'a-next-week',starts_at:iso(20),status:'booked',clinician_id:'owner1'}];assert.match(actions(f.markup()),/data-start-encounter-flow>Start encounter</,'an appointment on another day is not checked in from here');
+ const actions=out=>out.slice(out.indexOf('patient-banner-actions'));
+ assert.match(actions(html),/data-start-encounter-flow="new" aria-haspopup="dialog">New encounter<\/button>/);
+ f.c.activeVisit={id:'v1',status:'in_progress'};assert.match(f.markup(),/data-banner-encounter="v1"/);assert.equal((f.markup().match(/data-start-encounter-flow="new"/g)||[]).length,1);assert.match(f.markup(),/data-banner-item="current-encounter" data-chart-section="visits"/);assert.match(f.markup(),/data-encounter-switch aria-haspopup="dialog">Switch encounter</);
+ f.c.activeVisit={id:'v1',status:'signed'};assert.match(f.markup(),/>Signed</);assert.match(f.markup(),/>New encounter</);f.c.activeVisit=undefined;
+ f.c.workspace.visits=[{id:'v-other',status:'in_progress',clinician_id:'someone'},{id:'v-mine',status:'in_progress',clinician_id:'owner1'}];assert.match(actions(f.markup()),/class="quiet" data-visit="v-mine">Continue encounter</,'an open note is picked up before a new encounter is started');f.c.workspace.visits=[];
+ f.c.workspace.appointments=[{id:'a-next-week',starts_at:iso(20),status:'checked_in',clinician_id:'owner1'},{id:'a-today',starts_at:iso(13,11),status:'checked_in',clinician_id:'owner1'}];assert.match(actions(f.markup()),/data-start-encounter-flow="new" aria-haspopup="dialog">New encounter</);
+ f.c.workspace.appointments=[{id:'a-today',starts_at:iso(13,11),status:'booked',clinician_id:'owner1'}];assert.match(actions(f.markup()),/data-start-encounter-flow="new" aria-haspopup="dialog">New encounter</);
+ f.c.workspace.appointments=[{id:'a-next-week',starts_at:iso(20),status:'booked',clinician_id:'owner1'}];assert.match(actions(f.markup()),/data-start-encounter-flow="new" aria-haspopup="dialog">New encounter</,'an appointment on another day is not checked in from here');
  f.c.me={...f.c.me,role:'front_desk'};f.c.canStartEncounterFlow=()=>false;f.c.workspace.appointments=[];assert.doesNotMatch(actions(f.markup()),/class="primary"/);
  f.c.me={...f.c.me,role:'owner'};f.c.canStartEncounterFlow=()=>true;f.c.workspace.patient.archived=true;f.c.canStartEncounterFlow=()=>false;assert.doesNotMatch(actions(f.markup()),/class="primary"/,'nothing new starts on an archived chart');
  f=fixture({now:NOW});html=await f.open();let menu=html.slice(html.indexOf('class="patient-banner-menu"'),html.indexOf('</details>',html.indexOf('class="patient-banner-menu"')));
  // Every action the old header had, by the same data attribute its handler listens for.
  for(const action of [/<button type="button" role="menuitem" data-chart-section="profile">Contact details<\/button>/,/<button type="button" role="menuitem" data-portal-access="p1">Patient portal<\/button>/,/<button type="button" role="menuitem" data-patient-intakes-open>Intake forms<\/button>/,/<button type="button" role="menuitem" data-action="reload" aria-label="Reload patient chart">Refresh<\/button>/,/<button type="button" class="quiet support-help" data-support-help role="menuitem">Get help with this patient<\/button>/,/<button type="button" role="menuitem" class="patient-banner-danger" data-patient-lifecycle-open>Archive this patient…<\/button>/])assert.match(menu,action);
- assert.match(html,/<details class="patient-banner-more" data-banner-pop="more"><summary aria-label="More patient actions">More<\/summary><div class="patient-banner-menu" role="menu"/);
+ assert.match(html,/<details data-menu class="patient-banner-more" data-banner-pop="more"><summary aria-label="More patient actions">More<\/summary><div class="patient-banner-menu" role="menu"/);
  const menuOf=g=>{const out=g.markup();return out.slice(out.indexOf('class="patient-banner-menu"'));};
  // Archive is offered only to someone the server says may manage the chart (owners always can).
  f.c.patientLifecycleStates.set('p1',{patient_id:'p1',archived:false,can_manage:false,version:1});assert.doesNotMatch(menuOf(f),/data-patient-lifecycle-open|Archive/);
@@ -178,7 +179,7 @@ const flagsOf=html=>[...html.slice(0,html.indexOf('patient-banner-actions')).mat
 
  // ---- Loading, refresh and stale charts ------------------------------------------------
  f=fixture({now:NOW});let release;f.c.answer=()=>new Promise(resolve=>{release=resolve;});const opening=f.run('patientBannerChartRendered()');
- assert.match(f.host.innerHTML,/Synthetic, Maria/,'identity and allergies paint at once from the open chart');assert.match(f.host.innerHTML,/Allergies not reviewed/);assert.match(f.host.innerHTML,/role="status">Loading…</);assert.doesNotMatch(f.host.innerHTML,/No balance|No upcoming appointment|Not checked/,'nothing is claimed before it is known');
+ assert.match(f.host.innerHTML,/Synthetic, Maria/,'identity and allergies paint at once from the open chart');assert.match(f.host.innerHTML,/Allergy list unconfirmed/);assert.match(f.host.innerHTML,/role="status">Loading…</);assert.doesNotMatch(f.host.innerHTML,/No balance|No upcoming appointment|Not checked/,'nothing is claimed before it is known');
  release({patient_id:'p1',flags:{},next_appointment:null,last_visit:null,revision:'r1',billing:{patient_due_cents:0,open_invoice_count:0,invoice_review_count:0,card_on_file:false},eligibility:[]});await opening;
  assert.match(f.host.innerHTML,/No balance/);assert.doesNotMatch(f.host.innerHTML,/Loading…/);assert.deepEqual(f.calls,[['/api/v1/patients/p1/banner','GET']]);assert.equal(f.host.style['--patient-banner-top'],'0px');
  // A save anywhere in the app repaints the banner shortly afterwards: one read for a burst of saves.
@@ -187,8 +188,9 @@ const flagsOf=html=>[...html.slice(0,html.indexOf('patient-banner-actions')).mat
  for(let i=0;i<3;i++)f.run('patientBannerChanged()');assert.equal(f.timers.filter(timer=>!timer.cancelled).length,1);assert.equal(f.calls.length,1);await f.fire();
  assert.equal(f.calls.length,2);assert.match(f.host.innerHTML,/Next: Nov 20, 2026, 9:00 AM/);assert.match(f.host.innerHTML,/Card on file/);assert.match(f.host.innerHTML,/Intake form to review/);assert.doesNotMatch(f.host.innerHTML,/Updated — refresh/,'this person\'s own save is not reported as someone else\'s change');
  // Each listed action is a save through api(), and the ones that reload the chart repaint it too.
- for(const [file,pattern] of [['web/billing.js',/await selectPatient\(selected,activeVisit\?\.id\);showChartSection\(returnSection/],['web/clinical.js',/clinical-review\/\$\{k\}`,'POST'/],['web/clinical.js',/await selectPatient\(selected,activeVisit\?\.id\);notice\('Entry saved/],['web/scheduling.js',/await selectPatient\(f\.dataset\.chartPatient/],['web/claimmd-eligibility.js',/api\(`\$\{base\}\/check`,'POST',body\)/],['web/claimmd-eligibility.js',/claimmdEligibilityRepaint\(coverageId\);\n[^\n]*\n if\(typeof patientBannerChanged==='function'\)patientBannerChanged\(\);/],['web/previsit.js',/\/review`,'POST'/],['web/patient-billing-workspace.js',/saved-card-charge`,'POST'/]])assert.match(read(file),pattern,`${file} still saves through the shared request helper`);
- assert.match(app,/applyChartSection\(\); if\(typeof patientBannerChartRendered==='function'\)void patientBannerChartRendered\(\);\n\}/,'every chart redraw repaints the banner');
+ for(const [file,pattern] of [['web/billing.js',/await selectPatient\(selected,activeVisit\?\.id\);showChartSection\(returnSection/],['web/clinical.js',/clinical-review\/\$\{k\}`,'POST'/],['web/clinical.js',/await selectPatient\(selected,activeVisit\?\.id\);notice\('Entry saved/],['web/scheduling.js',/const patient=f\.dataset\.chartPatient[\s\S]{0,350}await selectPatient\(patient,visit\|\|null\)/],['web/claimmd-eligibility.js',/api\(`\$\{base\}\/check`,'POST',body\)/],['web/claimmd-eligibility.js',/claimmdEligibilityRepaint\(coverageId\);\n[^\n]*\n if\(typeof patientBannerChanged==='function'\)patientBannerChanged\(\);/],['web/previsit.js',/\/review`,'POST'/],['web/patient-billing-workspace.js',/saved-card-charge`,'POST'/]])assert.match(read(file),pattern,`${file} still saves through the shared request helper`);
+ const redraw=app.slice(app.indexOf('function renderChart() {'),app.indexOf('function canRegisterPatient()'));
+ assert.match(redraw,/patientBannerChartRendered\(\)/,'every chart redraw repaints the banner');
  // Coming back to the tab reads again; a change that was not this person's shows a quiet chip.
  f.c.answer={...f.c.answer,revision:'r3'};for(const listener of f.listeners.visibilitychange)listener();await f.run('patientBanner.request');
  assert.equal(f.calls.length,3);assert.match(f.host.innerHTML,/<button type="button" class="patient-banner-flag is-info" data-banner-flag="stale" data-action="reload" aria-label="This chart was updated elsewhere\. Refresh"[^>]*>Updated — refresh<\/button>/);
@@ -198,7 +200,7 @@ const flagsOf=html=>[...html.slice(0,html.indexOf('patient-banner-actions')).mat
  f=fixture({now:NOW});f.c.answer=()=>new Promise(resolve=>{release=resolve;});const late=f.run('patientBannerChartRendered()');f.c.selected='p2';f.c.workspace={...f.c.workspace,patient:{...f.c.workspace.patient,id:'p2',family_name:'Other'}};f.host.innerHTML='PATIENT TWO';
  release({patient_id:'p1',flags:{},revision:'r1',billing:{patient_due_cents:99900,open_invoice_count:1,invoice_review_count:0,card_on_file:false}});await late;assert.equal(f.host.innerHTML,'PATIENT TWO');assert.equal(f.run('patientBannerCurrent()'),false);assert.doesNotMatch(f.markup(),/999/,'one patient\'s balance never appears on another chart');
  f=fixture({now:NOW});f.c.answer={patient_id:'someone-else',flags:{},revision:'r1',billing:{patient_due_cents:99900}};html=await f.open();assert.doesNotMatch(html,/999/);assert.match(html,/Some details could not be loaded\. Use Refresh in More\./);
- f=fixture({now:NOW});f.c.answer=()=>{throw new Error('offline');};html=await f.open();assert.match(html,/Some details could not be loaded/);assert.match(html,/Synthetic, Maria/);assert.match(html,/Allergies not reviewed/,'identity and allergies stay when the extra read fails');
+ f=fixture({now:NOW});f.c.answer=()=>{throw new Error('offline');};html=await f.open();assert.match(html,/Some details could not be loaded/);assert.match(html,/Synthetic, Maria/);assert.match(html,/Allergy list unconfirmed/,'identity and allergies stay when the extra read fails');
  f.run('clearPatientBannerSession()');assert.equal(f.run('patientBanner.data'),null);assert.equal(f.run('patientBanner.patient'),null);
  console.log('PASS loading says nothing it does not know, saves and chart reloads refresh the banner, stale charts are flagged, and late answers are dropped');
 
@@ -214,11 +216,13 @@ const flagsOf=html=>[...html.slice(0,html.indexOf('patient-banner-actions')).mat
  for(const key of ['allergies','insurance','balance','visit-link'])assert.match(itemOf(html,key),/^<button type="button"/,`${key} is keyboard reachable`);
  assert.equal((html.match(/<summary/g)||[]).length,2);assert.match(html,/<summary aria-label="More about this patient">Details<\/summary>/);
  assert.match(banner,/event\.key==='Escape'&&patientBanner\.open/);assert.match(banner,/'ArrowDown','ArrowUp','Home','End'/);
- // Collapsed copies inside More, in the order they leave the row: flags, next appointment, balance, insurance.
- assert.deepEqual([...html.matchAll(/data-banner-collapsed="([a-z]+)"/g)].map(match=>match[1]),['flags','visit','balance','insurance']);
- const widths=Object.fromEntries([...css.matchAll(/@container \(max-width:(\d+)px\)\{([^\n]*)\}/g)].flatMap(match=>[...match[2].matchAll(/\[data-banner-collapsed=([a-z]+)\]\{display:block\}/g)].map(inner=>[inner[1],Number(match[1])])));
- assert.deepEqual(Object.keys(widths),['flags','visit','balance','insurance']);assert.ok(widths.flags>widths.visit&&widths.visit>widths.balance&&widths.balance>widths.insurance,'flags go first, insurance last');
- assert.match(css,/\.patient-banner-top>\.patient-banner-flags\{display:none\}/);assert.match(css,/\.patient-banner-bottom>\.patient-banner-visit\{display:none\}/);assert.match(css,/\.patient-banner-bottom>\.patient-banner-balance\{display:none\}/);assert.match(css,/\.patient-banner-bottom>\.patient-banner-insurance\{display:none\}/);
+ // Every summary fact stays in the compact second line instead of moving into More.
+ assert.doesNotMatch(html,/data-banner-collapsed/);
+ const summaryRow=html.slice(html.indexOf('class="patient-banner-bottom"'));
+ for(const key of ['allergies','insurance','balance','visit','flags'])assert(summaryRow.includes(`data-banner-item="${key}"`),key);
+ const frameCss=read('web/frame.css');
+ assert.match(frameCss,/#chart \.patient-banner-bottom\{display:flex;flex-wrap:wrap/);
+ assert.match(frameCss,/#chart \.patient-banner-bottom>\.patient-banner-item\{max-width:none;flex:none/);
  assert.doesNotMatch(css,/patient-banner-(allergies|name|who|facts)\{display:none/,'allergies and identity never collapse');
  assert.match(css,/^\.patient-banner\{position:sticky;top:var\(--patient-banner-top,0px\);/m,'stays in view while the chart scrolls');
  assert.match(css,/text-overflow:ellipsis/);assert.match(css,/:focus-visible\{outline:2px solid var\(--focus\)/);
@@ -237,5 +241,5 @@ const flagsOf=html=>[...html.slice(0,html.indexOf('patient-banner-actions')).mat
  assert.ok(used.length>=6,'coloured surfaces declare their text colour with them');
  for(const [fg,bg] of [...used,['--ink','--surface'],['--muted','--surface'],['--muted','--surface-soft'],['--ink','--surface-raised'],['--warning-text','--surface'],['--success-text','--surface'],['--error-text','--surface'],['--blue','--surface']])for(const [name,colours] of [['light',lightPalette],['dark',darkPalette]])assert.ok(contrast(colours[fg],colours[bg])>=4.5,`${fg} on ${bg} is ${contrast(colours[fg],colours[bg]).toFixed(2)}:1 in the ${name} theme`);
  assert.doesNotMatch(css,/color:var\(--muted\)[^{}]*background:var\(--surface-raised\)|background:var\(--surface-raised\)[^{}]*color:var\(--muted\)/,'muted text never sits on the raised surface, where it falls below AA in the light theme');
- console.log('PASS landmark with a label, keyboard reachable items, collapse order, sticky position and theme-only colours');
+ console.log('PASS landmark with a label, keyboard reachable items, visible second-line facts, sticky position and theme-only colours');
 })().catch(error=>{console.error(error);process.exit(1);});

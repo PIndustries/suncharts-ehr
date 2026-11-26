@@ -57,8 +57,9 @@ const finished=insured({...posted,state:'paid_in_full',balance_cents:0,insurance
 // Markup: heading, one segment per step, aria label, count, escaping.
 {const list=steps(insured({...posted,state:'fix_claim'}),signed);
  const html=ctx.encounterTimelineMarkup(list,{title:'ENC-0002 · <b>Follow-up</b>',subtitle:'Jan 2 · Synthetic "Health"'});
- assert.match(html,/<ol class="encounter-timeline">/);assert.match(html,/<li class="is-done"[^>]*aria-label="Done: Note signed\. time\(2030-01-02T09:40:00Z\)"/);
- assert.match(html,/aria-label="Now: Claim sent\. Needs fixing"/);assert.match(html,/class="is-later"/);assert.equal((html.match(/tabindex="0"/g)||[]).length,list.length);
+ assert.match(html,/<ol class="encounter-timeline">/);assert.match(html,/<li class="is-done" data-timeline-step="note">[^]*?<b>Note signed<\/b><small>time\(2030-01-02T09:40:00Z\)<\/small>/);
+ assert.match(html,/aria-label="Now: Claim sent\. Needs fixing"/);assert.match(html,/class="is-later"/);assert.match(html,/data-timeline-step="claim" aria-current="step"/);
+ assert.equal((html.match(/<button\b/g)||[]).length,1,'only the current action participates in tab navigation');
  assert.doesNotMatch(html,/<b>Follow-up<\/b>/);assert.match(html,/&lt;b&gt;Follow-up/);assert.match(html,/Synthetic &quot;Health&quot;/);
  const done=list.filter(s=>s.state==='done').length;assert.match(html,new RegExp(`${done} of ${list.length} done`));}
 // The chip carries the visit (and the patient, for rows of another patient), and names the step in hand.
@@ -67,15 +68,15 @@ const finished=insured({...posted,state:'paid_in_full',balance_cents:0,insurance
  const plain=ctx.encounterTimelineChip(null,'ENC-0002',{visit:'v1'});assert.match(plain,/data-encounter-chip="v1"/);assert.match(plain,/ENC-0002<span class="encounter-chip-now">Open</);assert.doesNotMatch(plain,/<i /);}
 // The preview takes the open encounter's summary from the page, with no second read.
 (async()=>{
- let reads=0;const box={...ctx};
+ let reads=0;
  const sheet={};
- const node=()=>({className:'',innerHTML:'',querySelector:sel=>sel==='[data-preview-timeline]'?sheet.timeline:sel==='[data-preview-open]'?{addEventListener(){}}:sel==='[data-preview-codes]'?sheet.codes:null});
+ const node=()=>({className:'',innerHTML:'',dataset:{},querySelector:sel=>sel==='[data-preview-timeline]'?sheet.timeline:sel==='[data-preview-open]'?{addEventListener(){}}:sel==='[data-preview-codes]'?sheet.codes:null});
  sheet.timeline={innerHTML:''};sheet.codes={innerHTML:''};
- const c2={esc,money:ctx.money,date:v=>String(v),displayTime:ctx.displayTime,displayDate:ctx.displayDate,visitBillingDate:ctx.visitBillingDate,encounterNumberText:ctx.encounterNumberText,document:{createElement:node},sheetOpen:()=>({isConnected:true}),sheetClose(){},run:f=>f(),openPatientEncounter(){},
+ const c2={esc,money:ctx.money,date:v=>String(v),displayTime:ctx.displayTime,displayDate:ctx.displayDate,visitBillingDate:ctx.visitBillingDate,encounterNumberText:ctx.encounterNumberText,document:{createElement:node,addEventListener(){}},sheetOpen:()=>({isConnected:true}),sheetClose(){},run:f=>f(),openPatientEncounter(){},
   workspace:{visits:[signed],appointments:[appt]},selected:'p1',encounterRevenueState:{visit:'v1',data:{summary:insured({...posted,state:'send_claim'})}},api:async()=>{reads++;return null;},Number,Date};
  vm.createContext(c2);vm.runInContext(fs.readFileSync('web/encounter-timeline.js','utf8'),c2);
  await c2.encounterPreviewOpen('v1',{amount:'2500',date:'2030-01-02'});await new Promise(r=>setTimeout(r,0));
  assert.equal(reads,0,'the open encounter is not read again');assert.match(sheet.timeline.innerHTML,/Now: Claim sent\. Ready to send/);
- c2.encounterRevenueState.visit='other';await c2.encounterPreviewOpen('v1');await new Promise(r=>setTimeout(r,0));assert.equal(reads,1,'another encounter is read once');assert.match(sheet.timeline.innerHTML,/Now: Note signed|Now: Charges posted/,'with no answer the steps come from the encounter alone');
+ c2.encounterRevenueState.visit='other';await c2.encounterPreviewOpen('v1');await new Promise(r=>setTimeout(r,0));assert.equal(reads,1,'another encounter is read once');assert.match(sheet.timeline.innerHTML,/aria-label="Now: Charges\./,'with no answer the steps come from the encounter alone');
  console.log('PASS encounter timeline: now step per billing state, self-pay and no-copay steps, closed chip, markup, chip, preview');
 })().catch(e=>{console.error(e);process.exit(1);});

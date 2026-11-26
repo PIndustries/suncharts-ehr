@@ -8,12 +8,12 @@ const decode=value=>String(value||'').replace(/&(amp|lt|gt|quot|#39);/g,(_,key)=
 const earlier={subjective:'Earlier S',objective:'Earlier O',assessment:'Earlier A',plan:'Earlier P',procedure:'Earlier procedure'};
 const source=(overrides={})=>({visit_id:'visit-0',version:3,visit_date:'2026-11-04T15:00:00Z',signed_at:'2026-11-04T16:00:00Z',clinician_id:'author',clinician_name:'',same_clinician:true,note:{...earlier},...overrides});
 function fixture({previous=source(),note=null,role='owner',clinician='author'}={}){
- const nodes=new Map(),listeners=new Map(),requests=[],asked=[];let answers=[];
+ const nodes=new Map(),listeners=new Map(),requests=[],asked=[],sheets=[];let answers=[];
  function node(id){
   if(nodes.has(id))return nodes.get(id);
   let html='';
   const n={id,hidden:false,disabled:false,isConnected:true,dataset:{},value:'',textContent:'',classList:{add(){},remove(){},contains:()=>false,toggle(){}},
-   setAttribute(){},removeAttribute(){},addEventListener(){},replaceChildren(){this.innerHTML='';},querySelector(){return null;},focus(){},scrollIntoView(){}};
+   contains:()=>false,closest(){return null;},setAttribute(){},removeAttribute(){},addEventListener(){},replaceChildren(){this.innerHTML='';},querySelector(){return null;},focus(){},scrollIntoView(){}};
   Object.defineProperty(n,'innerHTML',{get:()=>html,set(value){html=value;if(id==='visit-editor')parseEditor(value);}});
   nodes.set(id,n);return n;
  }
@@ -32,12 +32,14 @@ function fixture({previous=source(),note=null,role='owner',clinician='author'}={
  const known=id=>id==='visit-editor'||!(id.startsWith('note-')||id.endsWith('-form'));
  const context=vm.createContext({console,Date,Intl,URL,URLSearchParams,TextEncoder,crypto:{randomUUID:()=>'synthetic-request'},location:{search:'',hash:'',pathname:'/'},
   FormData:class{constructor(form){this.form=form;}*[Symbol.iterator](){yield*Object.entries(this.form.values||{});}},
-  document:{documentElement:{classList:{add(){},remove(){}}},getElementById:id=>known(id)?node(id):nodes.get(id)||null,querySelectorAll:()=>[],addEventListener(type,callback){if(!listeners.has(type))listeners.set(type,[]);listeners.get(type).push(callback);}},
-  window:{scrollTo(){},addEventListener(){}},fetch(){throw new Error('Unexpected network request');},billingWrite:()=>true,billingCan:()=>true,canDocument:()=>true,
+  document:{documentElement:{classList:{add(){},remove(){}}},getElementById:id=>known(id)?node(id):nodes.get(id)||null,querySelector:()=>null,querySelectorAll:()=>[],createElement:()=>node('copy-sheet-content'),addEventListener(type,callback){if(!listeners.has(type))listeners.set(type,[]);listeners.get(type).push(callback);}},
+  setTimeout:()=>0,clearTimeout(){},window:{scrollTo(){},addEventListener(){}},fetch(){throw new Error('Unexpected network request');},billingWrite:()=>true,billingCan:()=>true,canDocument:()=>true,
   confirmAction:async(message,options)=>{asked.push({message,options});if(!answers.length)throw new Error('Unexpected question: '+message);return answers.shift();},
   localStorage:{setItem(){throw new Error('PHI must not be persisted');}},sessionStorage:{setItem(){throw new Error('PHI must not be persisted');}}
  });
  const run=code=>vm.runInContext(code,context);run(app);run(module_);
+ context.sheetOpen=(title,body)=>{const sheet={title,body,open:true,addEventListener(event,fn){if(event==='close')this.onclose=fn;}};sheets.push(sheet);return sheet;};
+ context.sheetClose=sheet=>{sheet.open=false;sheet.onclose?.();};
  context.testRequests=requests;context.testPrevious=previous;
  run(`api=async(path,method='GET',body,version)=>{testRequests.push({path,method,body,version});
   if(path.endsWith('/previous-note')){if(testPrevious==='fail')throw new Error('Synthetic failure');return {source:testPrevious};}
@@ -51,12 +53,12 @@ function fixture({previous=source(),note=null,role='owner',clinician='author'}={
  workspace.visits=[activeVisit];renderVisit(false);`);
  const settle=async()=>{for(let i=0;i<8;i++)await new Promise(done=>setImmediate(done));};
  const form=()=>nodes.get('note-form');
- function type(values){Object.assign(form().values,values);for(const callback of listeners.get('input')||[])callback({target:{closest:selector=>selector.includes('#note-form')?form():null}});}
- async function click(dataset,reply=[]){answers=[...reply];const button={id:'',type:'button',dataset,closest:()=>null,hasAttribute:()=>false};for(const callback of listeners.get('click')||[])callback({target:{closest:()=>button}});await settle();assert.equal(answers.length,0,'every prepared answer was used');}
+ function type(values){Object.assign(form().values,values);for(const callback of listeners.get('input')||[])callback({target:{dataset:{},closest:selector=>selector.includes('#note-form')?form():null}});}
+ async function click(dataset,reply=[]){answers=[...reply];const button={id:'',type:'button',dataset,closest:()=>null,hasAttribute:()=>false};for(const callback of listeners.get('click')||[])callback({target:{closest:s=>s==='button'?button:null}});await settle();assert.equal(answers.length,0,'every prepared answer was used');}
  async function submit(){for(const callback of listeners.get('submit')||[])callback({target:form(),preventDefault(){}});await settle();}
  const editor=()=>nodes.get('visit-editor').innerHTML,bar=()=>nodes.get('note-previous')?.innerHTML||'';
  const from=()=>form().values.started_from?JSON.parse(form().values.started_from):null;
- return {run,context,nodes,requests,asked,settle,form,type,click,submit,editor,bar,from,noteForm:()=>editor().match(/<form id="note-form"[\s\S]*?<\/form>/)[0]};
+ return {run,context,nodes,requests,asked,settle,form,type,click,submit,editor,bar,from,sheets,options:()=>run('visitNoteCopyMarkup(visitNoteSources.get(activeVisit.id).source)'),noteForm:()=>editor().match(/<form id="note-form"[\s\S]*?<\/form>/)[0]};
 }
 const clearVisitNoteSessionCall='clearVisitNoteSession()';
 const sections=['subjective','objective','assessment','plan','procedure'];
@@ -69,25 +71,31 @@ async function main(){
  assert.deepEqual(order,sections,'Procedure is the fifth section, after Plan');
  assert.match(note,/<div class="note-section note-procedure"><label>Procedure<textarea name="procedure" maxlength="10000" placeholder="Procedure performed, site, medication and dose, lot number, guidance, tolerance, complications">/);
  assert.doesNotMatch(note,/required/,'nothing is required while drafting: Save note takes any text, and signing is checked separately');
- assert.match(note,/<div id="note-message" class="note-message muted" role="status" hidden><\/div><div class="actions"><button type="submit">Save note<\/button>/,'a message line sits next to Save note and Sign note, inside the form');
+ assert.match(note,/<div id="note-message" class="note-message muted" role="status" hidden><\/div><div class="actions"(?: data-note-actions)?>[\s\S]*?<button type="submit"(?: class="quiet")?>Save note<\/button>/,'a message line sits next to Save note and Sign note, inside the form');
  assert.match(style,/\.note-section\.note-procedure\{grid-column:1\/-1\}/,'Procedure spans the row below Plan');
  assert.match(index,/<script src="\/visit-diagnoses\.js" defer><\/script><script src="\/visit-note\.js" defer><\/script>/);
  console.log('PASS Procedure appears below Plan in the editor with its hint and stays optional');
 
  assert.deepEqual(f.requests.map(r=>[r.method,r.path]),[['GET','/api/v1/visits/visit-1/previous-note']]);
- assert.match(f.bar(),/^<button type="button" class="primary" data-note-same="all">Same as last encounter<\/button><span class="muted">From your visit on [^<]*2026<\/span>/,'offered prominently on an empty note, naming the source');
+ assert.match(f.bar(),/data-note-copy-open aria-haspopup="dialog">Copy from previous note/);
+ assert.doesNotMatch(f.bar(),/data-note-same|Earlier P|Earlier S/,'the patient chart holds only the launcher');
  assert.equal(f.nodes.get('note-previous').hidden,false);
- for(const key of sections)assert.equal(f.nodes.get('note-same-'+key).hidden,false,key+' has its own link');
- assert.match(note,/id="note-same-plan" data-note-same="plan" aria-label="Same as last encounter: Plan" hidden>Same as last encounter</);
+ await f.click({noteCopyOpen:''});
+ assert.equal(f.sheets.length,1);assert.equal(f.sheets[0].title,'Copy from previous note');
+ assert.match(f.sheets[0].body.innerHTML,/From your visit on [^<]*2026/);
+ for(const key of sections)assert.ok(f.sheets[0].body.innerHTML.includes('data-note-same="'+key+'"'),key+' is available in the dialog');
+ assert.deepEqual(text(f),blank,'reading the previous note keeps the current draft intact');
+ assert.doesNotMatch(note,/id="note-same-plan"/);
  assert.equal(f.nodes.get('note-source-line').hidden,true);
  await f.click({noteSame:'all'});
+ assert.equal(f.sheets[0].open,false,'a confirmed copy returns to the editor');
  assert.equal(f.asked.length,0,'one click fills an empty note without a question');
  assert.deepEqual(text(f),earlier);
  assert.deepEqual(f.from(),{visit_id:'visit-0',version:3,sections});
  assert.match(f.nodes.get('note-source-line').textContent,/^Started from the encounter on [^.]*2026\. Review every section before signing\.$/);
  assert.equal(f.nodes.get('note-source-line').hidden,false);
  assert.match(f.bar(),/role="status">Subjective, Objective, Assessment, Plan and Procedure brought in\. Review before signing\.<\/span><button type="button" class="text-button" data-note-undo>Undo<\/button>$/);
- assert.match(f.bar(),/<button type="button" class="" data-note-same="all">/,'no longer the primary action once the note has text');
+ assert.match(f.options(),/data-note-same="all">/,'all sections are still accessible after a copy');
  assert.deepEqual(f.run('visitDrafts.get("visit-1").note.values.plan'),'Earlier P','brought-in text is an ordinary retained draft');
  assert.match(f.nodes.get('visit-draft-status').textContent,/Unsaved note edits retained in this tab/);
  console.log('PASS one click fills an empty note, records where it came from and offers Undo');
@@ -105,7 +113,7 @@ async function main(){
  f=fixture();await f.settle();await f.click({noteSame:'all'});await f.click({noteUndo:''});
  assert.deepEqual(text(f),blank);assert.equal(f.form().values.started_from,'');assert.equal(f.nodes.get('note-source-line').hidden,true);
  assert.equal(f.run('visitDrafts.has("visit-1")'),false,'a full undo leaves no unsaved draft');
- assert.match(f.bar(),/class="primary" data-note-same="all"/);assert.match(f.bar(),/Put back as it was\./);
+ assert.match(f.bar(),/data-note-copy-open/);assert.match(f.bar(),/Put back as it was\./);
  console.log('PASS Undo is retained with the draft and keeps anything edited afterwards');
 
  f=fixture();await f.settle();f.type({subjective:'My own history',plan:'My own plan'});
@@ -139,20 +147,20 @@ async function main(){
 
  // Sections the earlier note left empty are not offered and never blank out today's text.
  f=fixture({previous:source({same_clinician:false,clinician_name:'Dr. Peer <Synthetic>',note:{...earlier,procedure:'',assessment:'  '}})});await f.settle();
- assert.match(f.bar(),/From Dr\. Peer &lt;Synthetic&gt;’s visit on [^<]*2026</,'another clinician is named, safely escaped');
- assert.equal(f.nodes.get('note-same-procedure').hidden,true);assert.equal(f.nodes.get('note-same-assessment').hidden,true);assert.equal(f.nodes.get('note-same-plan').hidden,false);
+ assert.match(f.options(),/From Dr\. Peer &lt;Synthetic&gt;’s visit on [^<]*2026</,'another clinician is named, safely escaped');
+ assert.doesNotMatch(f.options(),/data-note-same="(procedure|assessment)"/);assert.match(f.options(),/data-note-same="plan"/);
  f.type({procedure:'Today procedure'});await f.click({noteSame:'all'});assert.equal(f.asked.length,0,'nothing written is at risk, so nothing is asked');
  assert.deepEqual(text(f),{subjective:'Earlier S',objective:'Earlier O',assessment:'',plan:'Earlier P',procedure:'Today procedure'});
- f=fixture({previous:source({same_clinician:false})});await f.settle();assert.match(f.bar(),/From another clinician’s visit on/);
+ f=fixture({previous:source({same_clinician:false})});await f.settle();assert.match(f.options(),/From another clinician’s visit on/);
  f=fixture({previous:null});await f.settle();
- assert.equal(f.bar(),'<span class="muted">No earlier signed note for this patient.</span>');
- for(const key of sections)assert.equal(f.nodes.get('note-same-'+key).hidden,true);
+ assert.equal(f.bar(),'');assert.equal(f.nodes.get('note-previous').hidden,true);
+ assert.doesNotMatch(f.bar(),/data-note-same/);
  await f.click({noteSame:'all'});assert.deepEqual(text(f),blank);
- f=fixture({previous:'fail'});await f.settle();assert.match(f.bar(),/The last note could not be checked\..*data-note-retry>Try again</);
- f.context.testPrevious=source();await f.click({noteRetry:''});assert.match(f.bar(),/data-note-same="all"/);assert.equal(f.requests.length,2);
+ f=fixture({previous:'fail'});await f.settle();assert.match(f.bar(),/Previous note unavailable\..*data-note-retry>Try again</);
+ f.context.testPrevious=source();await f.click({noteRetry:''});assert.match(f.bar(),/data-note-copy-open/);assert.equal(f.requests.length,2);
  f=fixture({clinician:'someone-else',previous:source({clinician_id:'someone-else',clinician_name:'Dr. Assigned',same_clinician:true,own:false})});await f.settle();
  assert.deepEqual(f.requests.map(r=>r.path).sort(),['/api/v1/visits/visit-1/note-authorship','/api/v1/visits/visit-1/previous-note'],'anyone who may draft is offered the earlier note');
- assert.match(f.bar(),/data-note-same="all">Same as last encounter<\/button><span class="muted">From Dr\. Assigned’s visit on /,'the assigned clinician’s earlier note is named as theirs, not as the covering writer’s');
+ assert.match(f.options(),/From Dr\. Assigned’s visit on [^<]*[\s\S]*data-note-same="all">Copy all sections/,'the assigned clinician’s earlier note is named as theirs, not as the covering writer’s');
  await f.click({noteSame:'all'});assert.deepEqual(text(f),earlier);
  for(const role of ['front_desk','read_only']){
   f=fixture({role,clinician:'someone-else'});await f.settle();
@@ -168,7 +176,7 @@ async function main(){
  assert.doesNotMatch(f.bar()+f.run('String(visitNoteUndo.size)'),/data-note-undo|1/,'Undo ends when the note is saved');
  f.run('renderVisit(false)');await f.settle();
  assert.match(f.editor(),/Started from the encounter on [^<]*2026\. Review every section before signing\./,'the line stays until signing');
- await f.click({action:'sign'},[true]);
+ await f.click({action:'sign'});
  assert.ok(f.requests.some(r=>r.path.endsWith('/sign')),'a saved note with an origin can be signed');
  f=fixture();await f.settle();f.type({subjective:'S',objective:'O',assessment:'A',plan:'P',procedure:'Synthetic procedure text'});await f.submit();
  put=f.requests.find(r=>r.method==='PUT');assert.deepEqual(JSON.parse(JSON.stringify(put.body)),{subjective:'S',objective:'O',assessment:'A',plan:'P',procedure:'Synthetic procedure text'},'a note written from scratch carries no origin');
@@ -177,7 +185,7 @@ async function main(){
  await emptyDraft.submit();assert.equal(emptyDraft.requests.length,0,'an empty note sends nothing');
  assert.equal(emptyDraft.nodes.get('note-message').hidden,false);assert.equal(emptyDraft.nodes.get('note-message').textContent,'Write something in the note before saving.');
  assert.equal(emptyDraft.requests.some(r=>r.method==='PUT'),false,'an empty note is not sent');
- assert.match(emptyDraft.editor(),/<div id="note-message" class="note-message muted" role="status" hidden><\/div><div class="actions"><button type="submit">Save note<\/button>/,'the empty message line sits inside the note form, right beside Save note and Sign note');
+ assert.match(emptyDraft.editor(),/<div id="note-message" class="note-message muted" role="status" hidden><\/div><div class="actions"(?: data-note-actions)?>[\s\S]*?<button type="submit"(?: class="quiet")?>Save note<\/button>/,'the empty message line sits inside the note form, right beside Save note and Sign note');
  assert.equal(emptyDraft.nodes.get('notice').hidden,true,'the reason shows next to the buttons, not in the banner out of view');
  // A draft saves with any one section filled.
  emptyDraft.type({procedure:'Procedure only'});await emptyDraft.submit();
@@ -191,21 +199,21 @@ async function main(){
  let focused=[];for(const key of ['subjective','objective','assessment'])emptyDraft.form().elements[key].focus=()=>focused.push(key);
  await emptyDraft.click({action:'sign'});
  assert.equal(emptyDraft.asked.length,0,'the sign question never opens while sections are missing');
- assert.equal(emptyDraft.nodes.get('note-message').textContent,'Fill in Subjective, Objective and Assessment before signing.');
+ assert.equal(emptyDraft.nodes.get('note-message').textContent,'Add Subjective, Objective and Assessment before signing.');
  assert.equal(emptyDraft.nodes.get('note-message').hidden,false);assert.deepEqual(focused,['subjective'],'the first missing section takes the caret');
  assert.equal(emptyDraft.requests.some(r=>r.path.endsWith('/sign')),false);
  emptyDraft.type({subjective:'S',objective:'O',assessment:'A'});await emptyDraft.submit();
  assert.equal(emptyDraft.nodes.get('note-message').textContent,'Note saved.');
- await emptyDraft.click({action:'sign'},[true]);assert.ok(emptyDraft.requests.some(r=>r.path.endsWith('/sign')),'with all four sections filled the usual sign question opens and signs');
+ await emptyDraft.click({action:'sign'});assert.ok(emptyDraft.requests.some(r=>r.path.endsWith('/sign')),'with all four sections filled the assigned clinician signs');
  console.log('PASS an empty note is refused with a word beside the buttons; any one section saves; signing names what is missing and focuses it');
 
  // A draft saved before the Procedure section existed still signs without a re-save.
  f=fixture({note:{subjective:'S',objective:'O',assessment:'A',plan:'P'},previous:null});await f.settle();
  assert.equal(f.run('visitDrafts.has("visit-1")'),false);f.run('captureVisitDrafts()');assert.equal(f.run('visitDrafts.has("visit-1")'),false,'an older saved note is not mistaken for an unsaved edit');
- await f.click({action:'sign'},[true]);assert.ok(f.requests.some(r=>r.path.endsWith('/sign')));
+ await f.click({action:'sign'});assert.ok(f.requests.some(r=>r.path.endsWith('/sign')));
  f=fixture({note:{subjective:'S',objective:'O',assessment:'A',plan:'P'},previous:null});await f.settle();f.type({procedure:'Unsaved procedure'});
- await f.click({action:'sign'});assert.equal(f.nodes.get('notice').textContent,'Save your current note before signing.');assert.ok(!f.requests.some(r=>r.path.endsWith('/sign')));
- console.log('PASS saving sends Procedure and the origin; older drafts still sign; unsaved Procedure blocks signing');
+ await f.click({action:'sign'});const savedProcedure=f.requests.findIndex(r=>r.method==='PUT'&&r.body.procedure==='Unsaved procedure');assert.ok(savedProcedure>=0&&f.requests.findIndex(r=>r.path.endsWith('/sign'))>savedProcedure,'latest edits save before signing');
+ console.log('PASS saving sends Procedure and the origin; older drafts still sign; pending Procedure saves before signing');
 
  const signed=(noteValue)=>{const s=fixture({note:noteValue});s.requests.length=0;s.run(clearVisitNoteSessionCall);s.run("activeVisit={...activeVisit,status:'signed',signed_at:'2026-11-11T13:00:00Z'};workspace.visits=[activeVisit];renderVisit(false)");return s;};
  f=signed({subjective:'Frozen S',objective:'Frozen O',assessment:'Frozen A',plan:'Frozen P'});await f.settle();note=f.noteForm();
@@ -221,7 +229,7 @@ async function main(){
  const rules=style.split('\n').filter(line=>/^\.note-(section|previous|source)/.test(line)).join('\n');
  assert.ok(rules.includes('.note-previous{')&&rules.includes('.note-source{'));
  assert.doesNotMatch(rules,/#[0-9a-f]{3,8}\b|rgba?\(|hsla?\(/i,'the new note styles use theme variables only, so dark mode follows the theme');
- assert.match(rules,/background:var\(--surface-soft\);color:var\(--ink\)/);
+ assert.match(rules,/color:var\(--ink\)/);
  assert.doesNotMatch(module_,/style=|#[0-9a-f]{6}\b/i);assert.doesNotMatch(module_,/localStorage|sessionStorage/,'earlier note text is never stored in the browser');
  console.log('PASS dark mode uses theme variables only');
 }

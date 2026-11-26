@@ -92,6 +92,8 @@ fn main() {
         ".github",
         "Cargo.toml",
         "Cargo.lock",
+        "package.json",
+        "package-lock.json",
         "build.rs",
         "BUILD_VERSION",
         "LICENSE",

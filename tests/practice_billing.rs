@@ -104,6 +104,53 @@ async fn call(
     (status, serde_json::from_slice(&data).unwrap_or(Value::Null))
 }
 #[tokio::test]
+async fn review_queue_filters_remittances_before_paging_and_scopes_the_clinic() {
+    let f = setup().await;
+    for tenant in [f.tenant, Uuid::new_v4()] {
+        let payer = Uuid::new_v4();
+        sqlx::query("INSERT INTO ehr_payers(tenant_id,id,content,request_id,creation_hash) VALUES($1,$2,'{}',$2,'fixture')")
+            .bind(tenant).bind(payer).execute(&f.db).await.unwrap();
+        sqlx::query("INSERT INTO era_remittances(tenant_id,id,payer_id,trace,document,document_hash,status,request_id,creation_hash) SELECT $1,md5(i::text)::uuid,$2,i::text,'{\"claims\":[]}','fixture',CASE WHEN i<=100 THEN 'posted' WHEN i=201 THEN 'reconciled' ELSE 'staged' END,md5(i::text)::uuid,'fixture' FROM generate_series(1,201) i")
+            .bind(tenant).bind(payer).execute(&f.db).await.unwrap();
+    }
+    let path = "/api/v1/billing/remittances?needs_review=true";
+    let (status, first) = call(&f.app, &f.cookie, "GET", path, Value::Null, None).await;
+    assert_eq!(status, StatusCode::OK, "{first}");
+    assert_eq!(first["items"].as_array().unwrap().len(), 100);
+    let cursor = first["next_cursor"].as_str().unwrap();
+    let (status, last) = call(
+        &f.app,
+        &f.cookie,
+        "GET",
+        &format!("{path}&after={cursor}"),
+        Value::Null,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{last}");
+    assert_eq!(last["items"].as_array().unwrap().len(), 1);
+    assert!(last["next_cursor"].is_null());
+    let rows: Vec<_> = first["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .chain(last["items"].as_array().unwrap())
+        .collect();
+    assert_eq!(rows.iter().filter(|r| r["status"] == "staged").count(), 100);
+    assert_eq!(
+        rows.iter().filter(|r| r["status"] == "reconciled").count(),
+        1
+    );
+    assert_eq!(
+        rows.iter()
+            .map(|r| r["id"].as_str().unwrap())
+            .collect::<std::collections::HashSet<_>>()
+            .len(),
+        101
+    );
+    cleanup(f).await;
+}
+#[tokio::test]
 async fn billing_identity_is_encrypted_versioned_scoped_and_resolved_before_eligibility() {
     let f = setup().await;
     let key_dir = std::env::temp_dir().join(format!("billing-identity-{}", Uuid::new_v4()));

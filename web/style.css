@@ -170,8 +170,6 @@ body{font-size:var(--fs-body);line-height:1.45;letter-spacing:0}button,input,sel
 .login-screen .login-card .primary{display:flex;align-items:center;justify-content:space-between;gap:20px;width:100%;min-height:48px;margin-top:12px;padding:12px 16px;border:1px solid #1f7843;border-radius:9px;background:linear-gradient(180deg,#36b65b,#299b49);box-shadow:0 8px 18px #1d7c3930;color:#fff;font-size:var(--fs-body);font-weight:700;text-decoration:none;transition:transform .15s ease,box-shadow .15s ease,background .15s ease}
 .login-screen .login-card .primary:hover{transform:translateY(-1px);background:linear-gradient(180deg,#3cc363,#2aa14c);border-color:#1f7843;box-shadow:0 11px 22px #1d7c3940;color:#fff}
 .login-screen .login-card .primary:active{transform:translateY(0)}
-.login-connection{display:flex;align-items:center;gap:8px;margin:14px 0 0;color:#537166;font-size:var(--fs-xs)}
-.login-connection-dot{width:6px;height:6px;flex:none;border-radius:50%;background:#39a65a;box-shadow:0 0 0 4px #39a65a17}
 .login-screen .login-card .error{margin:15px 0 0;padding:10px 12px;border:1px solid #e8c7c1;border-radius:8px;background:#fff2f0;color:#8c302b;font-size:var(--fs-sm)}
 .login-screen .login-card .error:empty{display:none}
 .login-secondary{display:flex;align-items:center;justify-content:space-between;gap:20px;margin-top:28px;padding:20px 0;border-top:1px solid #dde7e2;border-bottom:1px solid #dde7e2;color:#687d73;font-size:var(--fs-xs)}
@@ -186,7 +184,6 @@ body{font-size:var(--fs-body);line-height:1.45;letter-spacing:0}button,input,sel
 @keyframes login-rise{from{opacity:0;transform:translate3d(0,18px,0)}to{opacity:1;transform:translate3d(0,0,0)}}
 @keyframes login-card-rise{from{opacity:0;transform:translate3d(0,24px,0) scale(.985)}to{opacity:1;transform:translate3d(0,0,0) scale(1)}}
 @keyframes login-sun-pulse{0%,100%{color:#67e27f;text-shadow:0 0 20px #67e27f3d}50%{color:#8af39d;text-shadow:0 0 36px #67e27f78}}
-@keyframes login-status-pulse{0%,100%{box-shadow:0 0 0 4px #39a65a17}50%{box-shadow:0 0 0 7px #39a65a0c}}
 .login-screen::before{animation:login-ambient 12s ease-in-out infinite alternate;transform-origin:35% 45%}
 .login-screen::after{animation:login-orbit-drift 16s ease-in-out infinite alternate}
 .login-screen .intro .wordmark{animation:login-rise .58s cubic-bezier(.2,.75,.25,1) both}
@@ -195,10 +192,9 @@ body{font-size:var(--fs-body);line-height:1.45;letter-spacing:0}button,input,sel
 .login-capabilities{animation:login-rise .72s .2s cubic-bezier(.2,.75,.25,1) both}
 .login-intro-footer{animation:login-rise .72s .28s cubic-bezier(.2,.75,.25,1) both}
 .login-screen .login-card{animation:login-card-rise .72s .16s cubic-bezier(.18,.78,.22,1) both}
-.login-connection-dot{animation:login-status-pulse 2.6s ease-in-out infinite}
 .login-screen .login-card .primary span:last-child{transition:transform .18s ease}
 .login-screen .login-card .primary:hover span:last-child{transform:translateX(3px)}
-@media(prefers-reduced-motion:reduce){.login-screen::before,.login-screen::after,.login-screen .intro .wordmark,.login-screen .intro .wordmark .sun,.intro-copy,.login-capabilities,.login-intro-footer,.login-screen .login-card,.login-connection-dot{animation:none}.login-screen .login-card .primary,.login-screen .login-card .primary span:last-child{transition:none}}
+@media(prefers-reduced-motion:reduce){.login-screen::before,.login-screen::after,.login-screen .intro .wordmark,.login-screen .intro .wordmark .sun,.intro-copy,.login-capabilities,.login-intro-footer,.login-screen .login-card{animation:none}.login-screen .login-card .primary,.login-screen .login-card .primary span:last-child{transition:none}}
 
 /* Authenticated shell identity and progress feedback. */
 .sidebar-account>div{min-width:0;display:grid;gap:2px}.sidebar-account strong,.account-role{display:block;max-width:128px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.account-role{font-size:var(--fs-xs);color:var(--muted)}.user-context{display:grid;gap:1px;max-width:220px;border:1px solid #dce5eb;background:#f9fbfc;border-radius:4px;padding:4px 8px;text-transform:none}.user-context strong,.user-context span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.user-context strong{font-size:var(--fs-sm);color:#365365;font-weight:650}.user-context span{font-size:var(--fs-eyebrow);color:var(--muted);text-transform:uppercase;letter-spacing:.45px}.shell-loading{display:inline-flex;align-items:center;gap:6px;font-size:var(--fs-xs);color:#5d7482;white-space:nowrap}.shell-loading>span{width:11px;height:11px;border:2px solid #bdd0d8;border-top-color:#176f79;border-radius:50%;animation:shell-spin .7s linear infinite}.app-busy{cursor:progress}@keyframes shell-spin{to{transform:rotate(360deg)}}
@@ -329,6 +325,12 @@ body{font-size:var(--fs-body);line-height:1.45;letter-spacing:0}button,input,sel
 .encounter-account-record{margin-top:20px;border:1px solid var(--line,#dce5e9);border-radius:6px;padding:14px}.encounter-account-record>summary{font-weight:600;cursor:pointer}.encounter-account-record[open]>summary{margin-bottom:16px}
 
 .workspace-back{flex:none;white-space:nowrap;min-height:30px}.page-heading:has(.workspace-back:not([hidden])){gap:12px}
+
+#workspace-startup{position:fixed;inset:0;z-index:100;display:grid;place-items:center;padding:24px;text-align:center;background:var(--paper);color:var(--ink)}
+#workspace-startup h1{margin-bottom:8px}
+#startup-status{color:var(--muted)}
+#app[inert]{visibility:hidden;opacity:0}
+body:has(#app[inert])>.skip-link{display:none}
 
 /* Keep encounter claim review focused while preserving the billing controls and drafts. */
 /* the encounter's tabs decide what shows (visit-billing.css) */
@@ -485,8 +487,13 @@ td.money-cell,th.money-cell{text-align:right;font-variant-numeric:tabular-nums}
 .intake-coverage{margin-top:10px;padding:10px;border:1px solid var(--line);border-radius:6px;background:var(--surface);color:var(--ink)}.intake-coverage>summary{cursor:pointer;font-weight:600;color:var(--blue)}.intake-coverage form{margin-top:8px}
 .intake-standard-preview>summary span{margin-left:8px;color:var(--muted);font-weight:400}.intake-standard-preview small+small::before{content:"· "}
 .intake-add-payer{margin:8px 0;padding:10px;border:1px dashed var(--line);border-radius:6px;background:var(--surface-soft);color:var(--ink)}.intake-add-payer p{margin:0 0 6px}
-.note-section{position:relative;min-width:0}.note-section.note-procedure{grid-column:1/-1}.note-section>.note-same{position:absolute;top:-3px;right:0;min-height:0;padding:0;font-size:var(--fs-sm);font-weight:600;line-height:1.6}.note-section>.note-same[hidden]{display:none}
-.note-previous{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;margin:10px 0 0;padding:8px 10px;border:1px solid var(--line);border-radius:5px;background:var(--surface-soft);color:var(--ink)}.note-previous[hidden]{display:none}.note-previous-status{font-size:var(--fs-sm);color:var(--ink)}.note-previous-status:empty{display:none}.note-previous .text-button{min-height:0;font-weight:700;text-decoration:underline}
+.note-section{position:relative;min-width:0}.note-section.note-procedure{grid-column:1/-1}
+.note-previous{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;margin:4px 0 8px;color:var(--ink)}
+.note-copy-section{padding-block:10px;border-block-end:1px solid var(--line)}
+.note-copy-section p{white-space:pre-wrap;overflow-wrap:anywhere;margin:4px 0}
+.note-copy-options{display:grid;gap:6px;margin:6px 0}
+.note-copy-options .actions{margin:0;display:flex;flex-wrap:wrap;gap:4px}
+.note-previous[hidden]{display:none}.note-previous-status{font-size:var(--fs-sm);color:var(--ink)}.note-previous-status:empty{display:none}.note-previous .text-button{min-height:0;font-weight:700;text-decoration:underline}
 .note-source{margin:-6px 0 10px;font-size:var(--fs-sm)}.note-source[hidden]{display:none}
 .note-authorship{margin:-4px 0 8px;font-size:var(--fs-sm)}.note-authorship[hidden]{display:none}.note-message{margin:0 0 -6px;font-size:var(--fs-sm)}.note-message[hidden]{display:none}.note-conflict{margin:8px 0 12px}.note-conflict[hidden]{display:none}.note-conflict p{margin:0 0 8px}.note-conflict .actions{margin:0}.note-saved-copy{margin:8px 0 12px;padding:10px 12px;border:1px solid var(--line);border-radius:5px;background:var(--surface-soft)}.note-saved-copy[hidden]{display:none}.note-saved-copy h4{margin:0 0 6px}.note-saved-copy p{margin:2px 0}
 .app-dialog footer{flex-wrap:wrap}
@@ -724,3 +731,19 @@ dialog.sheet-dialog:has(.receipt-sheet){width:min(680px,92vw);max-width:none}
 .note-suggest-row{align-items:center;margin:6px 0 0}
 .note-suggest-row:has([data-note-suggest][hidden]){display:none}
 .note-suggest-row [data-note-suggest-status]{font-size:var(--fs-sm)}
+
+#note-form [aria-invalid="true"],.checkout-workspace [aria-invalid="true"]{outline:2px solid #b42318;outline-offset:2px}
+#note-message.note-sign-error{color:#b42318;font-weight:600}
+
+/* Clinical chart lists retain verification, source and safety cues. */
+#clinical-lists .clinical-source{display:block;color:var(--muted);margin-top:4px}
+#clinical-lists .clinical-inactive{margin:16px 0}
+#clinical-lists .clinical-inactive>summary{cursor:pointer;font-weight:600;padding:10px 0}
+#clinical-lists .status-badge{border:1px solid #c7d5df;background:#edf2f6;color:#43596b}
+#clinical-lists .status-badge:is(.active,.confirmed){background:#e5f4e9;border-color:#a9d4b5;color:#235c36}
+#clinical-lists .status-badge:is(.unconfirmed,.on_hold,.intended,.recurrence){background:#fff3d9;border-color:#e5c47d;color:#785410}
+#clinical-lists .status-badge:is(.refuted,.entered_in_error){background:#fde9e7;border-color:#e5ada7;color:#982c24}
+#clinical-lists .allergy-alert{background:#fde9e7;border-color:#e5ada7;color:#982c24}
+#clinical-lists .clinical-high-risk{color:#a4231b;font-weight:700}
+:root[data-theme=dark] #clinical-lists .allergy-alert{background:#482422;border-color:#a65c55;color:#ffbdb5}
+:root[data-theme=dark] #clinical-lists .clinical-high-risk{color:#ffbdb5}

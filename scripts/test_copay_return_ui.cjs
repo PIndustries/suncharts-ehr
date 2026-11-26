@@ -6,26 +6,30 @@ const opId='11111111-1111-4111-8111-111111111111',patient='22222222-2222-4222-82
 const operation={id:opId,patient_id:patient,appointment_id:appointment,status:'open',amount_cents:2500,livemode:false,receipt_id:null,created_at:'2026-11-11T19:00:00Z'};
 function fixture(){
  const nodes={},calls=[],handlers={};
- for(const id of ['tools','page-title','clinical-workspace','patient-form','new-patient','toggle-directory'])nodes[id]={hidden:false,textContent:'Home',scrollIntoView(){},replaceChildren(){this.innerHTML='';}};
+ for(const id of ['tools','page-title','clinical-workspace','chart','patient-form','new-patient','toggle-directory'])nodes[id]={hidden:false,textContent:'Home',classList:{add(){}},childNodes:[],scrollIntoView(){},replaceChildren(){this.innerHTML='';}};
  Object.defineProperty(nodes.tools,'innerHTML',{set(value){this.html=value;delete nodes['copay-return-result'];if(value.includes('id="copay-return-result"'))nodes['copay-return-result']={innerHTML:value};},get(){return this.html||'';}});
  const location={pathname:'/',search:'?copay_checkout='+opId,hash:''};
- const ctx={console,Date,Intl,URL,URLSearchParams,encodeURIComponent,crypto:{randomUUID:()=> 'synthetic-request'},location,history:{state:{existing:true},replaceState(state,_title,path){this.state=state;const u=new URL(path,'https://example.test');location.pathname=u.pathname;location.search=u.search;location.hash=u.hash;calls.push(['replace-url',path]);}},document:{addEventListener:(type,fn)=>(handlers[type]??=[]).push(fn)},$:id=>nodes[id]??null,me:{tenant_id:'tenant',user_id:'staff',role:'owner'},selected:undefined,activeVisit:undefined,workspace:undefined,patientWorkspaceGeneration:0,patientDirectoryPreference:true,chartSection:'overview',encounterSection:'documentation',esc:s=>String(s??''),money:n=>'$'+(n/100).toFixed(2),date:String,human:String,canRegisterPatient:()=>false,billingCan:()=>true,workspaceResourceAllowed:()=>true,setPage:title=>nodes['page-title'].textContent=title,captureVisitDrafts:()=>calls.push(['capture-drafts']),renderPatients(){},renderChart:()=>calls.push(['render',ctx.selected,ctx.activeVisit?.id,ctx.chartSection]),setPatientDirectoryVisible(){},showChartSection:section=>ctx.chartSection=section,setEncounterSection:step=>ctx.encounterSection=step,notice:(...a)=>calls.push(['notice',...a]),run:fn=>ctx.pending=fn()};
+ const ctx={console,Date,Intl,URL,URLSearchParams,encodeURIComponent,crypto:{randomUUID:()=> 'synthetic-request'},location,history:{state:{existing:true},replaceState(state,_title,path){this.state=state;const u=new URL(path,'https://example.test');location.pathname=u.pathname;location.search=u.search;location.hash=u.hash;calls.push(['replace-url',path]);}},document:{addEventListener:(type,fn)=>(handlers[type]??=[]).push(fn)},$:id=>nodes[id]??null,me:{tenant_id:'tenant',user_id:'staff',role:'owner'},selected:undefined,activeVisit:undefined,workspace:undefined,patientWorkspaceGeneration:0,patientDirectoryPreference:true,framePatients:[],window:{scrollX:0,scrollY:0,addEventListener(){}},chartSection:'overview',encounterSection:'documentation',esc:s=>String(s??''),money:n=>'$'+(n/100).toFixed(2),date:String,human:String,canRegisterPatient:()=>false,billingCan:()=>true,workspaceResourceAllowed:()=>true,setPage:title=>nodes['page-title'].textContent=title,captureVisitDrafts:()=>calls.push(['capture-drafts']),renderPatients(){},renderChart:()=>calls.push(['render',ctx.selected,ctx.activeVisit?.id,ctx.chartSection]),setPatientDirectoryVisible(){},showChartSection:section=>ctx.chartSection=section,setEncounterSection:step=>ctx.encounterSection=step,notice:(...a)=>calls.push(['notice',...a]),run:fn=>ctx.pending=fn()};
  const workspace={patient:{id:patient},appointments:[{id:appointment,patient_id:patient,status:'checked_in',starts_at:'2026-11-11T19:00:00Z'}],visits:[{id:'visit',patient_id:patient,appointment_id:appointment,status:'signed'}]};
  ctx.reply=operation;
  ctx.api=async(path,method='GET',body)=>{calls.push(['api',path,method,body]);if(path.includes('/billing/copay-checkouts/'))return {operation:ctx.reply};if(path.endsWith('/workspace'))return structuredClone(workspace);if(path.endsWith('/billing'))return {accounts:[],entries:[],copays:[],coverages:[]};return {items:[]};};
  vm.createContext(ctx);vm.runInContext(revenue,ctx);
  vm.runInContext(app.slice(app.indexOf('function rememberHostedCopaySignInReturn('),app.indexOf('// Connect delivers delegated support codes')),ctx);
  vm.runInContext(app.slice(app.indexOf('function showTool('),app.indexOf("let sunReturnWorkspace=")),ctx);
- vm.runInContext(app.slice(app.indexOf('async function selectPatient('),app.indexOf('async function openPatientEncounter(')),ctx);
+ vm.runInContext(app.slice(app.indexOf('const patientChartCache=new Map()'),app.indexOf('async function openPatientEncounter(')),ctx);
+ ctx.encounterStepsSync=()=>{};ctx.encounterStepOpen=target=>calls.push(['encounter-payment-step',target]);
  return {ctx,nodes,calls,workspace,handlers};
 }
 const apiCalls=f=>f.calls.filter(c=>c[0]==='api');
 (async()=>{
  let f=fixture(),c=f.ctx;
+ c.showCopayReceipt=async(id,appt)=>f.calls.push(['open-receipt',id,appt]);
  c.reply={...operation,status:'paid',receipt_id:'verified-receipt'};
  await c.openHostedCopayReturn(opId);
- assert.equal(c.selected,patient);assert.equal(c.activeVisit.id,'visit');assert.equal(c.chartSection,'visits');assert.equal(c.encounterSection,'charges');
+ assert.equal(c.selected,patient);assert.equal(c.activeVisit.id,'visit');assert.equal(c.chartSection,'visits');assert.equal(c.encounterSection,'visit');assert.ok(f.calls.some(([kind,step])=>kind==='encounter-payment-step'&&step==='2'));
  assert.equal(c.hostedCopayStateFor(appointment).items[0].receipt_id,'verified-receipt');
+ assert.equal(f.calls.some(call=>call[0]==='open-receipt'),false,'the visit opens directly at the recorded payment');
+ assert.ok(f.calls.some(call=>call[0]==='notice'&&/Review the recorded receipt below/.test(call[1])));
  assert.equal(apiCalls(f)[0][1],'/api/v1/billing/copay-checkouts/'+opId);assert.equal(apiCalls(f)[1][1],'/api/v1/billing/copay-checkouts/'+opId+'/refresh');
  assert.equal(apiCalls(f).filter(call=>call[2]==='POST').length,1);assert.deepEqual(Object.keys(apiCalls(f)[1][3]),[],'return provides no financial assertions');
  assert.equal(c.location.search,'','resolved return is consumed so reload/back does not rerun it');assert.ok(f.calls.some(call=>call[0]==='notice'&&/verified/.test(call[1])));
@@ -36,6 +40,15 @@ const apiCalls=f=>f.calls.filter(c=>c[0]==='api');
  assert.ok(apiCalls(f).every(call=>call[2]==='GET'||call[1].endsWith('/'+opId+'/refresh')),'never create checkout/receipt/account on return');
 
  f=fixture();c=f.ctx;f.workspace.visits=[];await c.openHostedCopayReturn(opId);assert.equal(c.activeVisit,undefined);assert.equal(c.chartSection,'insurance');assert.equal(vm.runInContext('insuranceAppointmentSelection.get(selected)',c),appointment,'an unstarted appointment is restored without creating an encounter');
+ // Return from the second of two unstarted appointments stays on that payment after switching chart sections.
+ f=fixture();c=f.ctx;f.workspace.visits=[];f.workspace.appointments.unshift({...f.workspace.appointments[0],id:'earlier-appointment'});
+ c.reply={...operation,status:'paid',receipt_id:'second-appointment-receipt'};
+ c.showCopayReceipt=async(id,appt)=>f.calls.push(['open-receipt',id,appt]);
+ await c.openHostedCopayReturn(opId);assert.equal(c.revenueAppointment().id,appointment);
+ assert.equal(c.hostedCopayStateFor(appointment).items[0].receipt_id,'second-appointment-receipt');
+ assert.equal(f.calls.some(call=>call[0]==='open-receipt'),false,'the correct appointment opens with its payment actions');
+ assert.ok(f.calls.some(call=>call[0]==='notice'&&/Open View payments for the receipt/.test(call[1])));
+ c.chartSection='encounters';assert.equal(c.revenueAppointment().id,appointment);
  f=fixture();c=f.ctx;c.workspaceResourceAllowed=resource=>resource!=='clinical';await c.openHostedCopayReturn(opId);assert.equal(c.selected,undefined);assert.equal(apiCalls(f).some(call=>call[1].includes('/patients/')),false);assert.match(f.nodes['copay-return-result'].innerHTML,/does not include opening/);
  f=fixture();c=f.ctx;c.billingCan=()=>false;await c.openHostedCopayReturn(opId);assert.equal(apiCalls(f).length,1,'read-only staff does not reconcile or open a hidden billing panel');assert.match(f.nodes['copay-return-result'].innerHTML,/Awaiting card payment/);
 

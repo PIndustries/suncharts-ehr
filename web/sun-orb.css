@@ -32,3 +32,13 @@
 @keyframes sun-orbit{to{transform:rotate(360deg)}}@keyframes sun-breathe{50%{transform:scale(1.045)}}
 @media(max-width:650px){#sun-panel.sun-floating-chat{border-radius:15px}#sun-panel.sun-page-workspace{height:calc(100dvh - var(--shell-header,120px) - 28px);min-height:420px}#sun-panel.sun-page-workspace #sun-conversation,#sun-panel.sun-page-workspace #sun-composer{padding:12px}.sun-panel-actions button{padding:5px 7px}#sun-open.sun-orb{width:56px;height:56px;min-height:56px}#sun-workspace-guide{flex-wrap:wrap}#sun-workspace-guide>div{flex-basis:70%}}
 @media(prefers-reduced-motion:reduce){.sun-orb,.sun-orb-light{animation:none!important}}
+
+.shell-topbar-actions>#sun-presence[data-chart-docked]{position:static;z-index:auto;flex:none;flex-direction:row;gap:0}
+#sun-presence[data-chart-docked] #sun-open.sun-orb{width:auto;min-width:38px;height:40px;min-height:40px;padding:0 5px;border:0;border-radius:6px;background:transparent;color:var(--blue);box-shadow:none;cursor:pointer;touch-action:manipulation;animation:none}
+#sun-presence[data-chart-docked] #sun-open::after{content:"Sun";font-size:var(--fs-sm);font-weight:650}
+#sun-presence[data-chart-docked] .sun-orb-center,#sun-presence[data-chart-docked] .sun-orb-light{display:none}
+#sun-presence[data-chart-docked] .sun-orb-label{position:absolute;width:1px;height:1px;padding:0;border:0;overflow:hidden;clip-path:inset(50%)}
+#sun-presence[data-chart-docked]:not([data-state=idle]) #sun-open{background:var(--accent);box-shadow:inset 0 -2px var(--blue)}
+#sun-presence[data-chart-docked] #sun-open:focus-visible{outline:2px solid var(--focus);outline-offset:-2px}
+#sun-presence[data-chart-docked] #sun-orb-stop{min-width:34px;min-height:40px;padding:0;border:0;font-size:0;color:var(--ink)}
+#sun-presence[data-chart-docked] #sun-orb-stop::after{content:"■";font-size:var(--fs-sm)}

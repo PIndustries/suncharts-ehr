@@ -22,7 +22,7 @@ class FakeDate extends RealDate{
  static now(){return clock().getTime();}
 }
 const nodes=new Map(),listeners=new Map();
-const node=id=>{if(!nodes.has(id))nodes.set(id,{innerHTML:'',hidden:false,contains:()=>false,scrollIntoView(){},querySelector:()=>null,closest:()=>({classList:{add(){},remove(){}}})});return nodes.get(id);};
+const node=id=>{if(!nodes.has(id))nodes.set(id,{innerHTML:'',hidden:false,contains:()=>false,classList:{toggle(){}},scrollIntoView(){},querySelector:()=>null,closest:()=>({classList:{add(){},remove(){}}})});return nodes.get(id);};
 const c=vm.createContext({Date:FakeDate,Intl,JSON,URLSearchParams,console,crypto:{randomUUID:()=>'request-1'},
  document:{addEventListener(type,cb,capture){if(!listeners.has(type))listeners.set(type,[]);listeners.get(type).push({cb,capture});},activeElement:null,querySelectorAll:()=>[],createElement:()=>({dataset:{},setAttribute(){},querySelector:()=>null})},
  me:{role:'owner',user_id:'provider'},canSchedule:()=>true,$:node,

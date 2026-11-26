@@ -125,8 +125,8 @@ function diagnosisSuggestSheetMarkup(id,state){
  if(state.noteChanged)return wrap(`<p role="status" data-diagnosis-suggest-stale>The note changed. Suggest again.</p><div class="actions diagnosis-suggest-actions">${ask}${dismiss}</div>`);
  if(!found)return wrap(`<p class="muted" data-diagnosis-suggest-empty>No codes found in the note.</p>${diagnosisSuggestUnmatchedMarkup(state)}${diagnosisSuggestProceduresUnmatchedMarkup(state)}<div class="actions diagnosis-suggest-actions">${ask}${dismiss}</div>`);
  const gate=diagnosisSuggestChargeGate(),hasUnmatched=(state.unmatched||[]).some(item=>item&&item.problem),hasProcedureUnmatched=(state.proceduresUnmatched||[]).some(item=>item&&item.service);
- const diagnosisSection=diagnoses.length||hasUnmatched?`<section class="diagnosis-suggest-section"><h4>Diagnoses</h4>${diagnoses.length?`<p class="muted">Added to this encounter’s diagnoses</p><ul class="diagnosis-suggest-list">${diagnoses.map((item,index)=>diagnosisSuggestItemRow('diagnosis',item,index,true,state)).join('')}</ul>`:''}${diagnosisSuggestUnmatchedMarkup(state)}</section>`:'';
- const procedureSection=procedures.length||hasProcedureUnmatched?`<section class="diagnosis-suggest-section"><h4>Procedures</h4>${procedures.length?`<p class="muted">Added to the charges</p>${gate.ok?'':`<p class="muted" data-diagnosis-suggest-charges-note>${esc(gate.why)}</p>`}<ul class="diagnosis-suggest-list" data-diagnosis-suggest-procedures>${procedures.map((item,index)=>diagnosisSuggestItemRow('procedure',item,index,gate.ok,state)).join('')}</ul>`:''}${diagnosisSuggestProceduresUnmatchedMarkup(state)}</section>`:'';
+ const diagnosisSection=diagnoses.length||hasUnmatched?`<section class="diagnosis-suggest-section"><h4>Diagnoses</h4>${diagnoses.length?`<p class="muted">Select diagnoses for the encounter</p><ul class="diagnosis-suggest-list">${diagnoses.map((item,index)=>diagnosisSuggestItemRow('diagnosis',item,index,true,state)).join('')}</ul>`:''}${diagnosisSuggestUnmatchedMarkup(state)}</section>`:'';
+ const procedureSection=procedures.length||hasProcedureUnmatched?`<section class="diagnosis-suggest-section"><h4>Procedures</h4>${procedures.length?`<p class="muted">Select procedures for the charge draft</p>${gate.ok?'':`<p class="muted" data-diagnosis-suggest-charges-note>${esc(gate.why)}</p>`}<ul class="diagnosis-suggest-list" data-diagnosis-suggest-procedures>${procedures.map((item,index)=>diagnosisSuggestItemRow('procedure',item,index,gate.ok,state)).join('')}</ul>`:''}${diagnosisSuggestProceduresUnmatchedMarkup(state)}</section>`:'';
  return wrap(`<p class="diagnosis-suggest-intro">Read from the saved note. Tick what applies; nothing is added until you choose.</p>${alert}${diagnosisSection}${procedureSection}<div class="actions diagnosis-suggest-actions"><button type="button" class="primary" data-diagnosis-suggest-add>${esc(diagnosisSuggestAddLabel(state))}</button><button type="button" class="text-button" data-diagnosis-suggest-all>Tick all</button><button type="button" class="text-button" data-diagnosis-suggest-ask>Suggest again</button><button type="button" class="text-button" data-diagnosis-suggest-dismiss>Dismiss</button></div><p class="muted"><small>Suggestions come from SunCharts AI and are read from the saved note. Check each one against the note. If you change the note, save it and press Suggest again.</small></p>`);
 }
 // The panel at the top of the codes editor. The list itself opens in a sheet.
@@ -216,6 +216,7 @@ function diagnosisSuggestNoteDirty(){
  return ['subjective','objective','assessment','plan','procedure'].some(key=>form.elements[key]&&String(form.elements[key].value||'')!==String(note[key]||''));
 }
 function diagnosisSuggestPaint(id){
+ if(typeof visitNoteSuggestPaint==='function')visitNoteSuggestPaint();
  diagnosisSuggestNoteSync(id);diagnosisSuggestSheetPaint(id);
  const host=$('visit-diagnoses'),state=diagnosisSuggestStates.get(id);
  if(!host||!state||activeVisit?.id!==id||state.account!==me)return;
@@ -364,8 +365,7 @@ document.addEventListener('click',event=>{
  if(target.hasAttribute('data-note-suggest-review')||target.hasAttribute('data-diagnosis-suggest-review')){event.preventDefault();if(id)diagnosisSuggestSheetOpen(id);return;}
  if(target.hasAttribute('data-note-suggest')){
   event.preventDefault();if(!id)return;
-  if(diagnosisSuggestNoteDirty()){notice('Save the note first. Suggestions are read from the saved note.',true);return;}
-  void diagnosisSuggestAsk(id);return;
+  void (async()=>{await visitNoteFlush();if(activeVisit?.id===id)await diagnosisSuggestAsk(id);})().catch(error=>showVisitNoteMessage(error.message));return;
  }
  if(target.hasAttribute('data-diagnosis-suggest-all')){event.preventDefault();if(!id)return;const state=diagnosisSuggestState(id);state.picked=new Set((state.suggestions||[]).map((item,index)=>index));state.pickedProcedures=diagnosisSuggestChargeGate().ok?new Set((state.procedures||[]).map((item,index)=>index).filter(index=>!diagnosisSuggestOnCharges(state.procedures[index].code))):new Set();diagnosisSuggestPaint(id);return;}
  if(target.hasAttribute('data-diagnosis-suggest-open')){event.preventDefault();const visit=target.dataset.visitId,patient=target.dataset.patientId;run(async()=>{await diagnosisSuggestOpen(visit,patient);});return;}
@@ -379,4 +379,15 @@ document.addEventListener('change',event=>{
  const state=diagnosisSuggestState(activeVisit.id),procedure=box.hasAttribute?.('data-diagnosis-suggest-pick-procedure'),index=Number(box.getAttribute(procedure?'data-diagnosis-suggest-pick-procedure':'data-diagnosis-suggest-pick')),picked=procedure?state.pickedProcedures:state.picked;
  if(box.checked)picked.add(index);else picked.delete(index);
  const add=state.sheet?.querySelector?.('[data-diagnosis-suggest-add]');if(add)add.textContent=diagnosisSuggestAddLabel(state);
+});
+
+function visitNoteSuggestPaint(){
+ const host=$('note-diagnosis-suggestions'),state=diagnosisSuggestStates.get(activeVisit?.id);if(!host)return;
+ const added=typeof visitDiagnosisStates==='undefined'?[]:visitDiagnosisStates.get(activeVisit?.id)?.diagnoses||[];
+ host.innerHTML=state?.status==='ready'&&!state.noteChanged?(state.suggestions||[]).filter(item=>!added.some(row=>row.code===item.code)).map(item=>`<button type="button" data-note-accept-diagnosis="${esc(item.code)}">+ ${esc(item.code)} · ${esc(item.display)}</button>`).join(''):'';
+}
+document.addEventListener('click',event=>{
+ const button=event.target.closest?.('[data-note-accept-diagnosis]');if(!button)return;
+ const item=diagnosisSuggestStates.get(activeVisit?.id)?.suggestions?.find(item=>item.code===button.dataset.noteAcceptDiagnosis);if(!item)return;
+ event.preventDefault();void visitNoteEnqueue(()=>visitDiagnosisInlineChange(item)).catch(error=>showVisitNoteMessage(error.message));
 });

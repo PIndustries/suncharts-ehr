@@ -29,7 +29,7 @@ function harness({failSync}){
  // The activity screen lists changes and notes with plain headings.
  const f=harness({failSync:false});
  await f.context.showClaimMdOperations('setting-1');
- assert.match(f.html(),/Changes and notes made in Claim.MD/);
+ assert.match(f.html(),/Changes and notes made in the clearinghouse/);
  assert.match(f.html(),/Nothing here yet\./,'a connection with no notes says so in plain words');
 
  // A failing notes refresh keeps the screen, keeps the changes and shows plain words.
@@ -62,5 +62,16 @@ function harness({failSync}){
  assert.equal(ext.notice.error,true);
  assert.doesNotMatch(ext.notice.message,/cursor|LastNoteID|invalid|parse|null/i);
  assert.match(ext.notice.message,/notes could not be refreshed/i);
+ let finish;const reopened=[],invalidated=[],messages=[];
+ const context={claim:'claim-1',detailRequest:{kind:'claim',id:'claim-1'}};
+ ext.claimContextSnapshot=()=>context;ext.claimContextCurrent=v=>v===context;
+ ext.api=()=>new Promise(resolve=>{finish=resolve;});ext.notice=(...args)=>messages.push(args);
+ ext.showClaim=async id=>reopened.push(id);ext.invalidateClaimTimeline=id=>invalidated.push(id);
+ const refresh=()=>ext.click({target:{closest:()=>({isConnected:true,dataset:{claimmdClaimSync:'notes',claimmdId:'135961467',nativeClaim:'claim-1'}})},preventDefault(){},stopImmediatePropagation(){}});
+ refresh();context.detailRequest={kind:'claim',id:'claim-2'};finish();await new Promise(resolve=>setImmediate(resolve));
+ assert.deepEqual(reopened,[]);assert.deepEqual(messages,[]);assert.deepEqual(invalidated,['claim-1']);
+ context.detailRequest={kind:'claim',id:'claim-1'};refresh();finish();await new Promise(resolve=>setImmediate(resolve));
+ assert.deepEqual(reopened,['claim-1']);assert.equal(messages.length,1);
+ console.log('PASS late note refresh never reopens the previously selected claim');
  console.log('PASS Claim.MD notes and changes refreshes fail in plain words and keep the evidence already on screen');
 })().catch(error=>{console.error(error);process.exitCode=1;});

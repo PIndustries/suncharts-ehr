@@ -8,7 +8,7 @@ const voiceNoteKeys=['subjective','objective','assessment','plan'];
 const voiceNoteStageOrder={saved:0,waiting:1,transcribing:2,drafting:3,ready:4};
 const voiceNoteStepNames=['Saved to the chart','Waiting for a turn','Turning speech into text','Drafting the note','Ready'];
 const voiceNoteMaxSeconds=30*60;
-let voiceNoteRec=null,voiceNoteTicker=null,voiceNoteLeave=null;
+let voiceNoteRec=null,voiceNoteTicker=null,voiceNoteLeave=null,voiceNoteReview=null;
 function voiceNoteMayAsk(){return ['owner','clinician'].includes(me?.role)&&!me?.delegated;}
 function voiceNoteState(id){let state=voiceNoteStates.get(id);if(!state){state={items:[],available:null,hydrated:false,account:me,mode:'dictation',consent:false,showRecorder:false,upload:null,error:'',pollTimer:null,seen:new Map(),used:new Set(),dismissedCards:new Set(),notifiedReady:new Set(),confirmDiscard:false};voiceNoteStates.set(id,state);}return state;}
 const voiceNoteWorking=item=>Boolean(item)&&['saved','waiting','transcribing','drafting'].includes(item.stage);
@@ -73,14 +73,14 @@ function voiceNoteUploadMarkup(state){
  return `<p role="alert" data-voice-error>${esc(up.message||'The recording could not be saved.')}</p><p class="voice-note-small">Your recording is kept here until it is saved.</p><div class="actions"><button type="button" class="primary" data-voice-action="upload-retry">Try again</button><a class="button" data-voice-download href="${esc(up.url||'#')}" download="${esc(up.filename||'recording')}">Download recording</a><button type="button" class="text-button" data-voice-action="upload-drop">Discard</button></div>`;
 }
 function voiceNoteItemMarkup(state,item){
- const small='<p class="voice-note-small">Drafted by SunCharts AI from your recording. Read it against what was said before you sign.</p>';
  if(voiceNoteWorking(item))return {cls:'',body:`<h3 class="suggest-title">Voice note</h3>${voiceNoteStepsMarkup(item,state)}<p class="suggest-live" role="status" data-voice-live>${esc(voiceNoteLiveText(item))} <span class="suggest-elapsed" data-voice-elapsed>${esc(voiceNoteElapsedText(item,state))}</span></p>`};
  if(item.stage==='failed'){
   const showText=item.error==='draft_invalid'&&item.transcript,retry=item.error!=='empty';
   return {cls:' is-failed',body:`<h3 class="suggest-title">Voice note</h3><p role="alert" data-voice-failed>${esc(voiceNoteErrorText(item))}</p><div class="actions">${retry?'<button type="button" class="primary" data-voice-action="retry">Try again</button>':''}${showText?'<button type="button" data-voice-action="transcript">Show transcript</button>':''}<button type="button" class="text-button" data-voice-action="dismiss">Dismiss</button></div>`};
  }
- const draft=item.draft||{},count=voiceNoteKeys.filter(key=>String(draft[key]??'').trim()).length;
- return {cls:' is-ready',body:`<h3 class="suggest-title">Draft ready from your recording</h3>${voiceNoteStepsMarkup(item,state)}${count?'':'<p class="muted">The draft is empty.</p>'}<div class="actions">${count?'<button type="button" class="primary" data-voice-action="use-all">Use all four</button>':''}<button type="button" data-voice-action="transcript">Show transcript</button><button type="button" data-voice-action="record-another">Record another</button><button type="button" class="text-button" data-voice-action="dismiss">Dismiss draft</button></div>${small}`};
+ const rows=voiceNoteReviewRows(state,item),count=rows.filter(row=>!row.status).length;
+ if(!count)return {cls:' is-ready is-reviewed',body:'<button type="button" class="text-button" data-voice-action="recording" data-voice-recording data-voice-pending-count="0" aria-haspopup="dialog">View recording</button>'};
+ return {cls:' is-ready',body:`<div class="voice-ready-summary"><span><strong>Recording draft</strong> · ${count} ${count===1?'section':'sections'} to review</span><button type="button" data-voice-action="review" data-voice-review-draft data-voice-pending-count="${count}" aria-haspopup="dialog">Review draft</button></div>`};
 }
 // The whole panel for one encounter, or null when it should not be shown.
 function voiceNotePanelMarkup(id){
@@ -99,30 +99,74 @@ function voiceNoteHost(){return typeof document!=='undefined'?document.querySele
 function voiceNotePaint(id){
  const host=voiceNoteHost();if(!host||activeVisit?.id!==id)return;
  const state=voiceNoteState(id),view=voiceNotePanelMarkup(id);
- if(!view){host.hidden=true;host.innerHTML='';voiceNoteClearCards();return;}
+ if(!view){host.hidden=true;host.innerHTML='';voiceNoteRefreshReview();return;}
  host.hidden=false;host.className=`voice-note-panel${view.cls}`;host.innerHTML=view.body;
- voiceNotePaintCards(id);voiceNoteSchedule(id);voiceNoteEnsureTicker();
+ voiceNoteRefreshReview();voiceNoteSchedule(id);voiceNoteEnsureTicker();
 }
 function voiceNoteTextareas(){
  const form=typeof $==='function'?$('note-form'):null;if(!form?.querySelector)return {};
  const out={};for(const key of voiceNoteKeys){const box=form.querySelector(`textarea[name="${key}"]`);if(box)out[key]=box;}return out;
 }
-function voiceNoteClearCards(){for(const box of Object.values(voiceNoteTextareas())){const section=box.closest?.('.note-section');section?.querySelector?.('[data-voice-card]')?.remove?.();}}
-// A suggestion card directly under each box that has draft text.
-function voiceNotePaintCards(id){
- const state=voiceNoteState(id),item=voiceNoteCurrent(state),boxes=voiceNoteTextareas();
- const showing=item&&item.stage==='ready'&&!voiceNoteRec&&!state.showRecorder&&item.draft;
- for(const key of voiceNoteKeys){
-  const box=boxes[key];if(!box)continue;
-  const section=box.closest?.('.note-section')||box.parentNode;if(!section)continue;
-  let card=section.querySelector?.('[data-voice-card]');
-  const text=showing?String(item.draft[key]??'').trim():'';
-  const hidden=!text||state.used.has(`${item.id}:${key}`)||state.dismissedCards.has(`${item.id}:${key}`);
-  if(hidden){card?.remove?.();continue;}
-  const filled=String(box.value??'').trim().length>0;
-  if(!card){card=document.createElement('div');card.className='voice-note-card';card.setAttribute?.('data-voice-card',key);section.append(card);}
-  card.innerHTML=`<b>Suggested from your recording</b><p data-voice-card-text>${esc(text)}</p><div class="actions"><button type="button" class="primary" data-voice-action="use" data-key="${key}">${filled?'Replace what’s there':'Use this'}</button>${filled?`<button type="button" data-voice-action="add" data-key="${key}">Add below what’s there</button>`:''}<button type="button" class="text-button" data-voice-action="dismiss-card" data-key="${key}">Dismiss</button></div>`;
+// Compare with the live SOAP inputs so an unsaved edit is never mistaken for a blank field.
+function voiceNoteReviewRows(state,item){
+ const boxes=voiceNoteTextareas();
+ return voiceNoteKeys.flatMap(key=>{
+  const text=String(item.draft?.[key]??'').trim(),box=boxes[key];
+  if(!text||!box)return [];
+  const current=String(box.value??''),handle=`${item.id}:${key}`;
+  // Exact lines cover pasted and appended paragraphs without equating different clinical wording.
+  const lines='\n'+current.trim().replace(/\r\n/g,'\n')+'\n';
+  const matches=lines.includes('\n'+text.replace(/\r\n/g,'\n')+'\n');
+  const status=matches?'Already in note':state.used.has(handle)?'Used':state.dismissedCards.has(handle)?'Dismissed':'';
+  return [{key,label:key[0].toUpperCase()+key.slice(1),current,text,status}];
+ });
+}
+function voiceNoteReviewMarkup(state,item,review){
+ const rows=voiceNoteReviewRows(state,item),pending=rows.filter(row=>!row.status),resolved=rows.filter(row=>row.status);
+ const fields=pending.map(({key,label,current,text})=>{
+  const filled=Boolean(current.trim());
+  const compare=`<div class="voice-review-comparison"><div><b>Current note</b><p>${esc(current.trim()||'Empty')}</p></div><div><b>Recording suggestion</b><p data-voice-card-text>${esc(text)}</p></div></div>`;
+  return `<section class="voice-review-field" data-voice-card="${key}"><h4>${label}</h4>${compare}<div class="actions"><button type="button" data-voice-action="use" data-key="${key}">${filled?'Replace section':'Use suggestion'}</button>${filled?`<button type="button" data-voice-action="add" data-key="${key}">Append to section</button>`:''}<button type="button" class="text-button" data-voice-action="dismiss-card" data-key="${key}">Dismiss suggestion</button></div></section>`;
+ }).join('');
+ const append=pending.length>1?`<button type="button" data-voice-action="use-all">Add all ${pending.length} suggestions to note</button>`:'';
+ const reviewed=resolved.length?`<button type="button" class="text-button" data-voice-action="toggle-reviewed" aria-expanded="${Boolean(review?.expanded)}">${review?.expanded?'Hide':'View'} reviewed sections (${resolved.length})</button>`:'';
+ const history=review?.expanded?resolved.map(({key,label,status,text})=>`<section class="voice-review-resolved" data-voice-card="${key}"><strong>${label}</strong> · ${status}<p>${esc(text)}</p></section>`).join(''):'';
+ const summary=pending.length?'':`<p role="status">${resolved.length&&resolved.every(row=>row.status==='Already in note')?'All suggestions are already in the note.':rows.length?'No suggestions left to review.':'No suggestions were generated.'}</p>`;
+ const transcript=review?.showRecording?voiceNoteTranscriptMarkup(item):'<button type="button" data-voice-action="transcript">Show transcript</button>';
+ return `${summary}${fields}${review?.showRecording?transcript:''}${reviewed}${history}<div class="voice-review-actions actions">${append}${review?.showRecording?'':transcript}<button type="button" data-voice-action="record-another">Record another</button><button type="button" class="text-button" data-voice-action="dismiss">Dismiss draft</button></div>`;
+}
+function voiceNoteReviewCurrent(review){
+ const state=voiceNoteStates.get(review.id),item=state&&voiceNoteCurrent(state),form=$('note-form');
+ return me===review.account&&selected===review.patient&&activeVisit?.id===review.id&&activeVisit.status!=='signed'&&voiceNoteMayAsk()&&(typeof canDraftNote!=='function'||canDraftNote(activeVisit))&&form?.dataset?.visitId===review.id&&!state?.showRecorder&&item?.id===review.recording&&item.stage==='ready';
+}
+function voiceNoteRefreshReview(){
+ const review=voiceNoteReview;if(!review)return;
+ if(!voiceNoteReviewCurrent(review)){voiceNoteReview=null;sheetClose(review.dialog);return;}
+ const state=voiceNoteState(review.id),html=voiceNoteReviewMarkup(state,voiceNoteCurrent(state),review);
+ if(review.html===html)return;
+ const focus=review.node.contains(document.activeElement)?document.activeElement.dataset:null;
+ review.node.innerHTML=html;review.html=html;
+ if(focus){
+  const buttons=[...review.node.querySelectorAll('[data-voice-action]')];
+  const next=buttons.find(b=>b.dataset.voiceAction===focus.voiceAction&&b.dataset.key===focus.key)||buttons[0];
+  next?.focus({preventScroll:true});
  }
+}
+function voiceNoteOpenReview(id,recording=false){
+ const state=voiceNoteState(id),item=voiceNoteCurrent(state);
+ if(!item||typeof sheetOpen!=='function'||voiceNoteReview?.dialog.open)return;
+ const node=document.createElement('div'),review={id,recording:item.id,patient:selected,account:me,node,showRecording:recording,expanded:false};
+ if(!voiceNoteReviewCurrent(review))return;
+ node.className='voice-review';
+ review.html=voiceNoteReviewMarkup(state,item,review);node.innerHTML=review.html;
+ review.dialog=sheetOpen(recording?'Recording and transcript':'Review recording draft',node,{className:'chart-record-sheet voice-review-sheet sheet-wide',label:true});
+ voiceNoteReview=review;
+ review.dialog.addEventListener('close',()=>{
+  if(voiceNoteReview===review)voiceNoteReview=null;
+  if(activeVisit?.id===id&&me===review.account&&selected===review.patient){
+   voiceNoteHost()?.querySelector?.('[data-voice-pending-count],[data-voice-action="record"]')?.focus?.({preventScroll:true});
+  }
+ },{once:true});
 }
 function voiceNoteFill(key,text,how){
  const box=voiceNoteTextareas()[key];if(!box)return false;
@@ -134,14 +178,14 @@ function voiceNoteFill(key,text,how){
 }
 function voiceNoteUse(id,key,how){
  const state=voiceNoteState(id),item=voiceNoteCurrent(state);if(!item?.draft)return;
- const text=String(item.draft[key]??'').trim();if(!text)return;
- if(voiceNoteFill(key,text,how))state.used.add(`${item.id}:${key}`);
+ const row=voiceNoteReviewRows(state,item).find(row=>row.key===key);if(!row||row.status)return;
+ if(voiceNoteFill(key,row.text,how))state.used.add(`${item.id}:${key}`);
  voiceNotePaint(id);
 }
 function voiceNoteUseAll(id){
  const state=voiceNoteState(id),item=voiceNoteCurrent(state);if(!item?.draft)return;
- for(const key of voiceNoteKeys){
-  const text=String(item.draft[key]??'').trim();if(!text||state.used.has(`${item.id}:${key}`))continue;
+ for(const {key,text,status} of voiceNoteReviewRows(state,item)){
+  if(status)continue;
   if(voiceNoteFill(key,text,'add'))state.used.add(`${item.id}:${key}`);
  }
  voiceNotePaint(id);
@@ -361,12 +405,14 @@ async function voiceNoteUpload(id){
  }
 }
 // ---- Transcript and other actions ----
+function voiceNoteTranscriptMarkup(item){
+ const audio=item.file_id&&selected?`<audio controls preload="none" src="/api/v1/patients/${encodeURIComponent(selected)}/documents/${encodeURIComponent(item.file_id)}/download"></audio>`:'';
+ return `<div class="voice-transcript">${audio}<p data-voice-transcript>${esc(item.transcript||'There is no transcript for this recording.')}</p></div>`;
+}
 function voiceNoteTranscript(id){
  const item=voiceNoteCurrent(voiceNoteState(id));if(!item||typeof sheetOpen!=='function')return;
- const node=document.createElement('div');node.className='voice-transcript';
- const audio=item.file_id&&selected?`<audio controls preload="none" src="/api/v1/patients/${encodeURIComponent(selected)}/documents/${encodeURIComponent(item.file_id)}/download"></audio>`:'';
- node.innerHTML=`${audio}<p data-voice-transcript>${esc(item.transcript||'There is no transcript for this recording.')}</p>`;
- sheetOpen('Transcript',node);
+ const node=document.createElement('div');node.innerHTML=voiceNoteTranscriptMarkup(item);
+ sheetOpen('Transcript',node,{className:'chart-record-sheet',label:true});
 }
 async function voiceNotePost(id,item,action){
  const account=me;
@@ -381,7 +427,9 @@ async function voiceNotePost(id,item,action){
 }
 function voiceNoteClick(event){
  const button=event.target?.closest?.('[data-voice-action],[data-voice-mode]');if(!button)return;
- const id=activeVisit?.id;if(!id)return;
+ const id=activeVisit?.id;if(!id||!voiceNoteMayAsk()||activeVisit.status==='signed')return;
+ const dialog=button.closest?.('dialog.voice-review-sheet');
+ if(dialog&&(!voiceNoteReview||voiceNoteReview.dialog!==dialog||!voiceNoteReviewCurrent(voiceNoteReview)))return;
  const state=voiceNoteState(id),action=button.dataset?.voiceAction,mode=button.dataset?.voiceMode;
  if(mode){state.mode=mode;if(mode!=='encounter')state.consent=false;state.error='';voiceNotePaint(id);return;}
  const item=voiceNoteCurrent(state),key=button.dataset?.key;
@@ -395,6 +443,9 @@ function voiceNoteClick(event){
   case 'discard-yes':voiceNoteDiscard();break;
   case 'upload-retry':void voiceNoteUpload(id);break;
   case 'upload-drop':if(state.upload?.url&&typeof URL!=='undefined')try{URL.revokeObjectURL(state.upload.url);}catch{/* Ignore. */}state.upload=null;voiceNoteLeaveGuard(voiceNoteStillHeld());voiceNotePaint(id);break;
+  case 'review':voiceNoteOpenReview(id);break;
+  case 'recording':voiceNoteOpenReview(id,true);break;
+  case 'toggle-reviewed':if(voiceNoteReview){voiceNoteReview.expanded=!voiceNoteReview.expanded;voiceNoteRefreshReview();}break;
   case 'use':voiceNoteUse(id,key,'replace');break;
   case 'add':voiceNoteUse(id,key,'add');break;
   case 'use-all':voiceNoteUseAll(id);break;
@@ -410,11 +461,15 @@ function voiceNoteChange(event){
  const id=activeVisit?.id;if(!id)return;
  voiceNoteState(id).consent=Boolean(box.checked);voiceNotePaint(id);
 }
-// Typing in a note box changes what the suggestion button says.
+// Typing can resolve a matching suggestion. Refresh the compact count only when it changes.
 function voiceNoteInput(event){
  const name=event.target?.getAttribute?.('name')||event.target?.name;
  if(!voiceNoteKeys.includes(name))return;
- const id=activeVisit?.id;if(id&&voiceNoteStates.has(id))voiceNotePaintCards(id);
+ const id=activeVisit?.id,state=voiceNoteStates.get(id),item=state&&voiceNoteCurrent(state);
+ if(item?.stage!=='ready')return;
+ const button=voiceNoteHost()?.querySelector?.('[data-voice-pending-count]');
+ const pending=voiceNoteReviewRows(state,item).filter(row=>!row.status).length;
+ if(button&&Number(button.dataset.voicePendingCount)!==pending)voiceNotePaint(id);else voiceNoteRefreshReview();
 }
 if(typeof document!=='undefined'&&document.addEventListener){
  document.addEventListener('click',voiceNoteClick);

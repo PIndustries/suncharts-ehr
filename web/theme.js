@@ -29,7 +29,7 @@
   for(const value of preferences){const option=document.createElement('option');option.value=value;option.textContent=value==='system'?'System':value==='light'?'Light':'Dark';select.append(option);}
   select.value=preference;select.addEventListener('change',()=>setPreference(select.value));label.append(select);host.append(label);
  }
- function initTheme(){mount(document.querySelector('.shell-topbar-actions'),'workspace');mount(document.querySelector('.login-intro-footer'),'login');apply();}
+ function initTheme(){mount(document.querySelector('.frame-user-panel')||document.querySelector('.shell-topbar-actions'),'workspace');mount(document.querySelector('.login-intro-footer'),'login');apply();}
  apply();
  const onSystemChange=()=>{if(preference==='system')apply();};
  if(media?.addEventListener)media.addEventListener('change',onSystemChange);else media?.addListener?.(onSystemChange);

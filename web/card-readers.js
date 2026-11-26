@@ -168,7 +168,7 @@ async function openCardReaders(){
  // marker is checked instead of the whole page text because Stripe's views change the page.
  const page=(body,paymentAccount)=>cardReaderPage(body,paymentAccount,generation);
  const current=()=>generation===cardReaderGeneration&&me===identity&&$('tools')===host&&!host.hidden&&host.innerHTML.includes(`data-card-readers-page="${generation}"`);
- const show=html=>{if(current())host.innerHTML=html;};
+ const show=html=>{if(current()){host.innerHTML=html;if(typeof practiceAdminFrame==='function')practiceAdminFrame('readers');}};
  cardReaderListState=null;
  host.innerHTML=page('<p role="status">Loading card readers…</p>');
  // The practice's readers load alongside reader ordering; neither waits for the other.
@@ -372,11 +372,12 @@ const cardReaderRememberKey='suncharts.cardReader';
 function rememberedCardReader(){try{return window.localStorage?.getItem(cardReaderRememberKey)||'';}catch{return '';}}
 function rememberCardReader(id){try{window.localStorage?.setItem(cardReaderRememberKey,id);}catch{/* The choice is only a convenience. */}}
 // The readers a payment can use. With none set up, the owner is taken to Card readers.
-async function readersForPayment(){
+async function readersForPayment(offerSetup=true){
  const data=await api(cardReaderListApi);
+ if(!offerSetup&&data.payments_available===false)return [];
  if(data.status!=='ready'||data.payments_available===false)throw new Error('Card payments on a reader are not available for this practice yet.');
  const readers=data.readers||[];
- if(readers.length)return readers;
+ if(readers.length||!offerSetup)return readers;
  if(me?.role!=='owner')throw new Error('No card reader is set up yet. Ask the practice owner to add one.');
  await openCardReaders();return null;
 }

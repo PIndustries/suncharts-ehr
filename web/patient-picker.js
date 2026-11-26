@@ -66,29 +66,33 @@ function patientPickerStatus(picker){
   if(picker.busy)return 'Searching…';
   if(picker.chosen)return '';
   const query=String(picker.query||'').trim();
+  if(patientPickerCanCreate(picker))return 'No patient matches. Choose New patient to register them here.';
   if(!picker.items.length)return query?'No patient matches yet. Keep typing, or check the spelling.':'No patients have been registered yet.';
   if(!query)return `Showing the first ${picker.items.length}. Start typing to find someone faster.`;
   return `${picker.items.length===1?'One patient matches':`${picker.items.length} patients match`}. Keep typing to narrow the list, or use the up and down arrow keys.`;
 }
 // The list itself, plus the quiet "Load more" that reaches the next page when a short list
 // is being browsed with nothing typed yet.
+function patientPickerCanCreate(picker){return !!picker.options.oncreate&&!picker.busy&&!picker.error&&!picker.items.length&&!!String(picker.query||'').trim();}
 function patientPickerListHtml(picker){
   const rows=picker.items.map((patient,index)=>`<button type="button" class="patient-picker-row${index===picker.active?' is-active':''}" role="option" aria-selected="${index===picker.active}" id="${picker.listId}-option-${index}" data-patient-picker-option="${index}">${patientPickerRowHtml(patient)}</button>`).join('');
   const browsing=!String(picker.query||'').trim();
   const more=picker.cursor&&browsing?`<button type="button" class="quiet patient-picker-more" data-patient-picker-more>Load more patients</button>`:'';
-  return `${rows||'<p class="muted patient-picker-none">Type a name, a date of birth or a record number.</p>'}${more}`;
+  const create=patientPickerCanCreate(picker)?`<button type="button" class="patient-picker-row" data-patient-picker-create>+ New patient '${esc(picker.query.trim())}'</button>`:'';
+  return `${rows||create||'<p class="muted patient-picker-none">Type a name, a date of birth or a record number.</p>'}${more}`;
 }
 function renderPatientPicker(picker){
   if(!picker.input?.isConnected)return;
   picker.items=patientPickerItems(picker,picker.query);
   if(picker.active>=picker.items.length)picker.active=picker.items.length-1;
-  picker.input.setAttribute('aria-expanded',String(!picker.popup.hidden&&Boolean(picker.items.length)));
+  picker.input.setAttribute('aria-expanded',String(!picker.popup.hidden&&Boolean(picker.items.length||patientPickerCanCreate(picker))));
   picker.list.innerHTML=patientPickerListHtml(picker);
   picker.status.textContent=patientPickerStatus(picker);
   if(picker.active<0)picker.input.removeAttribute('aria-activedescendant');
   else{
     picker.input.setAttribute('aria-activedescendant',`${picker.listId}-option-${picker.active}`);
-    picker.list.querySelector(`[data-patient-picker-option="${picker.active}"]`)?.scrollIntoView?.({block:'nearest'});
+    const row=picker.list.querySelector(`[data-patient-picker-option="${picker.active}"]`);
+    if(row){const top=row.offsetTop,bottom=top+row.offsetHeight;if(top<picker.list.scrollTop)picker.list.scrollTop=top;else if(bottom>picker.list.scrollTop+picker.list.clientHeight)picker.list.scrollTop=bottom-picker.list.clientHeight;}
   }
 }
 function openPatientPicker(picker){if(picker.input?.isConnected)picker.popup.hidden=false;renderPatientPicker(picker);}
@@ -111,7 +115,7 @@ function patientPickerChoose(picker,patient){
 // never need a second "Find" step to start again.
 function patientPickerClear(picker){
   picker.chosen=null;picker.field.value='';picker.input.value='';picker.query='';picker.error='';picker.active=-1;
-  renderPatientPicker(picker);openPatientPicker(picker);picker.input.focus();
+  renderPatientPicker(picker);openPatientPicker(picker);picker.input.focus({preventScroll:true});
   if(picker.onchoose)picker.onchoose(null);
 }
 function patientPickerChosenStillMatches(picker){
@@ -219,6 +223,7 @@ function installPatientPickers(){
   });
   document.addEventListener('focusout',event=>{
     const picker=pickerOf(event.target);if(!picker||event.target!==picker.input)return;
+    if(event.relatedTarget?.closest?.('[data-patient-picker-create]'))return;
     // Leaving the box takes the only match, so tabbing through a form still chooses.
     if(!picker.busy&&!picker.chosen)patientPickerEnter(picker);
     closePatientPicker(picker);
@@ -233,14 +238,17 @@ function installPatientPickers(){
       return;
     }
     if(event.key==='Enter'){
+      if(patientPickerCanCreate(picker)){event.preventDefault();event.stopImmediatePropagation();picker.options.oncreate(picker.query.trim(),picker);return;}
       // Enter either chooses or steps through; it never submits a booking half-finished.
       if(patientPickerEnter(picker)||picker.popup.hidden)event.preventDefault();
       else if(!picker.busy&&picker.items.length){patientPickerStep(picker,1);event.preventDefault();}
       event.stopImmediatePropagation();
     }
   });
+  document.addEventListener('mousedown',event=>{if(event.target.closest?.('[data-patient-picker-create]'))event.preventDefault();});
   document.addEventListener('click',event=>{
     const picker=pickerOf(event.target);if(!picker)return;
+    if(event.target.closest?.('[data-patient-picker-create]')&&patientPickerCanCreate(picker)){event.preventDefault();event.stopImmediatePropagation();picker.options.oncreate(picker.query.trim(),picker);return;}
     if(event.target.closest?.('[data-patient-picker-clear]')){event.preventDefault();event.stopImmediatePropagation();patientPickerClear(picker);return;}
     if(event.target.closest?.('[data-patient-picker-more]')){
       event.preventDefault();event.stopImmediatePropagation();

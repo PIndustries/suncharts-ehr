@@ -208,6 +208,8 @@ struct Import {
 #[serde(deny_unknown_fields)]
 struct ListQuery {
     after: Option<Uuid>,
+    #[serde(default)]
+    needs_review: bool,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -524,7 +526,15 @@ pub(crate) async fn refill_draft(
     if account.status != "posted" || account.coverage_snapshot.is_none() {
         return Ok(c.clone());
     }
-    let fresh = match crate::visit_billing::claim_defaults(pool, a, c.patient_id, &account).await {
+    let fresh = match crate::visit_billing::claim_defaults(
+        pool,
+        a,
+        c.patient_id,
+        &account,
+        Some(&stored.rendering_npi),
+    )
+    .await
+    {
         Ok(defaults) => defaults,
         Err(_) => return Ok(c.clone()),
     };
@@ -1366,7 +1376,7 @@ async fn confirm_self_policyholder(
     revision(tx, actor, claim.id, reason, json!({"action":"confirm_self_policyholder","address_source":"patient_chart","network_transmitted":false})).await
 }
 
-async fn claim_submission_defaults(
+pub(crate) async fn claim_submission_defaults(
     tx: &mut Transaction<'_, Postgres>,
     a: &Actor,
     claim: &Claim,
@@ -1628,11 +1638,43 @@ async fn claim_action(
     h: HeaderMap,
     Json(v): Json<Action>,
 ) -> Result<Json<Claim>> {
+    claim_action_versioned(a, s, id, crate::expected(&h)?, v).await
+}
+
+pub(crate) async fn release_handoff_claim(
+    s: &State,
+    a: &Actor,
+    id: Uuid,
+    version: i64,
+) -> Result<Claim> {
+    Ok(claim_action_versioned(
+        a.clone(),
+        s.clone(),
+        id,
+        version,
+        Action {
+            action: "ready".into(),
+            reason: "Reviewed during authorized encounter claim handoff".into(),
+            reference: String::new(),
+            event_date: None,
+            payer_control_number: String::new(),
+        },
+    )
+    .await?
+    .0)
+}
+
+async fn claim_action_versioned(
+    a: Actor,
+    s: State,
+    id: Uuid,
+    version: i64,
+    v: Action,
+) -> Result<Json<Claim>> {
     a.scheduling()?;
     text(&v.reason, 1000)?;
     bounded(&v.reference, 200)?;
     bounded(&v.payer_control_number, 150)?;
-    let version = crate::expected(&h)?;
     let mut tx = db(&s)?.begin().await?;
     billing::tenant_lock(&mut tx, &a).await?;
     let c = claim_row(&mut tx, &a, id).await?;
@@ -2032,7 +2074,7 @@ async fn remittances(
 ) -> Result<Json<Value>> {
     a.staff()?;
     let mut tx = db(&s)?.begin().await?;
-    let mut rows:Vec<Value>=sqlx::query_scalar("SELECT jsonb_build_object('id',r.id,'payer_id',r.payer_id,'payer_name',p.content->>'name','trace',r.trace,'status',r.status,'version',r.version,'payment_date',r.document->>'payment_date','total_paid_cents',r.document->'total_paid_cents','claim_count',jsonb_array_length(r.document->'claims')) FROM era_remittances r JOIN ehr_payers p ON p.tenant_id=r.tenant_id AND p.id=r.payer_id WHERE r.tenant_id=$1 AND ($2::uuid IS NULL OR r.id>$2) ORDER BY r.id LIMIT 101").bind(a.tenant_id).bind(q.after).fetch_all(&mut *tx).await?;
+    let mut rows:Vec<Value>=sqlx::query_scalar("SELECT jsonb_build_object('id',r.id,'payer_id',r.payer_id,'payer_name',p.content->>'name','trace',r.trace,'status',r.status,'version',r.version,'payment_date',r.document->>'payment_date','total_paid_cents',r.document->'total_paid_cents','claim_count',jsonb_array_length(r.document->'claims')) FROM era_remittances r JOIN ehr_payers p ON p.tenant_id=r.tenant_id AND p.id=r.payer_id WHERE r.tenant_id=$1 AND ($2::uuid IS NULL OR r.id>$2) AND (NOT $3::boolean OR r.status IN ('staged','reconciled')) ORDER BY r.id LIMIT 101").bind(a.tenant_id).bind(q.after).bind(q.needs_review).fetch_all(&mut *tx).await?;
     let next = if rows.len() > 100 {
         rows.truncate(100);
         rows.last().map(|r| r["id"].clone())

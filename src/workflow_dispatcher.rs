@@ -1330,6 +1330,7 @@ async fn reschedule(
     }
     pathway_patient(&mut tx, actor, instance, Some(old.patient_id)).await?;
     let booking = NewAppointment {
+        visit_type: None,
         request_id: None,
         source_history_id: None,
         title: value.title,

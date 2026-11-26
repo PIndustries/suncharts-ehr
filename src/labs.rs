@@ -10,7 +10,7 @@ use crate::{
     State,
 };
 use axum::{
-    extract::{Path, State as ExtractState},
+    extract::{Path, Query, State as ExtractState},
     http::{header, HeaderMap},
     response::{IntoResponse, Response},
     routing::{get, post, put},
@@ -922,13 +922,58 @@ async fn report_history(
     tx.commit().await?;
     Ok(Json(json!({"items":items})))
 }
-async fn inbox(a: Actor, ExtractState(s): ExtractState<State>) -> Result<Json<Value>> {
+#[derive(Deserialize)]
+struct InboxQuery {
+    #[serde(default)]
+    critical: bool,
+}
+
+async fn inbox(
+    a: Actor,
+    ExtractState(s): ExtractState<State>,
+    Query(filter): Query<InboxQuery>,
+) -> Result<Json<Value>> {
     a.staff()?;
     let mut tx = db(&s)?.begin().await?;
-    let items:Vec<Value>=sqlx::query_scalar("SELECT jsonb_build_object('report_id',r.id,'version',r.version,'status',r.status,'order_id',o.id,'patient_id',p.id,'mrn',p.mrn,'patient_name',p.given_name||' '||p.family_name,'title',o.content->>'title','reported_at',r.content->'reported_at','critical',EXISTS(SELECT 1 FROM jsonb_array_elements(r.content->'observations') x WHERE x->>'flag' IN ('critical','critical_high','critical_low'))) FROM lab_reports r JOIN lab_orders o ON o.tenant_id=r.tenant_id AND o.id=r.order_id JOIN patients p ON p.tenant_id=o.tenant_id AND p.id=o.patient_id WHERE r.tenant_id=$1 AND r.status IN ('preliminary','final','corrected') AND NOT EXISTS(SELECT 1 FROM lab_acknowledgments a WHERE a.tenant_id=r.tenant_id AND a.report_id=r.id AND a.version=r.version) ORDER BY r.updated_at,r.id LIMIT 100").bind(a.tenant_id).fetch_all(&mut *tx).await?;
+    // Counts cover the whole inbox and use the same snapshot as the limited response.
+    let inbox: Value = sqlx::query_scalar(
+        "WITH pending AS MATERIALIZED (
+            SELECT r.id, r.order_id, r.version, r.status, r.updated_at,
+                   r.content->'reported_at' AS reported_at,
+                   EXISTS (SELECT 1 FROM jsonb_array_elements(r.content->'observations') AS x
+                           WHERE x->>'flag' IN ('critical','critical_high','critical_low')) AS critical
+            FROM lab_reports r
+            WHERE r.tenant_id=$1 AND r.status IN ('preliminary','final','corrected')
+              AND NOT EXISTS (
+                  SELECT 1 FROM lab_acknowledgments a
+                  WHERE a.tenant_id=r.tenant_id AND a.report_id=r.id AND a.version=r.version
+              )
+         ), page AS (
+            SELECT * FROM pending
+            WHERE NOT $2 OR critical
+            ORDER BY updated_at,id LIMIT $3
+         )
+         SELECT jsonb_build_object(
+            'items', coalesce((
+                SELECT jsonb_agg(jsonb_build_object(
+                    'report_id',r.id,'version',r.version,'status',r.status,'order_id',o.id,
+                    'patient_id',p.id,'mrn',p.mrn,'patient_name',p.given_name||' '||p.family_name,
+                    'title',o.content->>'title','reported_at',r.reported_at,'critical',r.critical
+                ) ORDER BY r.updated_at,r.id)
+                FROM page r JOIN lab_orders o ON o.tenant_id=$1 AND o.id=r.order_id
+                JOIN patients p ON p.tenant_id=o.tenant_id AND p.id=o.patient_id
+            ),'[]'::jsonb),
+            'limit',$3,'total',count(*),'critical_count',count(*) FILTER (WHERE critical)
+         ) FROM pending",
+    )
+    .bind(a.tenant_id)
+    .bind(filter.critical)
+    .bind(100_i64)
+    .fetch_one(&mut *tx)
+    .await?;
     crate::postgres::audit(&mut tx, &a, "patient.result_inbox.read", a.tenant_id).await?;
     tx.commit().await?;
-    Ok(Json(json!({"items":items,"limit":100})))
+    Ok(Json(inbox))
 }
 fn field(row: &Value, key: &str) -> String {
     row.get(key)

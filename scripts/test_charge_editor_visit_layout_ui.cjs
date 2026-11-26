@@ -9,7 +9,7 @@ const nodes={},captureHandlers={},ctx={console,Date,Intl,URL,URLSearchParams,cry
  $:id=>id==='billing-account-form'?ctx.openedForm:(nodes[id]??={id,innerHTML:'',dataset:{},scrollIntoView(){},replaceChildren(){this.innerHTML='';},querySelector:()=>null,querySelectorAll:()=>[]}),
  document:{addEventListener:(name,fn,useCapture)=>{if(useCapture&&name==='submit')captureHandlers.submit=fn;}},
  esc:v=>String(v??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;'),human:v=>v,date:v=>String(v),money:n=>'$'+(n/100).toFixed(2),dollars:c=>c==null?'':(c/100).toFixed(2),payerName:()=>'Synthetic payer',billingCan:()=>true,
- notice(){},run:fn=>fn(),showChartSection(){},setEncounterSection(){}};
+ notice(){},run:fn=>fn(),showChartSection(){},chartOpenEditor(){},setEncounterSection(){}};
 vm.createContext(ctx);vm.runInContext(fs.readFileSync('web/billing.js','utf8'),ctx);vm.runInContext(fs.readFileSync('web/fees.js','utf8'),ctx);
 // A row is read up to the diagnosis host that follows it, which is where its cells end.
 const chargeLine=html=>{const start=html.indexOf('<tr class="billing-charge-row"');const end=html.indexOf('</tr>',start);return html.slice(start,end);};
@@ -22,7 +22,9 @@ const chargeLine=html=>{const start=html.indexOf('<tr class="billing-charge-row"
  const visit=nodes['encounter-billing-editor'].innerHTML,box='<details class="charge-more-options">';
  assert.match(visit,/<section class="charge-encounter-head" data-visit-charge-options><h4>Insurance and dates<\/h4>/,'insurance and the date of service have their own section');
  assert.ok(visit.indexOf('charge-lines-title">Procedures')<visit.indexOf('data-visit-charge-options'),'procedures come first, right under the diagnoses; insurance and dates follow');
- assert.ok(visit.indexOf('data-check-codes')<visit.indexOf('data-visit-charge-options'),'Check codes stays with the procedures');
+ assert.doesNotMatch(visit,/data-check-codes|>Check codes</);
+ assert.match(visit,/data-line-code-check role="status" hidden/,'every procedure has an inline place for automatic checks');
+ assert.match(visit,/data-code-check role="status" hidden/,'cross-line findings stay with the procedures');
  assert.match(visit,/<details class="charge-more-options"><summary>Fees and notes<\/summary>/,'fees and notes are tucked under the procedures');
  // The encounter form carries the claim details a paper encounter form has: prior authorization,
  // dates, the providers and place of service, the hospital stay and claim boxes, and staff notes.
@@ -47,7 +49,7 @@ const chargeLine=html=>{const start=html.indexOf('<tr class="billing-charge-row"
  assert.ok(visit.indexOf(box)>visit.indexOf('data-add-charge'),'fees and notes come after the charge lines');
  const tucked=visit.slice(visit.indexOf('data-visit-charge-options'));
  assert.ok(['visit_id','service_date','coverage_id','notes','fee_facility','fee_setting'].every(name=>tucked.includes(`name="${name}"`)),'the encounter fields are still inside the form and still submitted');
- assert.match(visit,/<button type="button" data-add-charge>\+ Add another charge<\/button>/);
+ assert.match(visit,/<button type="button" data-add-charge>\+ Add procedure<\/button>/);
  assert.doesNotMatch(visit,/>Save charges<|>Cancel<|name="reason"/,'the table saves itself: no save button, no cancel, no reason box');
  assert.doesNotMatch(visit,/name="code_system"/,'no code system field anywhere on a charge line');
  assert.match(visit,/<button type="button" data-remove-charge>Remove<\/button>/,'each line has one plain Remove');
@@ -57,6 +59,27 @@ const chargeLine=html=>{const start=html.indexOf('<tr class="billing-charge-row"
  assert.ok(visit.indexOf('data-charge-line-totals')>visit.indexOf('</table>'),'the totals sit under the lines, not in a column beside them');
  assert.match(visit,/data-charge-total/,'the totals sit under the table and move as lines change');
  assert.doesNotMatch(visit,/Account notes|Line total \(USD\)|Reviewed ICD-10|Check approved fee|Catalog release options|Record each service once|Code system/,'no long or developer wording is shown in the encounter charge table');
+ // Run the same paint used by opening the editor, editing fields, and adding or removing rows.
+ const host=()=>({hidden:true,innerHTML:''});
+ const makeRow=(code,modifiers='')=>{
+  const fields={code:{value:code},units:{value:'1'},diagnoses:{value:'M54.2'},ndc_code:{value:''},modifiers:{value:modifiers}};
+  const feedback=host();
+  return {fields,feedback,querySelector:sel=>sel==='[data-line-code-check]'?feedback:fields[/name="([^"]+)"/.exec(sel)?.[1]],hasAttribute:()=>false};
+ };
+ const drug=makeRow('J0585'),office=makeRow('99213'),summary=host();
+ let lines=[drug,office];
+ const form={dataset:{},elements:{coverage_id:{value:'coverage'}},querySelector:sel=>sel==='[data-code-check]'?summary:sel==='#billing-charge-lines'?{querySelectorAll:()=>lines}:null};
+ ctx.renderEncounterCodeChecks(form);
+ assert.match(drug.feedback.innerHTML,/NDC/);assert.match(office.feedback.innerHTML,/modifier 25/);
+ drug.fields.ndc_code.value='00000000001';drug.fields.modifiers.value='JZ';office.fields.modifiers.value='25';
+ ctx.renderEncounterCodeChecks(form);
+ assert.ok(drug.feedback.hidden&&office.feedback.hidden&&summary.hidden);
+ lines=[office,makeRow('99213','25')];ctx.renderEncounterCodeChecks(form);
+ assert.match(lines[1].feedback.innerHTML,/Duplicate 99213/);
+ lines=[office];ctx.renderEncounterCodeChecks(form);assert.ok(office.feedback.hidden);
+ drug.fields.ndc_code.value='';form.elements.coverage_id.value='';lines=[drug];ctx.renderEncounterCodeChecks(form);
+ assert.ok(drug.feedback.hidden,'payer checks clear when staff switch to self-pay');
+ form.elements.coverage_id.value='coverage';ctx.renderEncounterCodeChecks(form);assert.match(drug.feedback.innerHTML,/NDC/);
  // Saving with a required field left empty inside the box opens it so the browser can show the problem.
  const broken={checkValidity:()=>false},ok={checkValidity:()=>true},fields=[ok,broken],tuckedBox={open:false,querySelectorAll:()=>fields};
  const chargeForm={id:'billing-account-form',querySelector:selector=>selector==='[data-visit-charge-options]'?tuckedBox:null};

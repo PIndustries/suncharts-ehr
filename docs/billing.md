@@ -1,5 +1,33 @@
 # Billing, claims and remittances
 
+## Denied claims and statement delivery
+
+A denied encounter offers **Fix and resend claim**, **Move to patient balance**,
+**Write off**, and **Start appeal**. Moving the balance or writing it off requires
+an attributed reason and the current posted account version. A write-off records
+an adjustment credit for the remaining balance; it preserves the claim and prior
+ledger entries. Moving the balance records reviewed patient responsibility in an
+immutable statement. Open payment attempts must be resolved first. Appeals reuse
+the claim-linked appeal form and require configured claim services.
+
+Preparing or printing a statement does not mark it sent. **Send statement** delivers
+an immutable statement link through an active patient portal and atomically records
+the message, delivery channel, staff member, time, and audit event. Repeating the
+same request ID does not create another delivery; a deliberate resend uses a new
+request ID. **Statements sent** shows these confirmed deliveries separately from
+prepared statements. A patient can open the statement from Messages or the portal
+overview, print it, and, when online payments are configured and enabled, agree to
+pay the current balance through the existing hosted checkout. The issued statement
+remains unchanged, and checkout rechecks current responsibility and reservations.
+
+The configured email service currently accepts payment receipts, not statement
+content or attachments. Statement sending therefore uses the portal; it does not
+claim an email was sent. Without an active patient portal, the sheet says
+“No sending channel is configured” and offers Print / save PDF. Missing patient
+email is shown with an action to open Profile. Portal delivery, payment-account
+readiness, and the hosted payment return require an installation configured for
+those services to verify end to end.
+
 ## Patient billing workspace
 
 Open **Patient billing** from the main navigation for the practice worklist, or
@@ -152,19 +180,27 @@ plan's benefits for the visit type.
    NPI, the practice's facility name and address, the tax ID of the practice's billing
    organization when there is exactly one, the patient's address, and the policy
    holder from the coverage (the patient's own date of birth when the policy is
-   theirs). The place of service repeats the practice's most recent claim and is 11
+   theirs). A rendering NPI entered for this encounter overrides the assigned clinician’s directory
+   NPI. A single active billing organization uses its group NPI when recorded, or the reviewed
+   rendering NPI when the practice bills under that clinician. If several organizations are
+   active, confirm the billing identity on the claim. The place of service repeats the practice's most recent claim and is 11
    (office) for a first claim. The claim stays a draft: nothing is marked ready or
    sent. The same happens the first time the billing step of an older posted visit
    without a claim is shown, attributed to the person who opened it. Opening the visit
    on its note or another step prepares nothing. A claim a person cancelled is not
    prepared again until they choose **Prepare a new claim**, which keeps the details
    they had corrected.
-5. **Review and send claim** opens the claim. Anything missing is listed there and on
-   the visit's billing card with **Fix claim details**. **Details are right: continue
-   to send** records the claim as ready and opens the Claim.MD send form; the claim is
-   sent only when a person chooses **Send claim to Claim.MD**. Posted charges cannot
-   be edited, so a prepared claim always matches its charges; after sending, changes
-   use **Fix and resend** or **Correct or void this claim** on the claim.
+5. On an insured visit, **Sign & submit claim** records the signature, posts the
+   reviewed charges, builds the original claim and queues it for the practice’s
+   verified Claim.MD connection. Confirm the provider signature on file, assignment
+   of benefits, release authorization and professional claim review. When staff
+   choose **Sign & prepare claim**, the claim stays in the practice for review.
+   Patient self-pay visits continue to patient billing. Paper billing and review
+   holds stay in place until staff address them. If a required item is missing, the
+   signed note is preserved. Correct the item and choose **Submit claim** on that
+   visit to continue. The existing detailed claim review and manual file workflow
+   remain available. **Queued** means the delivery worker has the file. A confirmed
+   Claim.MD receipt and a payer decision are later, separate events.
 6. The patient's side needs no invoice to be built. **Statement** saves a statement
    for what the patient owes now the first time it is printed or sent, and reuses it
    while that amount is unchanged. Earlier statements keep their original charges,
@@ -231,6 +267,16 @@ and coinsurance appear after the remittance is posted.
 **Insurance claims** and **Patient billing** list the same state names as the card
 and open the visit's card from each row.
 
+When the clinic enables SunCharts Payments through Connect, posting a self-pay
+visit queues a Stripe invoice for the remaining collectible balance. For an
+insured visit, the worker waits for posted adjudication and subtracts applied
+patient payments, including the copay. The worker creates a draft in the clinic's
+connected Stripe account. Staff can see its status under the encounter's
+**Payment** step. Creating the draft does not email or debit the patient.
+When the balance changes, the worker reconciles the previous invoice before
+creating a replacement. A confirmed settlement can close the invoice as paid.
+Conflicting payment evidence goes to review.
+
 Saved statements are independent of Stripe account setup. They are not
 Stripe-hosted invoices or automatic collection requests. Online statement delivery
 is not available. Hosted appointment
@@ -270,14 +316,19 @@ Printing does not submit a claim. **Review & submit to Claim.MD** opens the exis
 submission review before staff explicitly queue delivery. Manual activity performed
 outside SunCharts is recorded separately.
 
-The claims list above the table carries a filter chip per claim status — All, Draft,
-Ready to send, Sent, Accepted, Rejected, Adjudicated and Voided — each showing how
-many claims are in that state. **All** is selected by default and clicking a chip
-shows only claims in that state. The claims worklist is cursor-paginated, so the
-counts come from `GET /api/v1/billing/claims/status-counts`, which counts every
-claim in the practice rather than only the page on screen. A claim is never stored
-as paid or denied: a payer denial arrives as **Rejected** and money paid lands as
-an insurance payment, so there is no Paid or Denied chip.
+The practice **Claims & remittances** monitor opens to **To send**. Use **Waiting**
+for submitted or accepted claims awaiting a response and **Needs correction** for
+rejected claims or claims the clearinghouse is holding for correction. **Remittance
+to review** opens staged or matched remittances, and **Posted** opens remittances
+that are currently posted. Select a claim or remittance to open that record and
+access the actions allowed for your role.
+
+Use **Other views** to see all claims, an individual claim status, or all
+remittances, including rejected remittances and postings that were undone. Claim
+counts include all pages returned by the claims worklist. Remittance counts cover
+the records loaded so far. **Load more remittances** adds the next page.
+Open **Billing tools** for clearinghouse connections, remittance automation,
+imported payment files and practice billing settings available to your role.
 
 Transport delivery, technical acknowledgment, claim acceptance and payer adjudication
 are distinct. Review TA1/999 evidence and matched 277CA rows with their control
@@ -471,10 +522,27 @@ dates reflect reconciliation because the broker supplies cumulative refunded
 amounts rather than individual refund timestamps. Disputed or inconsistent
 provider evidence stays in review.
 
-Issue a managed refund in the connected Stripe account, then refresh the original
-attempt or allow the worker to reconcile it. This EHR protocol does not initiate
-managed refunds. Manual receipt voids and ledger reversals cannot alter hosted
-funds. Existing ledger entries and saved invoices are never overwritten.
+Receipt actions in patient billing accept a full or partial card refund with a
+reason, record a cash/check refund already paid from unused receipt credit, or
+apply unused credit to another posted encounter for the same patient. Cash/check
+refund records consume unused credit; applying credit appends a ledger payment
+and receipt allocation. Each action and its audit commit together. Retries must
+reuse the request ID and original details. A pending refund blocks further use of
+that receipt until confirmed. Corrected or voided receipts require review first.
+
+Card refund commands require the connected payment service to implement
+`POST /api/v1/payments/connect/installations/{installation}/refunds`, using
+`request_id` for idempotency. The JSON command contains `payment_request_id`,
+`payment_intent`, `amount_cents`, `currency`, `account_id`, `livemode`,
+`remote_tenant_id`, and `reason`. This command is not proof of a refund. The EHR
+retrieves the original bound payment and reconciles cumulative refund evidence
+through the existing refund ledger path. Test payments use that same path on a
+development installation. Compatibility of the command with the connected service
+and a real test payment has not been verified; a service without this endpoint
+cannot issue a managed refund from the EHR. Until that service supports the command,
+issue the refund in the payment account and refresh the original payment to
+reconcile it. Its pending request remains available
+for reconciliation using the same ID. Manual receipt voids do not refund funds.
 
 ## Payment account setup
 
@@ -792,6 +860,15 @@ open the clinical chart. Claim status is loaded separately under the claims
 policy; a denied or unavailable claims service does not hide billing records.
 Claim submission, acceptance and crossover tracking are workflow evidence and do
 not establish payment or a settled patient balance.
+
+### Automatic patient invoice drafts
+
+Automatic invoice drafts require `ENGINE_AUTOMATIC_PATIENT_INVOICES_ENABLED=true`
+on the EHR server. Leave it unset until the connected SunCharts Connect broker
+supports native patient invoice create, read and close operations and the
+integration is approved for this installation. With the setting off, the EHR
+does not queue or process automatic invoice jobs. Existing manual statements and
+payment methods do not depend on this setting.
 
 ### Native Stripe account summary
 

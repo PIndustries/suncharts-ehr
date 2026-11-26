@@ -9,6 +9,7 @@ async function showBillingOrganizations(){
  if(me!==identity||$('billing-organizations')!==host)return;
  const state={identity,host,items:data.items};billingOrganizationState=state;
  host.innerHTML=`<div class="section-head"><div><h2>Billing organizations</h2><p>The legal name and tax ID the practice bills insurance under.</p></div><button type="button" data-billing-org-back>Back to practice administration</button> <button type="button" data-billing-org-providers>Providers</button></div><p class="muted">Tax IDs are stored encrypted. Only the last four digits are shown.</p><button type="button" class="primary" data-billing-org-new>Add billing organization</button><table class="billing-table"><thead><tr><th>Name</th><th>Tax identity</th><th>Status</th><th>Actions</th></tr></thead><tbody>${data.items.map(row=>`<tr><td>${esc(row.name)}</td><td>${esc(row.tax_id_type==='E'?'EIN':'SSN')} ending ${esc(row.tax_id_last4)}${row.npi?`<br>NPI ${esc(row.npi)}`:''}</td><td>${row.active?'Active':'Inactive'}</td><td><button type="button" data-billing-org-edit="${esc(row.id)}">Edit</button> <button type="button" data-billing-org-history="${esc(row.id)}">History</button></td></tr>`).join('')||'<tr><td colspan="4">No billing organization yet.</td></tr>'}</tbody></table><div id="billing-org-editor"></div><div id="billing-org-history"></div>`;
+ if(typeof practiceAdminFrame==='function')practiceAdminFrame('organizations');
  if(!data.items.length)editBillingOrganization();
 }
 function billingOrganizationCurrent(state){return state&&billingOrganizationState===state&&state.identity===me&&$('billing-organizations')===state.host;}
@@ -22,12 +23,50 @@ async function saveBillingOrganization(form){
  const state=billingOrganizationState;if(!billingOrganizationCurrent(state)||$('billing-org-form')!==form||form.dataset.saving==='true')return;
  const row=state.editing,data=Object.fromEntries(new FormData(form));data.name=data.name.trim();data.npi=(data.npi||'').trim();data.reason=data.reason.trim();data.active=data.active==='true';if(!data.tax_id)delete data.tax_id;if(!row)data.request_id=state.requestId;
  form.dataset.saving='true';const button=form.querySelector('[type="submit"]');button.disabled=true;
- try{await api(`/api/v1/practice/billing-organizations${row?'/'+row.id:''}`,row?'PUT':'POST',data,row?.version);if(!billingOrganizationCurrent(state)||$('billing-org-form')!==form)return;form.elements.tax_id.value='';await showBillingOrganizations();notice('Billing organization saved.');}
+ try{await api(`/api/v1/practice/billing-organizations${row?'/'+row.id:''}`,row?'PUT':'POST',data,row?.version);if(typeof invalidateEncounterProviderOptions==='function')invalidateEncounterProviderOptions();if(!billingOrganizationCurrent(state)||$('billing-org-form')!==form)return;form.elements.tax_id.value='';await showBillingOrganizations();notice('Billing organization saved.');}
  catch(error){if(billingOrganizationCurrent(state)&&$('billing-org-form')===form){const box=form.querySelector('[data-org-error]');box.textContent=error.message;box.hidden=false;}}
  finally{delete form.dataset.saving;if(button.isConnected)button.disabled=false;}
 }
+// A correction from a visit opens the owning record and focuses its NPI.
+async function openEncounterPracticeNpi(button){
+ const owner=me;
+ if(owner?.role!=='owner')throw new Error('A practice owner can update the NPI.');
+ const providerId=button.dataset.claimProviderProfile,organizationId=button.dataset.claimBillingOrg;
+ let field,explanation;
+ if(providerId){
+  await showPracticeAdmin('providers');
+  if(me!==owner||practiceAdminState?.tab!=='providers'||!$('practice-admin-panel'))return;
+  const staff=practiceAdminState.staff.items.find(row=>row.id===providerId);
+  const profile=practiceAdminState.providers.items.find(row=>row.id===providerId);
+  if(!staff||staff.disabled||!['owner','clinician'].includes(staff.role))throw new Error('The assigned clinician is unavailable in the active staff directory.');
+  editPracticeAdmin(profile?.id);
+  const form=$('practice-admin-form');
+  if(!form)return;
+  if(!profile){
+   form.elements.staff_id.value=providerId;
+   if(form.elements.staff_id.value!==providerId)throw new Error('The assigned clinician is unavailable for a new profile.');
+   form.elements.display_name.value=staff.display_name||'';
+  }
+  field=form.elements.npi;
+  explanation='Enter the NPI for the clinician who rendered this visit.';
+ }else if(organizationId){
+  await showBillingOrganizations();
+  if(me!==owner||!billingOrganizationCurrent(billingOrganizationState))return;
+  if(!billingOrganizationState.items.some(row=>row.id===organizationId))throw new Error('This billing organization is unavailable.');
+  editBillingOrganization(organizationId);
+  field=$('billing-org-form')?.elements.npi;
+  explanation='Review the NPI this organization uses on insurance claims.';
+ }
+ if(!field)return;
+ const note=document.createElement('small');
+ note.id='practice-npi-correction';note.textContent=explanation;
+ field.after(note);field.setAttribute('aria-describedby',note.id);
+ field.closest('label')?.classList.add('claim-field-correction');
+ field.focus();
+}
 document.addEventListener('click',event=>{
  const button=event.target.closest('button');if(!button)return;
+ if(button.dataset.claimProviderProfile||button.dataset.claimBillingOrg){event.preventDefault();run(()=>openEncounterPracticeNpi(button));return;}
  if(button.hasAttribute('data-billing-organizations')){event.preventDefault();run(showBillingOrganizations);return;}
  if(button.hasAttribute('data-practice-providers')){event.preventDefault();run(()=>showPracticeAdmin('providers'));return;}
  if(!button.closest('#billing-organizations'))return;

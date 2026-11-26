@@ -221,8 +221,8 @@ const catalogCodes=[
 // The encounter's saved diagnoses, and the version a save answers with. A test moves these the way the
 // server would: put the diagnoses, the encounter comes back a version ahead, and reading them again
 // gives what was put.
-let visitVersion=3,accountVersion=7,savedAccount=null,diagnoses=[{id:'d1',code:'R51.9',display:'Headache'}];
-const visitResponse=()=>({version:visitVersion,visit:{id:'visit-a',version:visitVersion,status:'in_progress'},can_edit:true,diagnoses,history:[],history_truncated:false,code_system:'http://hl7.org/fhir/sid/icd-10-cm'});
+let visitVersion=3,accountVersion=7,savedAccount=null,nextChargeError=null,diagnosesEditable=true,diagnoses=[{id:'d1',code:'R51.9',display:'Headache'}];
+const visitResponse=()=>({version:visitVersion,visit:{id:'visit-a',version:visitVersion,status:'in_progress'},can_edit:diagnosesEditable,diagnoses,history:[],history_truncated:false,code_system:'http://hl7.org/fhir/sid/icd-10-cm'});
 const ctx={console,setTimeout:vmSetTimeout,clearTimeout:vmClearTimeout,Date,Intl,URL,URLSearchParams,Map,Set,WeakMap,WeakSet,Array,Math,Number,String,JSON,Object,Boolean,RegExp,Error,Promise,Symbol,
  document:documentStub,localStorage:{getItem:()=>null,setItem(){},removeItem(){}},sessionStorage:{getItem:()=>null,setItem(){},removeItem(){}},
  crypto:{randomUUID:()=>'synthetic-request'},
@@ -264,6 +264,7 @@ const ctx={console,setTimeout:vmSetTimeout,clearTimeout:vmClearTimeout,Date,Intl
   // account the test opened, unchanged, would silently undo whatever the table saved: every line
   // the server did not change keeps its row, and only changed rows are re-drawn.
   if(url.includes('/billing/accounts')&&method==='PUT'){
+   if(nextChargeError){const error=nextChargeError;nextChargeError=null;throw error;}
    accountVersion+=1;savedAccount=body;
    return {id:'account',version:accountVersion,status:'draft',patient_id:'patient',content:body.content};}
   if(url.includes('/billing/accounts'))return {accounts:[{id:'account',version:accountVersion,status:'draft',patient_id:'patient',content:savedAccount?.content||{visit_id:'visit-a',service_date:'2026-11-13',currency:'USD',lines:[],notes:''}}]};
@@ -288,6 +289,8 @@ const settle=async()=>{for(let step=0;step<40;step++)await new Promise(resolve=>
 const openTable=async lines=>{
  ctx.workspace.billing.accounts=lines.length?[{id:'account',version:7,status:'draft',patient_id:'patient',content:{visit_id:'visit-a',service_date:'2026-11-13',currency:'USD',lines,notes:''}}]:[];
  await vm.runInContext('accountEditor('+(lines.length?'workspace.billing.accounts[0]':'null')+',null,true)',ctx);
+ const deadline=Date.now()+5000;
+ while(Date.now()<deadline&&(!openForm()?.chargeDiagnosisState||openForm().chargeDiagnosisState.loading||!$('visit-diagnoses-form')))await new Promise(resolve=>setTimeout(resolve,10));
  await settle();
  return openForm();
 };
@@ -329,6 +332,7 @@ const addDiagnosis=async(code,display)=>{
  offerMatch(codeBox,display);
  focusOut(codeBox,displayBox);
  displayBox.focus();type(displayBox,display);focusOut(displayBox,reason);
+ const details=reason.closest('details');if(details)details.open=true;
  reason.focus();type(reason,'Synthetic reassessment');focusOut(reason,form.querySelector('[type="submit"]'));
  // The autosave timer runs inside the vm's own clock; wait on the wall clock until the PUT lands.
  let waited=0;
@@ -352,13 +356,16 @@ const addDiagnosis=async(code,display)=>{
  assert.ok(sectionAt>=0,'the charges step carries a diagnoses section');
  assert.ok(sectionAt<tableAt,'and it sits directly above the charge lines');
  assert.ok($('visit-diagnoses'),'the section holds the diagnoses host the encounter Diagnoses screen uses');
- assert.ok(openForm()&&!openForm().contains($('visit-diagnoses')),'the diagnoses editor is the charge form\u2019s neighbour, not nested inside it');
+ assert.ok(openForm()&&!openForm().contains($('visit-diagnoses')),'the diagnoses and procedures use separate forms in the same editor');
+ assert.equal($('visit-diagnoses-form').tag,'form');
+ assert.ok(openForm().contains($('billing-charge-lines')));
  // The section was drawn by web/visit-diagnoses.js itself, so it is that editor and not a copy:
  // its own add/remove markup, its own save form, its own wording.
  const diagnosesHtml=$('visit-diagnoses').innerHTML;
  assert.match(diagnosesHtml,/data-diagnosis-add/,`the section is drawn by the diagnoses screen's own code: ${diagnosesHtml.slice(0,200)}`);
  assert.match(diagnosesHtml,/id="visit-diagnoses-form"/);
  assert.match(diagnosesHtml,/Primary diagnosis/);
+ assert.ok($('visit-diagnoses-form').querySelector('[data-diagnosis-up]').hasAttribute('disabled'),'the primary diagnosis is already first');
  assert.match(diagnosesHtml,/data-diagnosis-refresh/,'it keeps the Reload its own screen already offers');
  assert.match(diagnosesHtml,/data-terminology-combobox/,'its code boxes are the type-ahead boxes, not bare inputs');
  assert.equal($('visit-diagnoses-form').querySelectorAll('[data-diagnosis-row]').length,1,'the one saved diagnosis is on one row');
@@ -401,12 +408,12 @@ const addDiagnosis=async(code,display)=>{
  assert.equal(codesOnRow(chargeRows()[1]),'R51.9, M79.3','the blank line took the encounter\u2019s diagnoses the moment they saved');
  assert.deepEqual(ticksOnRow(chargeRows()[1]),['R51.9','M79.3'],'and its chips say what it carries');
  assert.match(chargeRows()[1].innerHTML,/A \(R51\.9\), B \(M79\.3\)/,'the line says it in the letters the section above shows');
- // The saved line arrived with no codes on it, so the encounter filled it in and it keeps following.
- // What the table had before the save is unchanged, and the save itself stays in step.
+ // A saved line can be explicitly unlinked. New encounter diagnoses are available for selection.
+ assert.ok(!openForm().chargeSaveTimer,'defaulting only a blank service must not queue a charge save');
  assert.equal(sent.filter(call=>call.url.includes('/billing/accounts')&&call.method==='PUT').length,0,'no charge was saved behind anyone\u2019s back');
- assert.equal(codesOnRow(chargeRows()[0]),'R51.9, M79.3','a saved line with nothing on it is answered by the encounter too');
+ assert.equal(codesOnRow(chargeRows()[0]),'','the saved empty diagnosis selection is preserved');
  assert.match(chargeRows()[0].innerHTML,/data-charge-diagnosis="M79\.3"/,'and the new diagnosis is offered to it as a chip');
- assert.deepEqual(ticksOnRow(chargeRows()[0]),['R51.9','M79.3'],'offered and taken, in step with the line');
+ assert.deepEqual(ticksOnRow(chargeRows()[0]),[],'new diagnoses are available without changing the saved selection');
  // A second letter appears on every line the moment the second diagnosis saves above: the two
  // screens are one form, so nobody has to reopen or refresh anything to find it.
  assert.match(chargeRows()[0].querySelector('[data-charge-diagnoses]').innerHTML,/>A<\/span>[\s\S]*>B<\/span>/,'and the chips are lettered the same way as the list above');
@@ -472,6 +479,8 @@ const chargeDiagnosisFree=row=>row.querySelectorAll('[data-charge-diagnosis]').m
  click($('visit-diagnoses').querySelector('[data-diagnosis-remove="1"]'));await settle();
  for(const timer of [...liveTimers.keys()]){vmClearTimeout(timer);liveTimers.delete(timer);}
  await vm.runInContext('submitVisitDiagnoses(document.getElementById("visit-diagnoses-form"),{autosave:true})',ctx);
+ const deadline=Date.now()+5000;
+ while(Date.now()<deadline&&openForm().chargeDiagnosisState?.version!==visitVersion)await new Promise(resolve=>setTimeout(resolve,10));
  await settle();
  assert.equal(codesOnRow(chargeRows()[2]),diagnoses.slice(0,4).map(d=>d.code).join(', '),'and a diagnosis removed from the encounter is taken off a line still following it');
  assert.equal(codesOnRow(chargeRows()[1]),'Z00.00','the hand-entered line is still untouched');
@@ -487,6 +496,33 @@ const chargeDiagnosisFree=row=>row.querySelectorAll('[data-charge-diagnosis]').m
  assert.equal(ctx.noticed,'A line can point to 4 diagnoses.','and the reason is said in clinic words: '+ctx.noticed);
  assert.ok(ticksOnRow(following).length<=4,'the line never ends up holding more than four');
  console.log('PASS a new charge row points at the encounter\u2019s diagnoses in order up to four, follows a removal, and refuses a fifth in words');
+
+ // Clear the last pointer while the previous change is being saved. The newer choice survives
+ // the server reply, the follow-up save, and a new editor built from the saved lines.
+ const first=chargeRows()[0],chosenCode=first.querySelector('[data-charge-diagnosis]').dataset.chargeDiagnosis;
+ const chipLetter=()=>first.querySelectorAll('[data-charge-diagnosis]').find(chip=>chip.dataset.chargeDiagnosis===chosenCode).querySelector('.charge-dx-chip-letter');
+ click(chipLetter());
+ assert.equal(codesOnRow(first),chosenCode,'clicking the visible letter selects the diagnosis');
+ const originalApi=ctx.api;
+ let releaseSave;
+ ctx.api=(url,method,...args)=>method==='PUT'&&url.includes('/billing/accounts')
+  ?new Promise(resolve=>{releaseSave=()=>resolve(originalApi(url,method,...args));})
+  :originalApi(url,method,...args);
+ const pending=ctx.saveChargeTable(openForm());
+ assert.equal(typeof releaseSave,'function','the first selection is being saved');
+ click(chipLetter());
+ assert.equal(codesOnRow(first),'');
+ await ctx.refreshChargeEncounterDiagnoses(openForm());
+ assert.deepEqual(ticksOnRow(first),[],'an encounter refresh preserves the manual empty selection');
+ ctx.api=originalApi;releaseSave();await pending;
+ assert.equal(codesOnRow(chargeRows()[0]),'','the older save cannot restore its diagnosis');
+ await ctx.saveChargeTable(openForm());
+ assert.equal(savedAccount.content.lines[0].diagnosis_codes.length,0);
+ await openTable(savedAccount.content.lines);
+ await ctx.refreshChargeEncounterDiagnoses(openForm());
+ assert.equal(codesOnRow(chargeRows()[0]),'');
+ assert.deepEqual(ticksOnRow(chargeRows()[0]),[]);
+ console.log('PASS an explicit empty diagnosis selection survives a delayed save, redraw and encounter refresh');
 
  // ---- 5. no Link visit diagnoses button on this screen ----------------------------------
  assert.doesNotMatch(encounterEditor.innerHTML,/data-link-account-diagnoses/,'the charges step never offers Link visit diagnoses');
@@ -505,7 +541,7 @@ const chargeDiagnosisFree=row=>row.querySelectorAll('[data-charge-diagnosis]').m
  // ---- 6. the encounter Diagnoses screen itself still works ---------------------------------
  const diagnosesSource=fs.readFileSync('web/visit-diagnoses.js','utf8');
  assert.match(diagnosesSource,/function showVisitDiagnoses\(host,data,id,patient\)/,'the diagnoses screen is still drawn by the same one function');
- assert.match(diagnosesSource,/function renderVisitDiagnoses\(\)/);
+ assert.match(diagnosesSource,/function renderVisitDiagnoses\(/);
  // And it is still the same editor on the charges step: a save there is a save to the encounter.
  const put=sent.filter(call=>call.method==='PUT'&&call.url.includes('/diagnoses'));
  assert.ok(put.length>=2,'the section saves to the encounter, not to the charge account');
@@ -513,5 +549,47 @@ const chargeDiagnosisFree=row=>row.querySelectorAll('[data-charge-diagnosis]').m
  assert.ok(put.every(call=>call.version!==undefined),'each save carried the version it read, so a concurrent edit is refused');
  assert.equal(put.filter(call=>call.url.includes('/billing/')).length,0,'no diagnosis save went through the billing account');
  console.log('PASS the section saves straight to the encounter with its version, exactly as the Diagnoses screen does');
- console.log('PASS one encounter form: the encounter\u2019s diagnoses lettered A, B, C above the lines, one chip per letter on every line writing the codes the line submits, four to a line with the limit said in words, one row per procedure with the totals under the lines, and no Link visit diagnoses button on this screen');
+
+ const coding=await openTable([{code_system:'CPT',code:'99213',description:'Synthetic office visit',modifiers:'',units:1,amount_cents:15000,diagnosis_codes:[diagnoses[0].code]}]);
+ const diagnosisForm=$('visit-diagnoses-form');
+ const display=diagnosisForm.querySelector('[name="display"]');
+ const amount=chargeRows()[0].querySelector('[name="amount"]');
+ amount.name='amount';
+ const beforeCodingSave=sent.length;
+ type(display,'Revised synthetic description');
+ type(diagnosisForm.querySelector('[name="reason"]'),'Synthetic reassessment');
+ type(amount,'170.00');
+ nextChargeError=new Error('Synthetic charge write failed');
+ await ctx.flushVisitCodeDiagnoses(diagnosisForm);
+ const current=()=>ctx.activeVisit.id==='visit-a';
+ await assert.rejects(ctx.flushEncounterProcedures(coding,current),/Procedure changes could not be saved|Synthetic charge write failed/);
+ const writes=()=>sent.slice(beforeCodingSave).filter(call=>call.method==='PUT');
+ assert.deepEqual(writes().map(call=>call.url),['/api/v1/visits/visit-a/diagnoses','/api/v1/patients/patient/billing/accounts/account']);
+ assert.match(coding.querySelector('[data-charge-status]').textContent,/Synthetic charge write failed/);
+ assert.equal(amount.value,'170.00','the failed procedure value stays in the same form');
+ await ctx.flushEncounterProcedures(coding,current);
+ assert.equal(writes().filter(call=>call.url.includes('/diagnoses')).length,1,'a retry does not save the successful diagnosis a second time');
+ assert.equal(writes().at(-1).body.content.lines[0].amount_cents,17000);
+ const currentVisit=ctx.activeVisit,committed=sent.length;
+ ctx.activeVisit={...currentVisit,id:'visit-b'};
+ await ctx.saveChargeTable(coding);
+ assert.equal(sent.length,committed,'the old charge form cannot save into another open encounter');
+ ctx.activeVisit=currentVisit;
+ console.log('PASS the autosave retry preserves partial success and does not write after switching encounters');
+ vm.runInContext(fs.readFileSync('web/visit-note.js','utf8'),context);
+ ctx.me={role:'owner'};ctx.workspaceResourceAllowed=()=>true;ctx.activeVisit=ctx.workspace.visits[0];ctx.encounterChargeAccount=()=>ctx.encounterChargeAccountFor(ctx.activeVisit.id);
+ let priorError;ctx.showVisitNoteMessage=message=>{priorError=message;};
+ const prior={id:'old',patient_id:'patient',status:'posted',content:{visit_id:'previous',service_date:'2026-10-02',lines:[{code:'99214',description:'Synthetic earlier service',units:2,modifiers:'25',amount_cents:75000,diagnosis_codes:['OLD']}]}};
+ ctx.workspace.visits.push({id:'previous',patient_id:'patient'},{id:'other-visit',patient_id:'other-patient'});
+ ctx.workspace.billing.accounts=[prior,{...prior,id:'other',patient_id:'other-patient',content:{...prior.content,visit_id:'other-visit',service_date:'2026-11-11',lines:[{code:'99999',description:'Another patient’s procedure'}]}}];
+ vm.runInContext('accountEditor(null,null,true)',ctx);await settle();
+ encounterEditor.insertAdjacentHTML('afterbegin',ctx.visitNoteInlineProceduresMarkup());
+ await ctx.visitNoteInlineMount();
+ const choices=$('note-previous-procedures');assert(choices);assert.deepEqual(Array.from(choices.noteLines,line=>line.code),['99214']);
+ assert.equal(choices.noteLines[0].amount_cents,null);assert.equal(choices.noteLines[0].diagnosis_codes.length,0);
+ assert.ok(chargeRows().every(row=>!row.querySelector('[name="code"]').value),'opening the chooser never adds a prior service');
+ const button=choices.querySelector('[data-note-previous-procedure]');click(button);await settle();assert.equal(priorError,undefined);
+ assert.equal(chargeRows()[0].querySelector('[name="code"]').value,'99214');assert.equal(chargeRows()[0].querySelector('[name="units"]').value,'2');
+ console.log('PASS an explicit prior-service choice uses this patient’s earlier visit and excludes the earlier price and diagnoses');
+ console.log('PASS one encounter editor: the encounter\u2019s diagnoses lettered A, B, C above the lines, one chip per letter on every line writing the codes the line submits, four to a line with the limit said in words, one row per procedure with the totals under the lines, and no Link visit diagnoses button on this screen');
 })().catch(error=>{console.error(error);process.exitCode=1;});

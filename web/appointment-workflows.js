@@ -15,11 +15,13 @@ function recurringProposal(form){
   if(new Date(starts_at)-new Date(first)>366*86400000)throw new Error('Keep the series within one year of its first visit.');
   occurrences.push({starts_at,ends_at:end.toISOString(),local_start:localTime(starts_at)+':00',local_end:localTime(end.toISOString())+':00',utc_offset_minutes:-new Date(starts_at).getTimezoneOffset()});
  }
- return {request_id:form.dataset.request,patient_id:d.patient_id,clinician_id:d.clinician_id,title:d.title,category:d.category,facility:d.facility,room:d.room,notes:d.notes,reason:d.reason,frequency,interval,timezone:Intl.DateTimeFormat().resolvedOptions().timeZone,occurrences};
+ return {...scheduleBookingTypeSelection(form),request_id:form.dataset.request,patient_id:d.patient_id,clinician_id:d.clinician_id,title:d.title,category:d.category,facility:d.facility,room:d.room,notes:d.notes,reason:d.reason,frequency,interval,timezone:Intl.DateTimeFormat().resolvedOptions().timeZone,occurrences};
 }
 async function previewRecurring(form){
  if(!canSchedule())throw new Error('Scheduling access is required.');
+ if(form.locationReady){await form.locationReady;if($('schedule-booking')!==form)return;}
  if(form.dataset.chartPatient&&selected!==form.dataset.chartPatient)throw new Error('The patient chart changed. Reopen appointment booking.');
+ if(form.dataset.newPatient==='1'){const data=Object.fromEntries(new FormData(form));await scheduleCreateBookingPatient(form,data);form.querySelector('[name="patient_id"]').value=data.patient_id;}
  const proposal=recurringProposal(form),fingerprint=JSON.stringify(proposal),data=await api('/api/v1/schedule/series/preview','POST',proposal);
  if(!form.isConnected||JSON.stringify(recurringProposal(form))!==fingerprint)return;
  seriesDraft={form,proposal,fingerprint,chartPatient:form.dataset.chartPatient,chartVisit:form.dataset.chartVisit};

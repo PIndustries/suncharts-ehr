@@ -33,6 +33,8 @@ SECURITY_SOURCES = {
     "src/patient_portal.rs",
 }
 GLOBAL_UI_FILES = {
+    "package.json",
+    "package-lock.json",
     "web/app.js",
     "web/display-format.js",
     "web/index.html",

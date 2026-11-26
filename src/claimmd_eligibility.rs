@@ -2,8 +2,10 @@
 //! Native Claim.MD payer search and structured eligibility evidence.
 use crate::{
     auth::Actor,
+    claimmd::ApiBudget,
     delivery::{Adapter, Route},
     error::{Error, Result},
+    practice_admin::valid_npi,
     State,
 };
 use axum::{
@@ -52,30 +54,6 @@ fn identifier(value: &str, max: usize) -> Result<()> {
     }
 }
 
-fn valid_npi(value: &str) -> bool {
-    if value.len() != 10
-        || !value.bytes().all(|byte| byte.is_ascii_digit())
-        || !matches!(value.as_bytes()[0], b'1' | b'2')
-    {
-        return false;
-    }
-    let sum: u32 = format!("80840{value}")
-        .bytes()
-        .rev()
-        .enumerate()
-        .map(|(index, byte)| {
-            let digit = u32::from(byte - b'0');
-            if index % 2 == 1 {
-                let doubled = digit * 2;
-                doubled / 10 + doubled % 10
-            } else {
-                digit
-            }
-        })
-        .sum();
-    sum.is_multiple_of(10)
-}
-
 async fn route(pool: &PgPool, tenant: Uuid) -> Result<Route> {
     crate::provider_settings::load_for_tenant(pool, tenant)
         .await?
@@ -112,30 +90,137 @@ fn rows(value: &Value, field: &str) -> Result<Vec<Value>> {
 }
 
 pub(crate) async fn acquire_rate_limit(pool: &PgPool, route: &Route) -> Result<()> {
-    acquire_rate_limit_key(pool, &key(route)?).await
+    reserve_eligibility_budget(pool, route, ApiBudget::Foreground).await
 }
 
-pub(crate) async fn acquire_rate_limit_key(pool: &PgPool, account_key: &str) -> Result<()> {
-    let account_hash = crate::oauth::hash(account_key);
-    let mut tx = pool.begin().await?;
-    sqlx::query("DELETE FROM claimmd_api_rate_windows WHERE window_start<date_trunc('minute',clock_timestamp())-interval '1 day'")
-        .execute(&mut *tx)
+async fn reserve_eligibility_budget(pool: &PgPool, route: &Route, budget: ApiBudget) -> Result<()> {
+    take_api_budget(pool, &crate::oauth::hash(&key(route)?), budget)
+        .await
+        .map_err(|error| match error {
+            Error::ClaimMdRateLimited(_) => Error::Invalid(RATE_LIMITED),
+            other => other,
+        })
+}
+
+async fn lock_api_budget(tx: &mut Transaction<'_, Postgres>, account_hash: &str) -> Result<()> {
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended('claimmd-budget:' || $1, 0))")
+        .bind(account_hash)
+        .execute(&mut **tx)
         .await?;
-    let acquired: Option<i32> = sqlx::query_scalar(
-        "INSERT INTO claimmd_api_rate_windows(account_hash,window_start,request_count)
-         VALUES($1,date_trunc('minute',clock_timestamp()),1)
-         ON CONFLICT(account_hash,window_start) DO UPDATE
-           SET request_count=claimmd_api_rate_windows.request_count+1,updated_at=clock_timestamp()
-           WHERE claimmd_api_rate_windows.request_count<100
-         RETURNING request_count",
+    Ok(())
+}
+
+pub(crate) async fn take_api_budget(
+    pool: &PgPool,
+    account_hash: &str,
+    budget: ApiBudget,
+) -> Result<()> {
+    let mut tx = pool.begin().await?;
+    reserve_api_budget(&mut tx, account_hash, budget).await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+const API_LIMIT_SETTING: &str = "CLAIMMD_API_REQUESTS_PER_MINUTE";
+const API_LIMIT_INVALID: &str = "CLAIMMD_API_REQUESTS_PER_MINUTE must be a whole number";
+
+fn api_budget_limit(configured: Option<&str>, budget: ApiBudget) -> Result<i64> {
+    let total = configured
+        .map(|value| {
+            value
+                .trim()
+                .parse::<i64>()
+                .map_err(|_| Error::Invalid(API_LIMIT_INVALID))
+        })
+        .transpose()?
+        .unwrap_or(100)
+        .clamp(1, 100);
+    // Reserve at least one slot for staff actions and queued submissions.
+    Ok(match budget {
+        ApiBudget::Background => total * 4 / 5,
+        ApiBudget::Foreground => total,
+    })
+}
+
+pub(crate) async fn reserve_api_budget(
+    tx: &mut Transaction<'_, Postgres>,
+    account_hash: &str,
+    budget: ApiBudget,
+) -> Result<()> {
+    let configured = match std::env::var(API_LIMIT_SETTING) {
+        Ok(value) => Some(value),
+        Err(std::env::VarError::NotPresent) => None,
+        Err(std::env::VarError::NotUnicode(_)) => return Err(Error::Invalid(API_LIMIT_INVALID)),
+    };
+    let limit = api_budget_limit(configured.as_deref(), budget)?;
+    if limit == 0 {
+        return Err(Error::ClaimMdRateLimited(60));
+    }
+    lock_api_budget(tx, account_hash).await?;
+    let now: chrono::DateTime<chrono::Utc> = sqlx::query_scalar("SELECT clock_timestamp()")
+        .fetch_one(&mut **tx)
+        .await?;
+    let cooldown: Option<i64> = sqlx::query_scalar(
+        "SELECT ceil(extract(epoch FROM blocked_until-$2::timestamptz))::bigint
+         FROM claimmd_api_cooldowns WHERE account_hash=$1 AND blocked_until>$2",
     )
     .bind(account_hash)
-    .fetch_optional(&mut *tx)
+    .bind(now)
+    .fetch_optional(&mut **tx)
+    .await?;
+    if let Some(delay) = cooldown {
+        return Err(Error::ClaimMdRateLimited(
+            delay.clamp(1, i64::from(u32::MAX)) as u32,
+        ));
+    }
+    let boundary = now - chrono::Duration::seconds(60);
+    sqlx::query("DELETE FROM claimmd_api_reservations WHERE account_hash=$1 AND reserved_at<=$2")
+        .bind(account_hash)
+        .bind(boundary)
+        .execute(&mut **tx)
+        .await?;
+    // Locate the reservation whose expiry will lower the total below the
+    // applicable limit, including when foreground traffic filled the reserve.
+    let blocking: Option<chrono::DateTime<chrono::Utc>> = sqlx::query_scalar(
+        "SELECT reserved_at FROM claimmd_api_reservations WHERE account_hash=$1
+         ORDER BY reserved_at DESC OFFSET $2 LIMIT 1",
+    )
+    .bind(account_hash)
+    .bind(limit - 1)
+    .fetch_optional(&mut **tx)
+    .await?;
+    if let Some(blocking) = blocking {
+        let delay = (blocking - boundary).num_seconds().saturating_add(1);
+        return Err(Error::ClaimMdRateLimited(
+            delay.clamp(1, i64::from(u32::MAX)) as u32,
+        ));
+    }
+    sqlx::query("INSERT INTO claimmd_api_reservations(account_hash,reserved_at) VALUES($1,$2)")
+        .bind(account_hash)
+        .bind(now)
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
+}
+
+pub(crate) async fn pause_api_budget(
+    pool: &PgPool,
+    account_hash: &str,
+    seconds: u32,
+) -> Result<()> {
+    let mut tx = pool.begin().await?;
+    lock_api_budget(&mut tx, account_hash).await?;
+    sqlx::query(
+        "INSERT INTO claimmd_api_cooldowns(account_hash,blocked_until)
+         VALUES($1,clock_timestamp()+make_interval(secs=>$2))
+         ON CONFLICT(account_hash) DO UPDATE
+         SET blocked_until=greatest(claimmd_api_cooldowns.blocked_until,excluded.blocked_until)",
+    )
+    .bind(account_hash)
+    .bind(f64::from(seconds))
+    .execute(&mut *tx)
     .await?;
     tx.commit().await?;
-    if acquired.is_none() {
-        return Err(Error::Invalid(RATE_LIMITED));
-    }
     Ok(())
 }
 
@@ -689,7 +774,12 @@ async fn run_core(
         Some(route) => route,
         None => route(pool, actor.tenant_id).await?,
     };
-    acquire_rate_limit(pool, &route).await?;
+    let budget = if derived.snapshot.get("automatic") == Some(&Value::Bool(true)) {
+        ApiBudget::Background
+    } else {
+        ApiBudget::Foreground
+    };
+    reserve_eligibility_budget(pool, &route, budget).await?;
     let row: Option<(String, String, NaiveDate, Value, Value)> = sqlx::query_as(
         "SELECT p.given_name,p.family_name,p.birth_date,c.content,py.content
            FROM patients p
@@ -859,11 +949,11 @@ async fn named(pool: &PgPool, tenant: Uuid, checks: Vec<Check>) -> Result<Vec<Va
 }
 
 #[derive(Serialize, sqlx::FromRow)]
-struct ProviderDefault {
-    id: Uuid,
+pub(crate) struct ProviderDefault {
+    pub(crate) id: Uuid,
     version: i64,
-    display_name: String,
-    npi: String,
+    pub(crate) display_name: String,
+    pub(crate) npi: String,
     specialty: String,
 }
 
@@ -874,20 +964,34 @@ struct FacilityDefault {
     address: String,
 }
 
+pub(crate) async fn provider_choices(
+    pool: &PgPool,
+    tenant: Uuid,
+    assigned: Option<Uuid>,
+) -> Result<Vec<ProviderDefault>> {
+    let rows: Vec<ProviderDefault> = sqlx::query_as(
+        "SELECT p.id,p.version,p.display_name,p.npi,p.specialty
+         FROM practice_providers p JOIN browser_users u ON (u.tenant_id,u.id)=(p.tenant_id,p.id)
+         WHERE p.tenant_id=$1 AND ($2::uuid IS NULL OR p.id=$2) AND p.active
+           AND NOT u.disabled AND u.role IN ('owner','clinician') AND p.npi<>''
+         ORDER BY p.display_name,p.id",
+    )
+    .bind(tenant)
+    .bind(assigned)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().filter(|row| valid_npi(&row.npi)).collect())
+}
+
 async fn provider_defaults(
     actor: Actor,
     ExtractState(state): ExtractState<State>,
 ) -> Result<Response> {
     actor.staff()?;
     let pool = db(&state)?;
-    let providers: Vec<ProviderDefault> = sqlx::query_as("SELECT p.id,p.version,p.display_name,p.npi,p.specialty FROM practice_providers p JOIN browser_users u ON u.tenant_id=p.tenant_id AND u.id=p.id WHERE p.tenant_id=$1 AND p.active AND NOT u.disabled AND u.role IN ('owner','clinician') ORDER BY p.display_name,p.id LIMIT 100")
-        .bind(actor.tenant_id).fetch_all(pool).await?;
+    let providers = provider_choices(pool, actor.tenant_id, None).await?;
     let facilities: Vec<FacilityDefault> = sqlx::query_as("SELECT id,name,address FROM practice_facilities WHERE tenant_id=$1 AND active=true ORDER BY name,id LIMIT 100")
         .bind(actor.tenant_id).fetch_all(pool).await?;
-    let providers: Vec<ProviderDefault> = providers
-        .into_iter()
-        .filter(|p| valid_npi(&p.npi))
-        .collect();
     let organizations = crate::practice_billing::choices(pool, actor.tenant_id).await?;
     let default_provider_id = (providers.len() == 1).then(|| providers[0].id);
     let default_facility_id = (facilities.len() == 1).then(|| facilities[0].id);
@@ -923,6 +1027,38 @@ mod quick;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn claimmd_poll_custom_quota_keeps_foreground_headroom() {
+        assert_eq!(api_budget_limit(None, ApiBudget::Foreground).unwrap(), 100);
+        assert_eq!(api_budget_limit(None, ApiBudget::Background).unwrap(), 80);
+        assert_eq!(
+            api_budget_limit(Some("50"), ApiBudget::Foreground).unwrap(),
+            50
+        );
+        assert_eq!(
+            api_budget_limit(Some("50"), ApiBudget::Background).unwrap(),
+            40
+        );
+        assert_eq!(
+            api_budget_limit(Some("120"), ApiBudget::Foreground).unwrap(),
+            100
+        );
+        assert_eq!(
+            api_budget_limit(Some("0"), ApiBudget::Foreground).unwrap(),
+            1
+        );
+        assert_eq!(
+            api_budget_limit(Some("1"), ApiBudget::Background).unwrap(),
+            0
+        );
+        assert!(api_budget_limit(Some("50 requests"), ApiBudget::Foreground).is_err());
+        for total in 1..=100 {
+            let setting = total.to_string();
+            let background = api_budget_limit(Some(&setting), ApiBudget::Background).unwrap();
+            assert!(background < total && background * 5 <= total * 4);
+        }
+    }
 
     pub(super) fn request() -> EligibilityRequest {
         EligibilityRequest {

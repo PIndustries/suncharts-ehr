@@ -5,7 +5,7 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('nod
 {const createContext=vm.createContext;vm.createContext=(...args)=>{const context=createContext(...args);vm.runInContext(require('fs').readFileSync('web/display-format.js','utf8'),context);return context;};}
 
 const handlers={},node={hidden:false,classList:{add(){},remove(){}}},calls=[];
-const ctx={console,Date,Intl,URLSearchParams,busy:false,me:{role:'owner'},selected:'patient',chartSection:'visits',activeVisit:{id:'visit'},workspace:{appointments:[],billing:{accounts:[{id:'account',version:2,content:{visit_id:'visit'}}],coverages:[{id:'coverage',content:{}}]}},window:{},$:()=>node,document:{addEventListener:(name,handler)=>(handlers[name]??=[]).push(handler),querySelectorAll:()=>[],documentElement:node},notice:message=>calls.push(['notice',message])};
+const ctx={console,Date,Intl,URLSearchParams,busy:false,me:{role:'owner'},selected:'patient',chartSection:'visits',activeVisit:{id:'visit'},workspace:{appointments:[],billing:{accounts:[{id:'account',version:2,content:{visit_id:'visit'}}],coverages:[{id:'coverage',content:{}}]}},window:new EventTarget(),$:()=>node,document:{addEventListener:(name,handler)=>(handlers[name]??=[]).push(handler),querySelectorAll:()=>[],documentElement:node},notice:message=>calls.push(['notice',message])};
 vm.createContext(ctx);
 const app=fs.readFileSync('web/app.js','utf8');
 vm.runInContext(app.slice(app.indexOf('async function run(action)'),app.indexOf('async function enter()')),ctx);
@@ -31,7 +31,7 @@ ctx.api=async(...args)=>{calls.push(['api',...args]);return {applied_cents:2500}
 ctx.selectPatient=async()=>{};ctx.showChartSection=()=>{};ctx.setEncounterSection=()=>{};
 async function click(attribute,value='',parent='#encounter-revenue',extra={}){
  const key=attribute.slice(5).replace(/-([a-z])/g,(_,letter)=>letter.toUpperCase());
- const button={type:'button',dataset:{[key]:value,...extra},hasAttribute:name=>name===attribute,closest:selector=>selector===parent?{}:null};
+ const button={type:'button',dataset:{[key]:value,...extra},hasAttribute:name=>name===attribute,closest:selector=>selector.split(',').includes(parent)?{}:null};
  const event={target:{closest:selector=>selector==='button'||selector===`[${attribute}]`?button:null},preventDefault(){}};
  const start=calls.length;
  // Browser listeners run synchronously in registration order. Awaiting each

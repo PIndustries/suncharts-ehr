@@ -8,6 +8,7 @@ function setup(){
  const fields={provider_id:'provider',billing_organization_id:'org',insured_given_name:'Synthetic',insured_family_name:'Patient',insured_middle_name:'',service_date:'2026-11-11',service_codes:'30',procedure_code:'',provider_name:'',provider_taxonomy:''};
  let pending;
  const c=vm.createContext({console,Date,Intl,URLSearchParams,selected:'patient',me:{role:'owner'},activeVisit:{id:'visit',clinician_id:'provider'},chartSection:'visits',workspace:{patient:{given_name:'Synthetic',family_name:'Patient',birth_date:'1980-01-01'}},crypto:{randomUUID:()=> 'request'},document:{addEventListener:(event,handler)=>handlers[event]=handler},$:id=>id==='claimmd-eligibility-form'?form:editor,billingEditorHost:()=>editor,billingWrite:()=>true,billingCan:()=>true,esc:escape,human:String,date:String,payerName:()=> 'Synthetic payer',selectField:(name,label)=>{fieldLabels.push(label);return '';},billingField:(name,label,value)=>{fieldLabels.push(label);return `<input name="${name}" value="${value}">`;},openBillingEditor:html=>{editor.html=html;},api:async(url,method,body)=>{calls.push({url,method,body});if(url.endsWith('/provider-defaults'))return {providers:[{id:'provider',version:4,display_name:'Synthetic <provider>',npi:'1234567893'}],billing_organizations:[{id:'org',version:7,name:'Synthetic <organization>',tax_id_type:'E',tax_id_last4:'0017'}]};return {items:[]};},run:fn=>{pending=fn();},FormData:class{constructor(){return Object.entries(fields);}},notice:()=>{}});
+ c.localIsoDate=()=>fields.service_date;
  vm.runInContext(source,c);return {c,editor,form,handlers,calls,fields,fieldLabels,getPending:()=>pending};
 }
 const coverage={id:'coverage',content:{status:'active',relationship:'self',payer_id:'payer',member_id:'SYN-MEMBER'}};
@@ -17,6 +18,14 @@ const coverage={id:'coverage',content:{status:'active',relationship:'self',payer
  t.handlers.submit({target:t.form,preventDefault(){},stopImmediatePropagation(){}});await t.getPending();const post=t.calls.find(x=>x.method==='POST');assert.equal(post.body.provider_id,'provider');assert.equal(post.body.provider_version,4);assert.equal(post.body.billing_organization_version,7);assert.equal(post.body.provider_taxid,undefined);
  t.c.activeVisit={id:'other-visit'};t.handlers.submit({target:t.form,preventDefault(){},stopImmediatePropagation(){}});await assert.rejects(t.getPending(),/chart changed while this form was open/);assert.equal(t.calls.filter(x=>x.method==='POST').length,1,'same-patient encounter switch cannot submit stale form');
  const late=setup();let release;late.c.api=async url=>url.endsWith('/provider-defaults')?new Promise(resolve=>release=resolve):{items:[]};const opening=late.c.openClaimmdEligibilityForm(coverage);await new Promise(resolve=>setImmediate(resolve));late.c.activeVisit={id:'other-visit'};release({providers:[],billing_organizations:[]});await opening;assert.equal(late.editor.html,'','late same-patient directory cannot replace encounter');
+ const unmatched=setup();unmatched.c.activeVisit={id:'visit',clinician_id:'unregistered'};
+ const originalUnmatched=unmatched.c.api;unmatched.c.api=async(url,...args)=>{
+  const result=await originalUnmatched(url,...args);
+  if(url.endsWith('/provider-defaults'))result.default_provider_id='provider';
+  return result;
+ };
+ await unmatched.c.openClaimmdEligibilityForm(coverage);
+ assert.doesNotMatch(unmatched.editor.html,/<option value="provider" selected/,'a different clinician is never preselected for this encounter');
  const race=setup();let releaseA;const originalApi=race.c.api;race.c.api=async(url,...args)=>url.includes('/coverage/claimmd-eligibility')?new Promise(resolve=>releaseA=resolve):originalApi(url,...args);
  const oldOpen=race.c.openClaimmdEligibilityForm(coverage);await new Promise(resolve=>setImmediate(resolve));await race.c.openClaimmdEligibilityForm({...coverage,id:'coverage-b'});const newest=race.editor.html;assert.match(newest,/data-coverage="coverage-b"/);releaseA({items:[]});await oldOpen;assert.equal(race.editor.html,newest,'late coverage A cannot overwrite coverage B or its edits');
  const cancel=setup();let releaseCancelled;cancel.editor.firstElementChild={};cancel.c.api=async()=>new Promise(resolve=>releaseCancelled=resolve);const cancelled=cancel.c.openClaimmdEligibilityForm(coverage);cancel.editor.firstElementChild=null;releaseCancelled({items:[]});await cancelled;assert.equal(cancel.editor.html,'','closing same editor invalidates pending request opener');

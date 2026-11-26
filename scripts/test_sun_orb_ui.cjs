@@ -17,10 +17,13 @@ function harness({saved=null,storageFails=false,viewport=true}={}){
   get innerHTML(){return this.markup||'';}
   set innerHTML(value){for(const child of this.children)unregister(child);this.children=[];this.markup=value;for(const match of value.matchAll(/<([a-z][a-z0-9-]*)\b([^>]*)>/g)){const id=match[2].match(/\bid="([^"]+)"/)?.[1];if(!id)continue;const child=new Element(match[1],id);for(const attr of match[2].matchAll(/([a-z][a-z0-9-]*)="([^"]*)"/g))child.setAttribute(attr[1],attr[2]);child.hidden=/\bhidden(?:\s|$)/.test(match[2]);this.append(child);}}
   append(...children){for(const child of children){if(child.parentElement)child.parentElement.children=child.parentElement.children.filter(v=>v!==child);child.parentElement=this;this.children.push(child);register(child);}}
+  prepend(child){this.append(child);this.children.pop();this.children.unshift(child);}
+  contains(child){return this===child||this.children.some(node=>node.contains(child));}
   insertAdjacentElement(where,child){assert.equal(where,'afterend');const parent=this.parentElement;assert.ok(parent);if(child.parentElement)child.parentElement.children=child.parentElement.children.filter(v=>v!==child);child.parentElement=parent;parent.children.splice(parent.children.indexOf(this)+1,0,child);register(child);}
   remove(){if(this.parentElement)this.parentElement.children=this.parentElement.children.filter(v=>v!==this);this.parentElement=null;unregister(this);}
   setAttribute(key,value){this.attributes[key]=String(value);if(key==='class')this.classList.add(...String(value).split(/\s+/));}
   getAttribute(key){return this.attributes[key]??null;}
+  removeAttribute(key){delete this.attributes[key];}
   querySelector(selector){const matches=child=>selector.startsWith('.')?child.classList.contains(selector.slice(1)):child.tagName.toLowerCase()===selector;return this.children.find(matches)||this.children.map(child=>child.querySelector(selector)).find(Boolean)||null;}
   focus(){this.focused=true;}
   scrollIntoView(options){this.scrolled=options;}
@@ -40,7 +43,7 @@ function harness({saved=null,storageFails=false,viewport=true}={}){
  vm.runInContext(source,context);
  nodes.get('sun-close').onclick=()=>{if(context.collapseSunWorkspace()===false)return;calls.close++;panel.hidden=true;};
  const run=code=>vm.runInContext(code,context);
- return {context,nodes,events,windowEvents,viewportEvents,observers,writes,status,calls,storage,window,body,header,panel,privacy,privacyContent,run,
+ return {context,node,nodes,events,windowEvents,viewportEvents,observers,writes,status,calls,storage,window,body,header,panel,privacy,privacyContent,run,
   emit:(type,detail)=>{for(const handler of events[type]||[])handler({detail});},
   flush(){while(microtasks.length)microtasks.shift()();},
   mutate(){for(const observer of observers)if(!observer.disconnected)observer.callback();},
@@ -108,3 +111,33 @@ h.emit('suncharts:sun-navigation',{target:'unknown-action'});assert.equal(h.run(
 // Logout cleanup removes UI, observers and pending navigation effects.
 h=harness();h.run('initSunOrb()');h.emit('suncharts:sun-navigation',{target:'nav-schedule'});h.nodes.get('page-title').classList.add('sun-guided-target');h.run('clearSunOrb()');h.context.me=null;h.flush();h.advance(20000);assert.equal(h.nodes.has('sun-presence'),false);assert.equal(h.nodes.has('sun-open'),false);assert.equal(h.nodes.has('sun-workspace-guide'),false);assert.equal(h.observers[0].disconnected,true);assert.equal(h.nodes.get('page-title').classList.contains('sun-guided-target'),false);assert.equal(h.status.length,0);assert.equal(h.run('sunOrbNavigation'),null);assert.equal(h.run('sunOrbDrag'),null);assert.equal(h.run('sunPanelView'),'chat');assert.doesNotThrow(()=>h.windowEvents.resize[0]());h.run('initSunOrb()');assert.equal(h.nodes.has('sun-presence'),false);h.context.me={role:'patient'};h.run('initSunOrb()');assert.equal(h.nodes.has('sun-presence'),false);h.context.me={role:'owner'};h.run('initSunOrb()');assert.equal(h.nodes.has('sun-presence'),true);assert.equal(h.observers.length,2);
 console.log('PASS Sun orb drag/keyboard position, floating/page presentation, collapsed states and voice stop, bound navigation completion/timeout, session cleanup');
+
+{
+ const phone=harness(),workspace=phone.node('clinical-workspace'),actions=phone.node('topbar-actions');
+ phone.node('frame-user-menu',actions);phone.window.matchMedia=()=>({matches:true});
+ phone.run('initSunOrb()');const presence=phone.nodes.get('sun-presence'),open=phone.nodes.get('sun-open');
+ workspace.classList.add('frame-chart-open');phone.mutate();
+ assert.equal(presence.parentElement,actions);assert.equal(open.getAttribute('aria-describedby'),null);
+ assert.equal(key(open,'ArrowLeft'),false);assert.equal(phone.writes.length,0);
+ presence.getBoundingClientRect=()=>({bottom:44});open.click();
+ assert.equal(phone.panel.style.top,'50px');assert.equal(open.getAttribute('aria-expanded'),'true');
+ phone.panel.onkeydown({key:'Escape',preventDefault(){},stopPropagation(){}});
+ assert.equal(phone.panel.hidden,true);assert.equal(open.focused,true);
+ phone.context.sunListening=true;phone.mutate();assert.equal(phone.nodes.get('sun-orb-stop').hidden,false);
+ workspace.hidden=true;phone.mutate();assert.equal(presence.parentElement,phone.body);
+ assert.equal(phone.nodes.get('sun-open'),open);assert.equal(open.getAttribute('aria-describedby'),'sun-orb-help');
+ workspace.hidden=false;phone.mutate();phone.window.matchMedia=()=>({matches:false});phone.windowEvents.resize[0]();
+ assert.equal(presence.parentElement,phone.body);assert.equal(phone.writes.length,0);
+ console.log('PASS phone chart moves the existing Sun and voice controls into the header and restores chat focus and floating placement');
+}
+
+// The shared frame pins Sun 16px from the lower-right edge, including at narrow widths.
+{const sourceStart=source.indexOf('function placeSunOrb(){'),sourceEnd=source.indexOf('function placeSunChat(){');
+ for(const width of [1150,900,600]){
+  const orb={style:{},offsetWidth:68,offsetHeight:104};
+  const c={$:id=>id==='sun-presence'?orb:id==='frame-patient-tabs'?{}:null,window:{innerWidth:width,innerHeight:800},placeSunChat(){},Math,sunOrbPosition:{x:0,y:0}};
+  vm.runInNewContext(source.slice(sourceStart,sourceEnd)+';placeSunOrb();',c);
+  assert.equal(orb.style.left,`${width-68-16}px`);assert.equal(orb.style.top,'680px');
+ }
+ console.log('PASS frame Sun spacing at 1150, 900 and 600 px');
+}

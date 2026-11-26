@@ -4,8 +4,8 @@ use super::*;
 const ROWS: &str = r#"rows AS (
  SELECT 'copay'::text AS kind,r.id,r.created_at,NULL::uuid AS account_id,(SELECT v.id::text FROM visits v WHERE v.tenant_id=r.tenant_id AND v.appointment_id=r.appointment_id) AS visit_id,r.appointment_id,
  CASE WHEN EXISTS(SELECT 1 FROM billing_copay_voids v WHERE v.tenant_id=r.tenant_id AND v.receipt_id=r.id) THEN 0 ELSE r.amount_cents END AS received_cents,
- coalesce(o.refunded_cents,0) AS refunded_cents,
- greatest(0,r.amount_cents-coalesce((SELECT sum(x.amount_cents) FROM billing_copay_allocations x WHERE x.tenant_id=r.tenant_id AND x.receipt_id=r.id),0)::bigint-coalesce((SELECT sum(f.unapplied_cents) FROM copay_checkout_refund_events f WHERE f.tenant_id=o.tenant_id AND f.operation_id=o.id),0)::bigint) AS unapplied_cents,
+ coalesce(o.refunded_cents,0)+coalesce((SELECT f.amount_cents FROM billing_receipt_cash_refunds f WHERE f.tenant_id=r.tenant_id AND f.receipt_id=r.id),0) AS refunded_cents,
+ greatest(0,r.amount_cents-coalesce((SELECT c.amount_cents FROM billing_receipt_cash_refunds c WHERE c.tenant_id=r.tenant_id AND c.receipt_id=r.id),0)-coalesce((SELECT sum(x.amount_cents) FROM billing_copay_allocations x WHERE x.tenant_id=r.tenant_id AND x.receipt_id=r.id),0)::bigint-coalesce((SELECT sum(f.unapplied_cents) FROM copay_checkout_refund_events f WHERE f.tenant_id=o.tenant_id AND f.operation_id=o.id),0)::bigint) AS unapplied_cents,
  EXISTS(SELECT 1 FROM billing_copay_allocations x WHERE x.tenant_id=r.tenant_id AND x.receipt_id=r.id) AS ledger_recorded,
  r.reference,
  CASE WHEN EXISTS(SELECT 1 FROM billing_copay_voids v WHERE v.tenant_id=r.tenant_id AND v.receipt_id=r.id) THEN 'voided'

@@ -13,7 +13,7 @@ function fixture(){
   let html='';const classes=new Set();
   const n={id,hidden:false,disabled:false,isConnected:true,dataset:{},value:'',textContent:'',
    classList:{add:x=>classes.add(x),remove:x=>classes.delete(x),contains:x=>classes.has(x),toggle(x,on){if(on??!classes.has(x))classes.add(x);else classes.delete(x);}},
-   setAttribute(){},removeAttribute(){},addEventListener(){},replaceChildren(){this.innerHTML='';},querySelector(){return null;},
+   contains(){return false;},setAttribute(){},removeAttribute(){},addEventListener(){},replaceChildren(){this.innerHTML='';},querySelector(){return null;},
    focus(){focused=id;},scrollIntoView(){scrolls++;}};
   Object.defineProperty(n,'innerHTML',{get:()=>html,set(value){html=value;if(id==='visit-editor')parseEditor(value);}});
   nodes.set(id,n);return n;
@@ -35,22 +35,25 @@ function fixture(){
   FormData:class{constructor(form){this.form=form;}*[Symbol.iterator](){yield*Object.entries(this.form.values||{});}},
   document:{getElementById:id=>formIds.has(id)?nodes.get(id)||null:node(id),querySelectorAll:()=>[],addEventListener(type,callback){if(!listeners.has(type))listeners.set(type,[]);listeners.get(type).push(callback);}},
   window:{scrollTo(){},addEventListener(type,callback){windowListeners.set(type,callback);}},
-  fetch(){throw new Error('Unexpected network request');},billingWrite:()=>true,billingCan:()=>true,canDocument:()=>true,calls,
+  fetch(){throw new Error('Unexpected network request');},encounterContentScroll:target=>target.scrollIntoView(),billingWrite:()=>true,billingCan:()=>true,canDocument:()=>true,calls,
   localStorage:{setItem(){throw new Error('PHI must not be persisted');}},sessionStorage:{setItem(){throw new Error('PHI must not be persisted');}}
  });
  const run=code=>vm.runInContext(code,context);run(app);
  run(`me={tenant_id:'tenant-1',user_id:'author',role:'owner'};selected='patient-1';
  workspace={appointments:[{id:'appointment-1',title:'Synthetic visit',starts_at:'2026-11-11T12:00:00Z'}],visits:[],amendments:[],clinical:{items:[],reviews:[]},labs:{orders:[],reports:[],acknowledgments:[]},billing:{accounts:[]}};
  activeVisit={id:'visit-1',patient_id:selected,appointment_id:'appointment-1',clinician_id:'author',status:'signed',version:1,signed_at:'2026-11-11T13:00:00Z',note:{subjective:'Frozen S',objective:'Frozen O',assessment:'Frozen A',plan:'Frozen P'}};
- workspace.visits=[activeVisit];renderVisit(false);`);
+ setEncounterSection=()=>{};alignChartContent=()=>{};workspace.visits=[activeVisit];renderVisit(false);`);
  function type(reason,text){const f=nodes.get('amendment-form');f.values={reason,text};for(const callback of listeners.get('input')||[])callback({target:{closest:selector=>selector==='#amendment-form'?f:null}});return f;}
- function click(action,extra={}){const button={id:'',type:'button',dataset:{action,...extra},closest:()=>null,hasAttribute:()=>false};for(const callback of listeners.get('click')||[])callback({target:{closest:()=>button}});}
+ function click(action,extra={}){const button={id:'',type:'button',dataset:{action,...extra},closest:()=>null,hasAttribute:()=>false};for(const callback of listeners.get('click')||[])callback({target:{closest:selector=>selector==='button'?button:null}});}
  return {run,context,nodes,calls,type,click,windowListeners,focused:()=>focused,scrolls:()=>scrolls};
 }
 async function main(){
  let f=fixture(),html=f.nodes.get('visit-editor').innerHTML;
  const note=html.match(/<form id="note-form"[\s\S]*?<\/form>/)[0];
- assert.equal([...note.matchAll(/readonly/g)].length,4);assert.doesNotMatch(html,/Signed note — read-only|cannot be overwritten/,'no warning block on a signed note');assert.match(html,/data-action="focus-amendment" aria-controls="amendment-form">Edit note</);
+ assert.equal([...note.matchAll(/readonly/g)].length,4);assert.doesNotMatch(html,/Signed note — read-only|cannot be overwritten/,'no warning block on a signed note');assert.match(html,/data-action="focus-amendment" aria-haspopup="dialog" aria-controls="amendment-form">Add correction</);
+ assert.match(html,/<div id="signed-note-record"/);assert.doesNotMatch(html,/View signed note/);
+ assert.match(html,/id="amendment-submit"[^>]*>Sign correction</);
+ assert.match(note,/<dl class="note-read">/);
  assert.doesNotMatch(html.match(/<form id="amendment-form"[\s\S]*?<\/form>/)[0],/readonly/);
  f.click('focus-amendment');assert.equal(f.focused(),'amendment-form:reason');assert.ok(f.scrolls()>0);
  const form=f.type('Correct transcription','Retained <correction>'),sameForm=f.nodes.get('amendment-form');assert.equal(form,sameForm,'typing never replaces the editor or loses focus');

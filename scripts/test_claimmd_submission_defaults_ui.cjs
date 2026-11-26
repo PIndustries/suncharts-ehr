@@ -2,16 +2,16 @@
 'use strict';
 const assert=require('node:assert/strict'),fs=require('node:fs');
 const native=fs.readFileSync('web/claimmd-native.js','utf8');
-assert.match(native,/function claimMdSubmitEditor\(detail\)/);
+assert.match(native,/function claimMdSubmitEditor\(detail,afterQueue\)/);
 assert.match(native,/detail\.submission_defaults\|\|\{\}/);
-assert.match(native,/claimMdSubmitEditor\(detail\)/);
+assert.match(native,/claimMdSubmitEditor\(detail,afterQueue\);/);
 for(const field of ['subscriber_given_name','subscriber_family_name','patient_sex','subscriber_sex','rendering_given_name','rendering_family_name','billing_taxonomy','filing_indicator'])assert.match(native,new RegExp(field));
 for(const address of ['billing_address','subscriber_address','patient_address','payer_address'])assert.match(native,new RegExp(address));
 assert.match(native,/Check these details before sending/);
 assert.match(native,/fields were filled in from the claim and the chart/);
 assert.match(native,/Save claim file without sending/);
-assert.match(native,/Send claim to Claim\.MD/);
-assert.match(native,/Nothing was sent to Claim\.MD/);
+assert.match(native,/Send claim to the clearinghouse/);
+assert.match(native,/Nothing was sent to the clearinghouse/);
 
 // Rendering the fill-in form: the screen is loaded in a sandbox with stubs that
 // produce real markup, so the form can be inspected as clinic staff see it.
@@ -25,10 +25,10 @@ function render(defaults){
  const selectField=(name,label,options,value)=>`<label>${escape(label)}<select name="${name}">${options.map(option=>`<option value="${escape(option)}" ${option===value?'selected':''}>${escape(option)}</option>`).join('')}</select></label>`;
  const context={console,crypto:{randomUUID:()=>'request'},document:{addEventListener:()=>{}},esc:escape,human:String,date:String,
   billingField:ediField,ediField,selectField,claimPane:html=>{pane.html=html;},
-  claimContextSnapshot:()=>null,claimMdConnectionState:{connected:true,active:{usage:'T'}},
+  claimContextSnapshot:()=>null,
   claimsBase:'/api/v1/billing/claims',$:()=>null,api:async()=>({items:[]}),notice:()=>{},run:fn=>{fn();}};
  vm.createContext(context);
- vm.runInContext(native,context);
+ vm.runInContext(native+'\nclaimMdConnectionState={connected:true,active:{usage:"T"}};',context);
  context.claimMdSubmitEditor({claim:{id:'synthetic-claim',control_number:'SYN-CLAIM-1',version:1,status:'ready',
   content:{synthetic_test:true},
   patient_id:'synthetic-patient',
@@ -47,6 +47,12 @@ const isRequired=(html,name)=>/\srequired(?=>|\s)/.test(attributeOf(html,name));
 
 (function filledDefaultsRender(){
  const html=render(filledDefaults);
+ assert.match(html,/<form id="claimmd-submit-form" data-request="request">/);
+ assert.match(html,/name="signature_on_file" type="checkbox" required/);
+ assert.match(html,/name="routine_professional_reviewed" type="checkbox" required/);
+ assert.match(html,/name="synthetic_test_reviewed" type="checkbox" required/);
+ assert.match(html,/name="claimmd_action" value="prepare">Save claim file without sending/);
+ assert.match(html,/name="claimmd_action" value="queue">Send claim to the clearinghouse/);
  assert.equal(attributeOf(html,'billing_taxonomy').includes('value="207Q00000X"'),true,'taxonomy input must be filled');
  assert.match(html,new RegExp('<select name="filing_indicator">.*?<option value="MB" selected>'),'MB must be the chosen insurance type');
  assert.equal(attributeOf(html,'billing_line1').includes('value="123 Synthetic St"'),true,'billing street must be filled');

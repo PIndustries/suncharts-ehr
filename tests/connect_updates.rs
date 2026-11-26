@@ -4,6 +4,7 @@ use axum::{
     body::Body,
     extract::State as ExtractState,
     http::{HeaderMap, HeaderValue, Request, StatusCode},
+    response::{IntoResponse, Response},
     routing::post,
     Json, Router,
 };
@@ -12,7 +13,7 @@ use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use sqlx::{postgres::PgPoolOptions, PgPool};
 use std::{
-    sync::{Arc, OnceLock},
+    sync::{Arc, Mutex, OnceLock},
     time::Duration,
 };
 use suncharts_engine::{
@@ -26,6 +27,23 @@ use tower::ServiceExt;
 use uuid::Uuid;
 const ORIGIN: &str = "http://127.0.0.1:8099";
 static KEY: OnceLock<()> = OnceLock::new();
+#[derive(Clone, Copy)]
+enum IdentityReply {
+    Current,
+    Timeout,
+    Status(StatusCode),
+    Malformed,
+    Incomplete,
+    Inactive,
+    WrongAudience,
+}
+
+#[derive(Clone)]
+struct IdentityService {
+    db: PgPool,
+    reply: Arc<Mutex<IdentityReply>>,
+}
+
 struct Fixture {
     db: PgPool,
     app: Router,
@@ -34,6 +52,7 @@ struct Fixture {
     setting: Uuid,
     installation: Uuid,
     identity_issuer: String,
+    identity_reply: Arc<Mutex<IdentityReply>>,
     headers: HeaderMap,
 }
 impl Fixture {
@@ -76,12 +95,16 @@ impl Fixture {
         let installation = Uuid::new_v4();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let identity_issuer = format!("http://{}", listener.local_addr().unwrap());
+        let identity_reply = Arc::new(Mutex::new(IdentityReply::Current));
         let identity_app = Router::new()
             .route(
                 "/api/v1/managed-ehr/identity/introspect",
                 post(identity_introspect),
             )
-            .with_state(db.clone());
+            .with_state(IdentityService {
+                db: db.clone(),
+                reply: identity_reply.clone(),
+            });
         tokio::spawn(async move { axum::serve(listener, identity_app).await.unwrap() });
         let headers = user_session(&db, tenant, user, "owner", &identity_issuer).await;
         sqlx::query("INSERT INTO connect_service_settings(tenant_id,id,installation_id,enabled,verified,support_available,reminders_available,from_email) VALUES($1,$2,$3,true,true,true,true,'synthetic@example.test')").bind(tenant).bind(setting).bind(installation).execute(&db).await.unwrap();
@@ -108,6 +131,7 @@ impl Fixture {
             setting,
             installation,
             identity_issuer,
+            identity_reply,
             headers,
         }
     }
@@ -156,14 +180,23 @@ impl Fixture {
     }
 }
 async fn identity_introspect(
-    ExtractState(db): ExtractState<PgPool>,
+    ExtractState(service): ExtractState<IdentityService>,
     Json(body): Json<Value>,
-) -> Json<Value> {
+) -> Response {
+    let reply = *service.reply.lock().unwrap();
+    match reply {
+        IdentityReply::Timeout => tokio::time::sleep(Duration::from_secs(6)).await,
+        IdentityReply::Status(status) => return status.into_response(),
+        IdentityReply::Malformed => return "not JSON".into_response(),
+        IdentityReply::Incomplete => return Json(json!({"active":true})).into_response(),
+        IdentityReply::Inactive => return Json(json!({"active":false})).into_response(),
+        IdentityReply::Current | IdentityReply::WrongAudience => {}
+    }
     let Some(grant) = body["jti"]
         .as_str()
         .and_then(|value| Uuid::parse_str(value).ok())
     else {
-        return Json(json!({"active":false}));
+        return Json(json!({"active":false})).into_response();
     };
     let row: Option<(Uuid, String, chrono::DateTime<Utc>)> = sqlx::query_as(
         "SELECT s.tenant_id,u.email,s.expires_at FROM connect_identity_sessions s
@@ -171,16 +204,38 @@ async fn identity_introspect(
          WHERE s.grant_id=$1 AND s.revoked_at IS NULL AND s.expires_at>now() AND NOT u.disabled",
     )
     .bind(grant)
-    .fetch_optional(&db)
+    .fetch_optional(&service.db)
     .await
     .unwrap();
-    Json(match row {
-        Some((tenant, email, expires_at)) => json!({
-            "active":true,"jti":grant,"aud":body["audience"],"kind":"staff",
+    let audience = if matches!(reply, IdentityReply::WrongAudience) {
+        json!("https://other-ehr.example.test")
+    } else {
+        body["audience"].clone()
+    };
+    if let Some((tenant, email, expires_at)) = row {
+        return Json(json!({
+            "active":true,"jti":grant,"aud":audience,"kind":"staff",
             "tenant_id":tenant,"email":email,"exp":expires_at.timestamp()
+        }))
+        .into_response();
+    }
+    let patient: Option<(Uuid, Uuid, chrono::DateTime<Utc>)> = sqlx::query_as(
+        "SELECT s.issuer_tenant_id,a.patient_id,s.expires_at FROM patient_connect_sessions s
+          JOIN patient_portal_accounts a ON a.tenant_id=s.tenant_id AND a.id=s.account_id
+         WHERE s.grant_id=$1 AND s.revoked_at IS NULL AND s.expires_at>now()",
+    )
+    .bind(grant)
+    .fetch_optional(&service.db)
+    .await
+    .unwrap();
+    Json(match patient {
+        Some((tenant, patient, expires_at)) => json!({
+            "active":true,"jti":grant,"aud":audience,"kind":"patient",
+            "tenant_id":tenant,"patient_ehr_puuid":patient,"exp":expires_at.timestamp()
         }),
         None => json!({"active":false}),
     })
+    .into_response()
 }
 async fn user_session(
     db: &PgPool,
@@ -228,6 +283,144 @@ async fn call(
         serde_json::from_slice(&bytes).unwrap_or(Value::Null),
     )
 }
+
+#[tokio::test]
+async fn staff_session_recovers_after_unavailable_identity_check() {
+    let f = Fixture::new().await;
+    let authenticate = || call(&f.app, &f.headers, "GET", "/auth/me", Value::Null);
+    let expected_user = f.user.to_string();
+    let initial = authenticate().await;
+    assert_eq!(initial.0, StatusCode::OK);
+    assert_eq!(initial.1["user_id"], expected_user);
+
+    for failure in [
+        IdentityReply::Timeout,
+        IdentityReply::Status(StatusCode::BAD_GATEWAY),
+        IdentityReply::Status(StatusCode::UNAUTHORIZED),
+        IdentityReply::Malformed,
+        IdentityReply::Incomplete,
+    ] {
+        *f.identity_reply.lock().unwrap() = failure;
+        let (status, body) = authenticate().await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+        assert_eq!(body["error"], "unavailable");
+        assert!(body.get("user_id").is_none());
+        let revoked: bool = sqlx::query_scalar(
+            "SELECT revoked_at IS NOT NULL FROM connect_identity_sessions WHERE user_id=$1",
+        )
+        .bind(f.user)
+        .fetch_one(&f.db)
+        .await
+        .unwrap();
+        assert!(!revoked);
+    }
+
+    let (status, body) = call(
+        &f.app,
+        &f.headers,
+        "POST",
+        "/api/v1/patients",
+        json!({"given_name":"Synthetic", "family_name":"NoWrite", "birth_date":"1990-01-01"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM patients WHERE tenant_id=$1")
+        .bind(f.tenant)
+        .fetch_one(&f.db)
+        .await
+        .unwrap();
+    assert_eq!(count, 0);
+
+    *f.identity_reply.lock().unwrap() = IdentityReply::Current;
+    let recovered = authenticate().await;
+    assert_eq!(recovered.0, StatusCode::OK);
+    assert_eq!(recovered.1["user_id"], expected_user);
+}
+
+#[tokio::test]
+async fn inactive_or_mismatched_identity_check_still_revokes_staff_session() {
+    let f = Fixture::new().await;
+    for failure in [IdentityReply::Inactive, IdentityReply::WrongAudience] {
+        let user = Uuid::new_v4();
+        let headers = user_session(&f.db, f.tenant, user, "owner", &f.identity_issuer).await;
+        let authenticate = || call(&f.app, &headers, "GET", "/auth/me", Value::Null);
+        assert_eq!(authenticate().await.0, StatusCode::OK);
+
+        *f.identity_reply.lock().unwrap() = failure;
+        assert_eq!(authenticate().await.0, StatusCode::UNAUTHORIZED);
+        let revoked: bool = sqlx::query_scalar(
+            "SELECT revoked_at IS NOT NULL FROM connect_identity_sessions WHERE user_id=$1",
+        )
+        .bind(user)
+        .fetch_one(&f.db)
+        .await
+        .unwrap();
+        assert!(revoked);
+
+        *f.identity_reply.lock().unwrap() = IdentityReply::Current;
+        assert_eq!(authenticate().await.0, StatusCode::UNAUTHORIZED);
+    }
+
+    sqlx::query("UPDATE connect_identity_sessions SET expires_at=now() WHERE user_id=$1")
+        .bind(f.user)
+        .execute(&f.db)
+        .await
+        .unwrap();
+    *f.identity_reply.lock().unwrap() = IdentityReply::Status(StatusCode::BAD_GATEWAY);
+    assert_eq!(
+        call(&f.app, &f.headers, "GET", "/auth/me", Value::Null)
+            .await
+            .0,
+        StatusCode::UNAUTHORIZED,
+        "a locally expired session is rejected even during a Connect outage"
+    );
+}
+
+#[tokio::test]
+async fn linked_patient_session_recovers_after_unavailable_identity_check() {
+    let f = Fixture::new().await;
+    let patient = Uuid::new_v4();
+    let account = Uuid::new_v4();
+    let token = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
+    sqlx::query("INSERT INTO patients(tenant_id,id,mrn,given_name,family_name,birth_date) VALUES($1,$2,'synthetic-portal','Synthetic','Patient','1990-01-01')")
+        .bind(f.tenant).bind(patient).execute(&f.db).await.unwrap();
+    sqlx::query("INSERT INTO patient_portal_accounts(tenant_id,id,patient_id,email,status,identity_mode) VALUES($1,$2,$3,'patient@example.test','active','connect')")
+        .bind(f.tenant).bind(account).bind(patient).execute(&f.db).await.unwrap();
+    sqlx::query("INSERT INTO patient_connect_sessions(token_hash,tenant_id,issuer_tenant_id,account_id,account_version,grant_id,issuer,audience,expires_at) VALUES($1,$2,$2,$3,1,$4,$5,$6,now()+interval '1 hour')")
+        .bind(suncharts_engine::oauth::hash(&token)).bind(f.tenant).bind(account).bind(Uuid::new_v4())
+        .bind(&f.identity_issuer).bind(ORIGIN).execute(&f.db).await.unwrap();
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "cookie",
+        HeaderValue::from_str(&format!("sce_portal={token}")).unwrap(),
+    );
+    let authenticate = || {
+        call(
+            &f.app,
+            &headers,
+            "GET",
+            "/api/v1/patient-portal/session",
+            Value::Null,
+        )
+    };
+    let initial = authenticate().await;
+    assert_eq!(initial.0, StatusCode::OK);
+    assert_eq!(initial.1["account_id"], account.to_string());
+
+    *f.identity_reply.lock().unwrap() = IdentityReply::Malformed;
+    let (status, error) = authenticate().await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(error["error"], "unavailable");
+    assert!(error.get("account_id").is_none());
+
+    *f.identity_reply.lock().unwrap() = IdentityReply::Current;
+    assert_eq!(authenticate().await.0, StatusCode::OK);
+    *f.identity_reply.lock().unwrap() = IdentityReply::Inactive;
+    assert_eq!(authenticate().await.0, StatusCode::UNAUTHORIZED);
+    *f.identity_reply.lock().unwrap() = IdentityReply::Current;
+    assert_eq!(authenticate().await.0, StatusCode::UNAUTHORIZED);
+}
+
 fn event(id: i64, kind: &str, resource: Uuid, message: Option<Uuid>) -> Value {
     json!({"id":id,"kind":kind,"resource_id":resource,"message_id":message,"created_at":Utc::now()})
 }

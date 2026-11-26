@@ -34,6 +34,7 @@ function importJobCard(j){
 async function showMigrations(){
  const jobs=await api('/api/v1/migrations');importJobsShown=jobs.items;showTool('Data import');
  $('tools').innerHTML=`<div id="data-import"><p class="eyebrow">BRING YOUR RECORDS WITH YOU</p><h2>Data import</h2><p>Bring in patient records from your previous system. Upload the import file, check the patients it found, then import.</p><form id="migration-form"><label>Import file<input name="package" type="file" accept="application/json,.json" required></label><div class="actions"><button class="primary" type="submit">Upload and check</button></div></form><h3>Your imports</h3>${jobs.items.map(importJobCard).join('')||'<p class="muted">Nothing uploaded yet.</p>'}</div>`;
+ if(typeof practiceAdminFrame==='function')practiceAdminFrame('import');
 }
 async function uploadMigration(form){
  const file=form.elements.package.files[0];if(!file||file.size>8*1024*1024)throw new Error('Choose an import file of up to 8 MB.');
@@ -182,7 +183,7 @@ async function importedContactUse(button){
  const block=$('imported-contact');if(block)block.outerHTML=importedContactBlock();
  notice(`${label} added to the chart.`);
 }
-const importedListKinds={problem:['medical_problem','problems'],medication:['medication','medications']};
+const importedListKinds={problem:['medical_problem','problems'],allergy:['allergy','allergies'],medication:['medication','medications']};
 function importedListPending(kind){
  const source=importedListKinds[kind]?.[0];if(!source||!Array.isArray(workspace.history))return [];
  const reconciled=new Set(workspace.clinical.items.map(e=>e.source_history_id).filter(Boolean)),names=new Set(workspace.clinical.items.filter(e=>e.kind===kind).map(e=>String(e.content.title||'').trim().toLowerCase()));

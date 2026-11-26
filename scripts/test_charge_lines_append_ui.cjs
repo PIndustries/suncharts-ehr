@@ -30,4 +30,33 @@ const g=fixture({readOnly:true});assert.equal(g.context.chargeLinesAppend([{code
 const h=fixture();h.context.chargeBundleApply({name:'Neck visit',lines:[{code_system:'CPT',code:'64616',description:'Synthetic neck injection',modifiers:'RT  LT',units:2}]});
 assert.deepEqual({...JSON.parse(h.inserted[0]).line},{diagnosis_codes:[],code_system:'CPT',code:'64616',description:'Synthetic neck injection',modifiers:'RT,LT',units:2});
 assert.deepEqual(h.notices,['Added Neck visit: 1 line.']);
+// The appointment snapshot only offers missing codes for this patient and encounter.
+{
+ const source=fs.readFileSync('web/patient-revenue.js','utf8');
+ const diagnoses=[{code:'Z00.00'}],lines=[{code_system:'CPT',code:'99213',modifiers:'25,95'}];
+ const type={id:'t1',version:4,name:'Synthetic visit',diagnoses:[{code:'Z00.00'},{code:'M54.2',description:'Synthetic symptom'}],
+  procedures:[{code_system:'CPT',code:'99213',modifiers:'95 25'},{code_system:'HCPCS',code:'A1234',description:'Synthetic service',units:2,modifiers:''}]};
+ const actor={},visit={id:'v1',appointment_id:'a1',status:'in_progress'},appointment={id:'a1',patient_id:'p1',visit_type:type};
+ const dxForm={dataset:{visitId:'v1'},querySelector:()=>true};
+ const chargeForm={dataset:{},elements:{visit_id:{value:'v1'}}},state={};
+ const checked=new Set(['dx-1']),account={status:'draft'};
+ const dialog={open:true,isConnected:true,dataset:{patient:'p1',visit:'v1'},codesAccount:actor,
+  querySelector:sel=>({'#visit-diagnoses-form':dxForm,'#billing-account-form':chargeForm,'[data-codes-editor-state]':state})[sel],
+  querySelectorAll:()=>[...checked].map(value=>({value}))};
+ const c=vm.createContext({me:actor,selected:'p1',chartSection:'visits',activeVisit:visit,workspace:{appointments:[appointment]},
+  encounterChargeAccount:()=>account,chargeLiveRows:()=>lines,chargeRowValue:row=>row,visitDiagnosisFormValues:()=>({diagnoses}),
+  chargeLinesAppend:items=>{lines.push(...items);return items;},visitDiagnosisAppendRow:item=>{diagnoses.push(item);return true;}});
+ vm.runInContext(source.slice(source.indexOf('function encounterCodesDialogCurrent('),source.indexOf('function encounterOpenCodesDialog(')),c);
+ c.encounterTemplateCodesPaint=()=>{};
+ const choices=()=>Array.from(c.encounterTemplateCodeChoices(dialog)?.choices||[],choice=>choice.key);
+ assert.deepEqual(choices(),['dx-1','service-1']);
+ assert.equal(diagnoses.length,1);assert.equal(lines.length,1);
+ c.encounterApplyTemplateCodes(dialog);
+ assert.deepEqual(choices(),['service-1']);assert.equal(lines.length,1,'unchecked service stays a suggestion');
+ checked.add('service-1');c.encounterApplyTemplateCodes(dialog);c.encounterApplyTemplateCodes(dialog);
+ assert.deepEqual(lines.map(l=>l.code),['99213','A1234']);assert.equal(lines[1].units,2);
+ lines.pop();account.status='posted';assert.deepEqual(choices(),[]);
+ account.status='draft';appointment.patient_id='p2';assert.deepEqual(choices(),[]);
+ appointment.patient_id='p1';visit.status='signed';assert.deepEqual(choices(),[]);
+}
 console.log('PASS lines added to the open charge table go through one path shared by bundles and code suggestions');

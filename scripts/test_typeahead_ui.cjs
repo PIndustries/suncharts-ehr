@@ -254,6 +254,8 @@ function workspace(files,extra={}){
   billingWrite:()=>true,
   payerName:id=>(window.billingPayers||[]).find(payer=>payer.id===id)?.content.name||'Unavailable payer',
   showChartSection(){},openBillingEditor(){},enableCoverageSubmit(){},
+  // Mount the chart detail's form as the real sheet does when it opens.
+  chartRecordTemplate:(id,html)=>html,
  };
  // A page supplies a great many names its screens may read without asking. Anything the test has
  // not supplied reads as a do-nothing stand-in rather than throwing, so a screen never fails for
@@ -360,11 +362,11 @@ function coverageScreen(rows=payers()){
   dollars:cents=>cents?String(cents/100):'',sourceNotice:()=>'',
   selectField:(name,label,values,value)=>`<label>${label}<select name="${name}">${values.map(item=>`<option value="${item}">${item}</option>`).join('')}</select></label>`,
   billingField:(name,label,value='')=>`<label>${label}<input name="${name}" value="${esc(value)}"></label>`,
-  showChartSection(){},openBillingEditor(html){this.editorHost.innerHTML=html;},
+  showChartSection(){},chartOpenEditor(){},
   enableCoverageSubmit(){this.submitEnabled=true;},
  });
  // The chart's billing editor pane, which the coverage form is drawn into.
- ctx.editorHost=mount(ctx,'billing-editor');
+ ctx.editorHost=mount(ctx,'insurance-editor');
  // What the chart screen holds after loading the insurance records. `billingPayers` is a
  // top-level `let` in billing.js, so it lives in that file's script scope rather than on the
  // window; the test hands the records over the way the screen's own load step would.
@@ -577,9 +579,12 @@ function boxOf(ctx,id){
  // 3. Prescribing: preferred pharmacy and intended pharmacy.
  // -----------------------------------------------------------------------
  {
+  let directory;
   const ctx=workspace(['prescribing.js'],{
    me:{role:'clinician'},selected:'synthetic-patient',chartSection:'prescribing',activeVisit:{id:'visit-1'},
    workspace:{visits:[],appointments:[]},
+   workspaceResourceAllowed:(resource,action)=>resource==='clinical'&&['create','edit'].includes(action),
+   chartRecordTemplate:(id,html)=>{if(id==='rx-pharmacy')directory=html;return '';},
    rxCanDirectory:()=>true,rxCanPrepare:()=>true,rxCanAuthorize:()=>true,rxPharmacyLabel:()=> '',
   });
   ctx.panel=mount(ctx,'prescribing-panel');
@@ -588,6 +593,9 @@ function boxOf(ctx,id){
   // made, the way the screen's own load step fills it.
   ctx.seedPrescribing('synthetic-patient',{pharmacies:pharmacies(),pharmacies_truncated:false,items:[],preference:{pharmacy_id:'rx-1',version:1},preference_pending:null,preference_draft:null,capabilities:{}});
   ctx.showPrescribing();
+  assert.ok(ctx.panel.querySelector('[data-chart-detail="rx-pharmacy"]'),'the directory opens from Prescribing');
+  const directorySheet=mount(ctx,'synthetic-pharmacy-sheet','div');
+  directorySheet.innerHTML=directory;ctx.typeaheadInit(directorySheet);
   const preferred=boxOf(ctx,'pharmacy-name');
   assert.ok(preferred.input,'the preferred pharmacy step is a typed box');
   assert.equal(preferred.input.getAttribute('data-typeahead-pharmacy'),'optional','staff may clear it again to record no preferred pharmacy');

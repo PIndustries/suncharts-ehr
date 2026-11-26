@@ -653,7 +653,15 @@ async fn checkout_with(
         "hosted"
     };
     let id = Uuid::new_v4();
-    let return_url = format!("{}/?invoice_checkout={id}", origin.trim_end_matches('/'));
+    let return_url = if a.patient_id == Some(patient) {
+        format!(
+            "{}/patient-portal#statement={}",
+            origin.trim_end_matches('/'),
+            p.invoice_id
+        )
+    } else {
+        format!("{}/?invoice_checkout={id}", origin.trim_end_matches('/'))
+    };
     sqlx::query("INSERT INTO invoice_checkout_attempts(tenant_id,id,patient_id,account_id,plan_id,installment_number,setting_id,credential_revision,installation_id,provider_account_id,livemode,amount_cents,request_id,creation_hash,requested_by,reason,return_url,channel,reader_id,saved_card_setup_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)").bind(a.tenant_id).bind(id).bind(patient).bind(p.account_id).bind(p.id).bind(number).bind(binding.setting).bind(binding.revision).bind(binding.installation).bind(provider_account).bind(mode).bind(amount).bind(input.request_id).bind(hash).bind(a.sub).bind(input.reason.trim()).bind(return_url).bind(channel).bind(&input.reader_id).bind(input.saved_card_setup_id).execute(&mut *tx).await?;
     sqlx::query(
         "UPDATE patient_installment_plans SET version=version+1 WHERE tenant_id=$1 AND id=$2",
@@ -1676,3 +1684,93 @@ pub async fn run(pool: PgPool) {
 #[cfg(test)]
 #[path = "installments_tests.rs"]
 mod tests;
+
+// Called only after the authenticated patient agrees to pay a delivered statement.
+pub(crate) async fn portal_statement_checkout(
+    s: &State,
+    a: &Actor,
+    patient: Uuid,
+    invoice_id: Uuid,
+    request_id: Uuid,
+) -> Result<Value> {
+    let pool = db(s)?;
+    let policy = Policy::current();
+    let binding = hosted::current_binding(pool, a.tenant_id, &HttpBroker).await?;
+    let status = HttpBroker
+        .call(pool, &binding, Method::GET, "/status", None)
+        .await?;
+    let (_, live) = hosted::status_account(&binding, &status, policy)?;
+    let mut tx = pool.begin().await?;
+    let prior = sqlx::query_as::<_, Plan>(
+        "SELECT * FROM patient_installment_plans WHERE tenant_id=$1 AND request_id=$2",
+    )
+    .bind(a.tenant_id)
+    .bind(request_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let (plan_id, version, amount) = if let Some(prior) = prior {
+        if prior.patient_id != patient
+            || prior.invoice_id != invoice_id
+            || prior.reason != "Patient agreed to pay the statement online"
+        {
+            return Err(Error::Conflict("This payment request was already used."));
+        }
+        let out = (prior.id, prior.version, prior.total_cents);
+        tx.commit().await?;
+        out
+    } else {
+        let i = invoice(&mut tx, a, patient, invoice_id).await?;
+        let b = balance(&mut tx, a, &i, None, live).await?;
+        if let Some(block) = b.blocked {
+            return Err(Error::Conflict(block));
+        }
+        let amount = b.remaining;
+        let version = b.account.version;
+        tx.commit().await?;
+        let created = create_with(
+            pool,
+            a,
+            patient,
+            Create {
+                invoice_id,
+                livemode: live,
+                installments: vec![Installment {
+                    due_on: Utc::now().date_naive(),
+                    amount_cents: amount,
+                }],
+                request_id,
+                reason: "Patient agreed to pay the statement online".into(),
+                consent: true,
+            },
+            version,
+            policy,
+        )
+        .await?;
+        let plan_id = created["id"]
+            .as_str()
+            .and_then(|s| Uuid::parse_str(s).ok())
+            .ok_or(Error::Invalid("Payment link is unavailable."))?;
+        (plan_id, created["version"].as_i64().unwrap_or(1), amount)
+    };
+    checkout_with(
+        pool,
+        a,
+        patient,
+        plan_id,
+        1,
+        Checkout {
+            request_id,
+            amount_cents: amount,
+            reason: "Patient agreed to pay the statement online".into(),
+            patient_present: true,
+            reader_id: None,
+            saved_card_setup_id: None,
+            after_saved_card: None,
+        },
+        version,
+        s.browser.as_ref().ok_or(Error::NotFound)?.origin(),
+        &HttpBroker,
+        policy,
+    )
+    .await
+}

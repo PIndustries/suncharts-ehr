@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: AGPL-3.0-only */
 /* One small motion system. Every animation here is decoration on top of state that has already
    changed: nothing waits for it, and content is fully visible if it never runs. */
-:root{--motion-fast:120ms;--motion-base:180ms;--motion-slow:260ms;--ease-out:cubic-bezier(.2,.8,.2,1)}
+:root{--motion-fast:120ms;--motion-base:160ms;--motion-slow:260ms;--ease-out:cubic-bezier(.2,.8,.2,1)}
 
 /* Loading placeholders */
 .skeleton-group{display:grid;gap:10px;padding:4px 0}
@@ -19,7 +19,7 @@
 
 /* Content arrives softly */
 .motion-in{animation:motion-in var(--motion-base) var(--ease-out)}
-@keyframes motion-in{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+@keyframes motion-in{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
 
 /* Show what changed */
 .motion-flash{animation:motion-flash calc(var(--motion-slow) * 3) var(--ease-out)}
@@ -49,4 +49,17 @@ button:focus-visible,a:focus-visible{transition:none}
  .skeleton,.motion-in,.motion-flash,.billing-row-mark.is-done.motion-just-done,.toast-region #notice.toast-in{animation:none}
  button,tbody tr{transition:none}
  button:active:not(:disabled){transform:none}
+}
+
+/* Frame surfaces stay still; only the changing content enters. */
+.frame-patient-tab,.frame-chart-navigation button{transition:background-color var(--motion-fast) var(--ease-out),color var(--motion-fast) var(--ease-out),box-shadow var(--motion-fast) var(--ease-out)}
+.frame-user-panel:not([hidden]),details[open][data-menu]>:not(summary),details[open][data-banner-pop]>:not(summary),dialog[open]{animation:motion-surface var(--motion-fast) var(--ease-out);transform-origin:top center}
+@keyframes motion-surface{from{opacity:0;transform:scale(.98)}to{opacity:1;transform:none}}
+.motion-refresh-pending{position:relative}
+.motion-refresh-pending>:not(.motion-retained){visibility:hidden}
+.motion-refresh-pending>.motion-retained{position:absolute;inset:0;pointer-events:none;margin:0}
+@media(prefers-reduced-motion:reduce){
+ :root{--motion-fast:0ms;--motion-base:0ms;--motion-slow:0ms}
+ .motion-in,.frame-user-panel:not([hidden]),details[open][data-menu]>:not(summary),details[open][data-banner-pop]>:not(summary),dialog[open]{animation:none;transform:none}
+ .frame-patient-tab,.frame-chart-navigation button{transition:none}
 }

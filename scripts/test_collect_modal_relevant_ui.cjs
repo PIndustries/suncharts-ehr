@@ -98,7 +98,8 @@ function fixture({copay_cents=2500,copay_due_cents=0,copay_paid_cents=2500,owes_
  nodes['insurance-hosted-copay-reader']=node('div');
  const f={ctx,handlers,nodes,opened,calls,
   panel(){return opened[0].querySelector('[data-collect-holder]');},
-  click(tab){const event={preventDefault(){},target:{closest:sel=>sel==='[data-collect-method]'?tab:null}};for(const h of handlers.click||[])h(event);if(!opened.length)this.openCollectModal();return Promise.resolve(ctx.pending).then(()=>f);},
+  async click(tab){const event={preventDefault(){},target:{closest:sel=>sel==='[data-collect-method]'?tab:null}};
+   await Promise.all((handlers.click||[]).map(handler=>handler(event)));if(!opened.length)this.openCollectModal();return f;},
   openCollectModal(){const done=ctx.openCollectModal();return opened.length?opened[0]:done;},
   summary(){return ctx.encounterRevenueState.data.summary;},
   account(){return ctx.workspace.billing.accounts[0];},

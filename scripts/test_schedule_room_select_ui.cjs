@@ -24,13 +24,13 @@ function form(existing){
  for(const [name,value] of Object.entries(existing)){const i=new El('input');i.name=name;i.value=value;f.appendChild(i);}
  return f;
 }
-async function run(existing,items){
- const f=form(existing);
+async function run(existing,items,edit=false,hasMore=false){
+ const f=form(existing);f.dataset.id=edit?'existing':'';
  const ctx={console,Promise,Set,esc,me:{user_id:'u'},document:{createElement:t=>new El(t),addEventListener(){}},
-  $:id=>id==='schedule-booking'?f:null,api:async url=>{assert.equal(url,'/api/v1/schedule/locations');return {items,has_more:false};}};
+  $:id=>id==='schedule-booking'?f:null,api:async url=>{assert.equal(url,'/api/v1/schedule/locations');return {items,has_more:hasMore};}};
  vm.createContext(ctx);
  const src=fs.readFileSync('web/scheduling.js','utf8');
- vm.runInContext(src.slice(src.indexOf('async function attachScheduleLocations('),src.indexOf('async function appointmentEditor(')),ctx);
+ vm.runInContext(src.slice(src.indexOf('function scheduleSoleFacility('),src.indexOf('async function appointmentEditor(')),ctx);
  await ctx.attachScheduleLocations();
  return {f,facility:f.querySelector('[name="facility"]'),room:f.querySelector('[name="room"]'),hint:f.children.find(c=>c.tagName==='P')};
 }
@@ -49,6 +49,12 @@ const texts=s=>s.options.map(o=>o.text);
   assert.deepEqual(texts(room),['No room','Suite A']);assert.equal(room.value,'','a room from another facility is not kept');
   facility.value='Annex';facility.dispatch('change');
   assert.deepEqual(texts(room),['No rooms set up for this facility']);
+ }
+ {
+  const singleton=[items[0]];
+  assert.equal((await run({facility:'',room:''},singleton)).facility.value,'Main Clinic');
+  assert.equal((await run({facility:'',room:''},singleton,true)).facility.value,'','editing an unassigned appointment preserves its location');
+  assert.equal((await run({facility:'',room:''},singleton,false,true)).facility.value,'','a partial directory cannot determine a sole facility');
  }
  // An existing appointment keeps its location, even one no longer on the list.
  {

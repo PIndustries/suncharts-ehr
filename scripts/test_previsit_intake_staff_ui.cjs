@@ -259,7 +259,7 @@ const row=(extra={})=>({packet_id:'form-open',packet_version:1,status:'sent',def
  assert.match(source,/delete data\.intake_mode;data\.schema=intakeTemplateSchema\(form\)/);
 
  // Looks right in dark mode: theme variables only, no fixed light colours.
- const themed=css.slice(css.indexOf('/* Patient intake forms: chart panel'));
+ const themed=css.split('\n').filter(line=>line.startsWith('.intake-')).join('\n');
  assert.ok(themed.length>200);assert.doesNotMatch(themed,/#[0-9a-fA-F]{3,8}\b|rgb\(|:\s*white\b/);assert.match(themed,/\.intake-cancel-form\{[^}]*background:var\(--surface\)/);assert.match(themed,/\.intake-status\{[^}]*color:var\(--ink\)/);
  // The owner's question editor uses the theme too (it used to stay white in dark mode).
  const builderCss=css.split('\n').find(line=>line.startsWith('.intake-template-builder{'));

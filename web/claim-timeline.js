@@ -8,7 +8,7 @@
 // inside a "technical details" disclosure.
 
 const timelineClaimMdStageLabels=Object.freeze({
- A0:'Received by Claim.MD',A1:'Sent to the insurance company',A2:'Accepted by the insurance company',
+ A0:'Received by the clearinghouse',A1:'Sent to the insurance company',A2:'Accepted by the insurance company',
  A3:'Rejected by the insurance company',A4:'Denied by the insurance company',A5:'Adjudicated by the insurance company',
  A6:'Returned as unprocessable',A7:'Cancelled',A8:'No response received'
 });
@@ -52,16 +52,16 @@ const timelineEraClaimStatusLabels=Object.freeze({
  21:'Claim adjustment, reversal due to prior overpayment or underpayment',22:'Reversal of prior payment'
 });
 const timelineRecordKindLabels=Object.freeze({
- uploaded_file:'Claim file received by Claim.MD',modification:'Change made on the Claim.MD website',
- note:'Note added on the Claim.MD website',archive:'Archived in Claim.MD'
+ uploaded_file:'Claim file received by the clearinghouse',modification:'Change made on the clearinghouse website',
+ note:'Note added on the clearinghouse website',archive:'Archived in the clearinghouse'
 });
 // Fields staff read, per Claim.MD record kind. Anything not listed still appears in
 // the technical disclosure, so nothing received from the provider is lost.
 // Exposed as timelineRecordFields for the Claim.MD activity tables, which use the same order.
 const timelineRecordFields=globalThis.timelineRecordFields=Object.freeze({
- uploaded_file:[['filename','File'],['file_name','File'],['claimid','Claim number on the claim file'],['pcn','Patient control number'],['upload_date','Uploaded on'],['submitter_id','Submitted by'],['batchid','Batch'],['fileid','Claim.MD file ID'],['claim_count','Claims in the file'],['claimmd_id','Claim.MD claim ID'],['status','Status']],
- modification:[['modid','Claim.MD change ID'],['modifydate','Date of the change'],['modtime','Time of the change'],['user','Changed by'],['field','What was changed'],['old_value','Before'],['new_value','After'],['claimmd_id','Claim.MD claim ID'],['claimid','Claim number'],['pcn','Patient control number'],['status','Status']],
- note:[['noteid','Claim.MD note ID'],['notedate','Date of the note'],['notetime','Time of the note'],['user','Written by'],['note','Note'],['claimmd_id','Claim.MD claim ID'],['claimid','Claim number'],['pcn','Patient control number']],
+ uploaded_file:[['filename','File'],['file_name','File'],['claimid','Claim number on the claim file'],['pcn','Patient control number'],['upload_date','Uploaded on'],['submitter_id','Submitted by'],['batchid','Batch'],['fileid','Clearinghouse file ID'],['claim_count','Claims in the file'],['claimmd_id','Clearinghouse claim ID'],['status','Status']],
+ modification:[['modid','Clearinghouse change ID'],['modifydate','Date of the change'],['modtime','Time of the change'],['user','Changed by'],['field','What was changed'],['old_value','Before'],['new_value','After'],['claimmd_id','Clearinghouse claim ID'],['claimid','Claim number'],['pcn','Patient control number'],['status','Status']],
+ note:[['noteid','Clearinghouse note ID'],['notedate','Date of the note'],['notetime','Time of the note'],['user','Written by'],['note','Note'],['claimmd_id','Clearinghouse claim ID'],['claimid','Claim number'],['pcn','Patient control number']],
  archive:[['claim_ids','Claims archived'],['count','Claims archived'],['status','Result']]
 });
 // Outcomes we can name in words. Anything else keeps its own code, because guessing
@@ -82,17 +82,17 @@ function timelineFieldLabel(field){
 // Every provider field staff may see, with the words we show for it. The per-kind
 // lists above decide the order; this table supplies the label.
 const timelineRecordFieldLabels=Object.freeze({
- id:'ID',claim_id:'SunCharts claim',claimmd_id:'Claim.MD claim ID',kind:'Record type',remote_id:'Provider record ID',
+ id:'ID',claim_id:'SunCharts claim',claimmd_id:'Clearinghouse claim ID',kind:'Record type',remote_id:'Provider record ID',
  patient_control_number:'Patient control number',recorded_at:'Recorded at',content:'Provider data',reason:'Reason',actor_id:'Recorded by',
- setting_id:'Claim.MD connection',created_at:'Created',updated_at:'Updated',filename:'File',file_name:'File',fileid:'Claim.MD file ID',
+ setting_id:'Clearinghouse connection',created_at:'Created',updated_at:'Updated',filename:'File',file_name:'File',fileid:'Clearinghouse file ID',
  upload_date:'Uploaded on',uploaded_at:'Uploaded on',submitter_id:'Submitted by',batchid:'Batch',claim_count:'Claims in the file',
- modid:'Claim.MD change ID',modifydate:'Date of the change',modtime:'Time of the change',user:'Person',field:'What was changed',
- old_value:'Before',new_value:'After',noteid:'Claim.MD note ID',notedate:'Date of the note',notetime:'Time of the note',note:'Note',
+ modid:'Clearinghouse change ID',modifydate:'Date of the change',modtime:'Time of the change',user:'Person',field:'What was changed',
+ old_value:'Before',new_value:'After',noteid:'Clearinghouse note ID',notedate:'Date of the note',notetime:'Time of the note',note:'Note',
  claimid:'Claim number',pcn:'Patient control number',status:'Status',claim_ids:'Claims archived',count:'Number of claims',
  transmit_date:'Date sent',claim_form:'Claim form',page:'Page',payload_hash:'File fingerprint',original_x12:'Original file contents',
- bill_npi:'Billing NPI',bill_taxid:'Billing tax ID',payerid:'Payer ID',request_id:'Request ID',request:'Request',external_url:'Link at Claim.MD',
- eraid:'Claim.MD ERA ID',era_documents:'ERA evidence',operations:'Sessions started',webhook_events:'Signed events',operations_read_at:'Read at',
- account_number:'Claim.MD account',event_id:'Event ID',batch_id:'Batch ID',payload:'Event contents',received_at:'Received at',
+ bill_npi:'Billing NPI',bill_taxid:'Billing tax ID',payerid:'Payer ID',request_id:'Request ID',request:'Request',external_url:'Link at the clearinghouse',
+ eraid:'Clearinghouse ERA ID',era_documents:'ERA evidence',operations:'Sessions started',webhook_events:'Signed events',operations_read_at:'Read at',
+ account_number:'Clearinghouse account',event_id:'Event ID',batch_id:'Batch ID',payload:'Event contents',received_at:'Received at',
  claimid_type:'Claim number type',usage:'Account mode',label:'Connection',last_test_at:'Last connection check',partner_id:'Clearinghouse connection',
  route_key:'Connection route',partner_version:'Connection version',credential_revision:'Key revision',configured:'Configured',connected:'Connected',
  active:'Active connection',connections:'Connections',provider:'Provider',paused:'Paused',last_poll_at:'Last checked',last_success_at:'Last successful check',
@@ -135,7 +135,7 @@ function timelineRecordRows(record){
  // provider payload in the order that reads best for this kind of record.
  // The record type, its provider ID and the timestamp are already the step heading and
  // its time, so repeating them inside the detail table would be noise.
- const head=timelineProviderRows({claimmd_id:record?.claimmd_id,patient_control_number:record?.patient_control_number},[['claimmd_id','Claim.MD claim ID'],['patient_control_number','Patient control number']]);
+ const head=timelineProviderRows({claimmd_id:record?.claimmd_id,patient_control_number:record?.patient_control_number},[['claimmd_id','Clearinghouse claim ID'],['patient_control_number','Patient control number']]);
  return [...head,...timelineProviderRows(record?.content,timelineRecordFields[kind])];
 }
 // A labelled table of provider data, with the raw record kept behind a disclosure.
@@ -170,7 +170,7 @@ function timelineStamp(value){
 function timelineDate(value){
  const parsed=timestampOf(value);
  if(!parsed)return '';
- return typeof displayDate==='function'?displayDate(parsed):parsed.toISOString().slice(0,10);
+ return typeof displayDate==='function'?displayDate(parsed):localIsoDate(parsed);
 }
 function dayGap(from,to){
  if(!from||!to)return null;
@@ -186,10 +186,10 @@ function timelineClaimMdStatusText(evidence={}){
  // claim for correction and nothing went to the insurer, even when the claim-level status is "A".
  const claimLevel=String(evidence.status||'').toUpperCase(),messageLevel=String(evidence.message?.status||'').toUpperCase();
  const level=messageLevel||claimLevel,isClaimMd=evidence.senderid==='CLMMD',text=String(evidence.message?.message||'');
- const who=isClaimMd?'Claim.MD':(evidence.sender_name||'the insurance company');
+ const who=isClaimMd?'Clearinghouse':(evidence.sender_name||'the insurance company');
  const base={accepted:false,rejected:false,problem:false,received:false,who,message:text};
  if(level==='R'||claimLevel==='R')return{...base,rejected:true};
- if(level==='W')return{...base,problem:true,who:'Claim.MD',next:'Nothing has gone to the insurer. Correct the claim and send it again.'};
+ if(level==='W')return{...base,problem:true,who:'Clearinghouse',next:'Nothing has gone to the insurer. Correct the claim and send it again.'};
  if(level==='A'||claimLevel==='A'){
   if(isClaimMd)return{...base,received:true};
   return{...base,accepted:true};
@@ -228,7 +228,7 @@ function buildClaimTimeline(input={}){
   if(!submission||!['prepared','delivered'].includes(submission.status))continue;
   const delivered=submission.status==='delivered';
   push({key:`submission-${submission.id||steps.length}`,label:delivered?'Sent to the clearinghouse':'Claim file prepared for the clearinghouse',at:submission.created_at,
-   detail:delivered?`File ${submission.interchange_control||'number not reported'}${submission.partner_name?` · ${submission.partner_name}`:''}`:'The claim file exists but Claim.MD has not confirmed receiving it.',
+   detail:delivered?`File ${submission.interchange_control||'number not reported'}${submission.partner_name?` · ${submission.partner_name}`:''}`:'The claim file exists but the clearinghouse has not confirmed receiving it.',
    rows:[timelineFieldRow('interchange_control',submission.interchange_control,'Claim file number'),timelineFieldRow('technical_status',timelineValueText(submission.technical_status),'Format check (999)',submission.technical_status),timelineFieldRow('payer_outcome',timelineValueText(submission.payer_outcome),'Payer response',submission.payer_outcome)].filter(Boolean),
    source:'suncharts'});
  }
@@ -239,24 +239,24 @@ function buildClaimTimeline(input={}){
   const evidence=report.evidence||{},status=timelineClaimMdStatusText(evidence);
   const forwarded=!status.problem&&!status.rejected&&evidence.status==='A'&&evidence.senderid&&evidence.senderid!=='CLMMD';
   let label,detail;
-  if(status.rejected)label=status.who==='Claim.MD'?'Rejected by Claim.MD':`Rejected by ${status.who}`;
+  if(status.rejected)label=status.who==='Clearinghouse'?'Rejected by the clearinghouse':`Rejected by ${status.who}`;
   else if(forwarded)label='Forwarded to the insurance company';
-  else if(status.problem)label='Claim.MD found a problem';
-  else if(status.received)label='Received by Claim.MD';
+  else if(status.problem)label='The clearinghouse found a problem';
+  else if(status.received)label='Received by the clearinghouse';
   else if(status.accepted)label=`Accepted by ${status.who}`;
   else label=`Update from ${status.who}`;
   detail=status.message||'';
   if(status.problem)detail=`${detail}${detail?' ':''}${status.next}`;
   if(forwarded&&evidence.sender_icn)detail=`${detail}${detail?' ':''}Payer claim number ${evidence.sender_icn}.`;
   push({key:`report-${evidence.responseid||report.id}`,label,at:report.received_at,detail,
-   rows:[timelineFieldRow('claimmd_id',evidence.claimmd_id,'Claim.MD claim ID'),timelineFieldRow('fileid',evidence.fileid,'Claim.MD file ID'),timelineFieldRow('senderid',evidence.senderid,'Sent by (code)'),timelineFieldRow('sender_name',evidence.sender_name,'Sent by'),timelineFieldRow('sender_icn',evidence.sender_icn,'Payer claim number'),timelineFieldRow('status',timelineValueText(evidence.status),'Status',evidence.status),timelineFieldRow('response_time',evidence.response_time,'Provider time'),timelineFieldRow('total_charge',evidence.total_charge,'Total charge reported by the provider'),timelineFieldRow('fdos',evidence.fdos,'Date of service reported by the provider')].filter(Boolean),
+   rows:[timelineFieldRow('claimmd_id',evidence.claimmd_id,'Clearinghouse claim ID'),timelineFieldRow('fileid',evidence.fileid,'Clearinghouse file ID'),timelineFieldRow('senderid',evidence.senderid,'Sent by (code)'),timelineFieldRow('sender_name',evidence.sender_name,'Sent by'),timelineFieldRow('sender_icn',evidence.sender_icn,'Payer claim number'),timelineFieldRow('status',timelineValueText(evidence.status),'Status',evidence.status),timelineFieldRow('response_time',evidence.response_time,'Provider time'),timelineFieldRow('total_charge',evidence.total_charge,'Total charge reported by the provider'),timelineFieldRow('fdos',evidence.fdos,'Date of service reported by the provider')].filter(Boolean),
    raw:JSON.stringify(evidence,null,2),source:'claimmd'});
  }
  for(const record of claimMdRecords){
   const content=record.content||{},rows=timelineRecordRows(record);
   const at=content.modifydate||content.notedate||content.upload_date||record.recorded_at;
   const time=content.modtime||content.notetime||'';
-  push({key:`claimmd-${record.kind}-${record.remote_id||record.recorded_at}`,label:timelineRecordKindLabels[record.kind]||`Claim.MD ${String(record.kind||'update').replace(/_/g,' ')}`,
+  push({key:`claimmd-${record.kind}-${record.remote_id||record.recorded_at}`,label:timelineRecordKindLabels[record.kind]||`Clearinghouse ${String(record.kind||'update').replace(/_/g,' ')}`,
    at:`${at||''}${time?`T${time}`:''}`.trim()||at,detail:content.note||content.field||'',rows,raw:JSON.stringify(record.content||{},null,2),source:'claimmd'});
  }
  for(const row of ca277Rows){
@@ -317,7 +317,7 @@ function claimCurrentLine(claim={},context={}){
  const waiting=from=>{const parsed=since(from),days=parsed?dayGap(parsed,now):null;return parsed?`since ${timelineDate(parsed)}${days===null?'':`, ${days} ${days===1?'day':'days'}`}`:'and we are still waiting';};
  if(status==='void')return 'This claim was voided. Nothing further is expected.';
  if(status==='draft')return 'This claim has not been sent yet.';
- if(status==='ready')return 'Ready to send to Claim.MD.';
+ if(status==='ready')return 'Ready to send to the clearinghouse.';
  if(status==='rejected'){
   const rejected=[...(context.tracking?.reports||[])].reverse().find(report=>report?.evidence?.status==='R'||report?.evidence?.message?.status==='R');
   const reason=rejected?.evidence?.message?.message||'';
@@ -333,7 +333,7 @@ function claimCurrentLine(claim={},context={}){
  }
  if(status==='submitted'){
   const sent=[...(context.tracking?.submissions||[])].reverse().find(item=>item?.status==='delivered');
-  return `Waiting on the insurance company ${waiting(sent?.created_at||claim.updated_at)}. Claim.MD has the claim and we have not heard back.`;
+  return `Waiting on the insurance company ${waiting(sent?.created_at||claim.updated_at)}. The clearinghouse has the claim and we have not heard back.`;
  }
  return `Current status: ${typeof displayStatus==='function'?displayStatus(status):status}.`;
 }
@@ -348,20 +348,31 @@ function claimTimelineMarkup(timeline){
    ${step.raw?timelineTechnical([step.raw]):''}
   </li>`).join('');
  const ids=[timeline.identifiers.payerControlNumber?`<span class="claim-timeline-id"><code class="claim-control">${esc(timeline.identifiers.payerControlNumber)}</code><small>Payer claim number</small></span>`:'',
-  timeline.identifiers.claimMdClaimId?`<span class="claim-timeline-id"><code class="claim-control">${esc(timeline.identifiers.claimMdClaimId)}</code><small>Claim.MD claim ID</small></span>`:''].join('');
+  timeline.identifiers.claimMdClaimId?`<span class="claim-timeline-id"><code class="claim-control">${esc(timeline.identifiers.claimMdClaimId)}</code><small>Clearinghouse claim ID</small></span>`:''].join('');
  return `<section class="claim-timeline" aria-label="What happened to this claim"><div class="section-head"><div><p class="eyebrow">WHAT HAPPENED</p><h3>${esc(timeline.current)}</h3>${ids?`<div class="claim-timeline-ids">${ids}</div>`:''}</div></div><ol class="claim-timeline-steps">${rows}</ol><p class="muted">Each step is in the words the insurer or the clearinghouse used. Nothing here changes the claim or the balance.</p></section>`;
 }
 // Data the claim screen does not already hold, fetched through existing endpoints
 // and remembered for this page so opening a claim twice does not call twice.
 const claimTimelineCache=new Map();
-function claimTimelineCacheKey(claim){return `${claim?.id||''}:${claim?.control_number||''}:${claim?.payer_control_number||''}`;}
-async function loadClaimTimelineExtras(claim,options={}){
- const apiCall=options.api||function(){return api.apply(null,arguments);};
- const key=claimTimelineCacheKey(claim);
+let claimTimelineIdentity;
+function invalidateClaimTimeline(id){for(const key of claimTimelineCache.keys())if(key.startsWith(`${id}:`))claimTimelineCache.delete(key);}
+function loadClaimTimelineExtras(claim,options={}){
+ const identity=typeof me==='undefined'?null:me;
+ if(claimTimelineIdentity!==identity){claimTimelineCache.clear();claimTimelineIdentity=identity;}
+ const active=options.connection!==undefined?options.connection:typeof claimMdConnectionState==='undefined'?null:claimMdConnectionState?.active;
+ const key=[claim?.id,claim?.patient_id,claim?.account_id,claim?.version,claim?.control_number,claim?.payer_control_number,active?.id].join(':');
  if(options.refresh!==true&&claimTimelineCache.has(key))return claimTimelineCache.get(key);
+ const read=fetchClaimTimelineExtras(claim,options,active);
+ claimTimelineCache.set(key,read);
+ const forget=()=>{if(claimTimelineCache.get(key)===read)claimTimelineCache.delete(key);};
+ read.then(extras=>{if(extras.errors.length)forget();},forget);
+ return read;
+}
+async function fetchClaimTimelineExtras(claim,options,active){
+ const apiCall=options.api||function(){return api.apply(null,arguments);};
  const extras={claimMdRecords:[],ca277Rows:[],ca277Read:false,era:null,postedAtRead:false,errors:[],invoices:[]};
  const report=message=>{if(!extras.errors.includes(message))extras.errors.push(message);};
- const active=options.connection!==undefined?options.connection:claimMdConnectionState?.active;
+
  const jobs=[];
  if(active?.id){
   // Claim.MD keeps its notes and website edits in the provider account. Refresh them
@@ -375,8 +386,8 @@ async function loadClaimTimelineExtras(claim,options={}){
    }
    const data=await apiCall(`/api/v1/billing/claimmd/${active.id}/operations`);
    extras.claimMdRecords=(data.records||[]).filter(record=>['modification','note','archive','uploaded_file'].includes(record.kind)&&claimMdRecordBelongsToClaim(record,claim));
-   if(!refreshed)report('Claim.MD notes and changes are shown as of the last successful refresh.');
-  })().catch(()=>report('Claim.MD notes and changes could not be loaded.')));
+   if(!refreshed)report('Clearinghouse notes and changes are shown as of the last successful refresh.');
+  })().catch(()=>report('Clearinghouse notes and changes could not be loaded.')));
  }
  jobs.push(apiCall(`/api/v1/patients/${claim.patient_id}/billing/accounts/${claim.account_id}/invoices`)
   .then(data=>{extras.invoices=data.items||[];})
@@ -394,7 +405,6 @@ async function loadClaimTimelineExtras(claim,options={}){
  // Await each piece on its own. Promise.all would reject as soon as one job failed and
  // throw away the results the other jobs had already stored on extras.
  await Promise.all(jobs.map(job=>job.catch(()=>{})));
- claimTimelineCache.set(key,extras);
  return extras;
 }
 // The same matching rule the Claim.MD activity panel uses, so the timeline and that

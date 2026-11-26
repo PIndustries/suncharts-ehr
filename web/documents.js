@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 'use strict';
-const documentDrafts=new Map(),documentStates=new Map();let documentsGeneration=0;
+const documentDrafts=new Map(),documentStates=new Map(),documentPagesLoading=new WeakSet();let documentsGeneration=0;
 function documentsHaveDrafts(){return documentDrafts.size>0||(typeof documentFilesHaveDrafts==='function'&&documentFilesHaveDrafts());}
 function clearDocumentsSession(){if(typeof clearDocumentFilesSession==='function')clearDocumentFilesSession();documentDrafts.clear();documentStates.clear();documentsGeneration++;}
 function documentValues(form){const v=Object.fromEntries(new FormData(form));return {content:{title:v.title,category:v.category,status:v.status||'active',document_date:v.document_date||null,visit_id:v.visit_id||null,notes:v.notes||''},reason:v.reason||''};}
@@ -25,13 +25,20 @@ function showDocuments(){
  panel.hidden=chartSection!=='documents';if(draft&&documentCanEdit({content:draft.values.content}))showDocumentEditor(draft);
 }
 function showDocumentEditor(draft){
- const host=$('document-editor');if(!host)return;const c=draft.values.content,visits=workspace?.visits||[];
+ const host=chartOpenEditor('document-editor','Edit record');if(!host)return;const c=draft.values.content,visits=workspace?.visits||[];
  host.innerHTML=`<form id="document-form" data-patient="${esc(selected)}"><h3>${draft.id?'Edit document metadata':'Upload patient document'}</h3>${draft.current?`<section role="status"><p>Saved metadata changed. Compare your retained edits with the saved record.</p><b>${esc(draft.current.content.title)}</b>${documentSummary(draft.current)}<button type="button" data-document-rebase>Keep edits against version ${draft.current.version}</button></section>`:''}${!draft.id?`<label>Original file<input type="file" id="document-file" accept="application/pdf,image/png,image/jpeg"></label><p role="status">${draft.file?'Retained file: '+esc(draft.file.name)+' · '+esc(draft.file.size)+' bytes':'Choose a PDF, PNG or JPEG, up to 10 MiB.'}</p>`:'<p class="muted">Original file bytes and filename cannot be replaced. Upload a separate document for a new original.</p>'}<div class="form-grid"><label>Title<input name="title" required maxlength="200" value="${esc(c.title)}"></label>${documentSelect('category','Category',me?.role==='front_desk'?registrationDocumentCategories:documentCategories,c.category)}${draft.id?documentSelect('status','Record status',['active','archived','entered_in_error'],c.status):'<input type="hidden" name="status" value="active">'}<label>Document date<input type="date" name="document_date" value="${esc(c.document_date)}"></label><label>Related visit<select name="visit_id"><option value="">No visit link</option>${visits.map(v=>`<option value="${esc(v.id)}" ${v.id===c.visit_id?'selected':''}>${esc(v.id.slice(0,8))} · ${esc(human(v.status))}</option>`).join('')}</select></label></div><label>Notes<textarea name="notes" maxlength="10000">${esc(c.notes)}</textarea></label><label>Reason / source of change<input name="reason" required maxlength="1000" value="${esc(draft.values.reason)}"></label><div class="actions"><button type="submit" ${draft.current?'disabled':''}>${draft.id?'Save metadata':'Upload document'}</button><button type="button" data-document-discard>Discard unsaved document edits</button>${draft.id?'<button type="button" data-document-compare>Compare with saved metadata</button>':''}</div><p class="muted">Your selected file and unsaved edits stay in this tab until you save them.</p></form>`;
  if(typeof enhanceDocumentUpload==='function')enhanceDocumentUpload();
 }
 async function renderDocuments(){
- const patient=selected,account=me,generation=++documentsGeneration;captureDocumentDraft();let panel=$('documents-panel');if(!panel){panel=document.createElement('section');panel.id='documents-panel';panel.className='panel longitudinal';$('chart').insertBefore(panel,$('appointments-panel'));}panel.hidden=chartSection!=='documents';panel.textContent='Loading patient documents…';
- try{const data=await api(`/api/v1/patients/${patient}/documents`);if(selected!==patient||me!==account||generation!==documentsGeneration||$('documents-panel')!==panel)return;documentStates.set(patient,{...documentStates.get(patient),...data,category:'',status:'active'});showDocuments();}catch(error){if(selected===patient&&me===account&&generation===documentsGeneration&&$('documents-panel')===panel)panel.textContent=`Documents unavailable: ${error.message}`;}
+ const patient=selected,account=me,generation=++documentsGeneration;captureDocumentDraft();let panel=$('documents-panel');if(!panel){panel=document.createElement('section');panel.id='documents-panel';panel.className='panel longitudinal';$('chart').insertBefore(panel,$('appointments-panel'));}
+ panel.hidden=typeof documentFilesVisible==='function'?!documentFilesVisible():chartSection!=='documents';
+ if(documentStates.has(patient))showDocuments();else panel.innerHTML=chartLoadingMarkup();
+ try{const data=await api(`/api/v1/patients/${patient}/documents`);if(selected!==patient||me!==account||generation!==documentsGeneration||$('documents-panel')!==panel)return;
+  const previous=documentStates.get(patient),freshIds=new Set(data.items.map(item=>item.id));
+  const items=previous?.paged?[...data.items,...previous.items.filter(item=>!freshIds.has(item.id))]:data.items;
+  documentStates.set(patient,{...previous,...data,items,next_cursor:previous?.paged?previous.next_cursor:data.next_cursor,category:previous?.category??'',status:previous?.status??'active'});
+  showDocuments();
+ }catch(error){if(selected===patient&&me===account&&generation===documentsGeneration&&$('documents-panel')===panel)panel.textContent=`Documents unavailable: ${error.message}`;}
 }
 function documentFileBase64(file){return new Promise((resolve,reject)=>{const reader=new FileReader();reader.onerror=()=>reject(new Error('Could not read the selected file.'));reader.onload=()=>resolve(String(reader.result).split(',')[1]);reader.readAsDataURL(file);});}
 document.addEventListener('input',e=>{if(e.target.closest?.('#document-form'))captureDocumentDraft();});
@@ -46,7 +53,18 @@ document.addEventListener('click',e=>{
   if(b.hasAttribute('data-document-preview')){if(!state.items.some(d=>d.id===b.dataset.documentPreview))return;state.previewId=b.dataset.documentPreview;showDocuments();$('document-preview')?.scrollIntoView({block:'start'});$('document-preview')?.focus({preventScroll:true});return;}
   if(b.hasAttribute('data-document-preview-close')){delete state.previewId;showDocuments();return;}
   if(b.hasAttribute('data-document-revisions')){const id=b.dataset.documentRevisions,host=$('document-revisions-'+id),data=await api(`/api/v1/patients/${patient}/documents/${id}/revisions`);if(me!==account||selected!==patient||$('document-revisions-'+id)!==host)return;host.innerHTML=data.items.map(r=>`<details><summary>Version ${r.version} · ${esc(date(r.created_at))} · ${esc(r.reason)}</summary><p>Recorded by ${esc(r.actor_label||r.actor_id)}</p><b>${esc(r.content.title)}</b><p>${esc(human(r.content.status))} · ${esc(r.content.notes)}</p></details>`).join('')+(data.truncated?'<p>Older revisions are omitted from this view.</p>':'');return;}
-  if(b.hasAttribute('data-document-more')){const data=await api(`/api/v1/patients/${patient}/documents?_after=${encodeURIComponent(state.next_cursor)}`);if(me!==account||selected!==patient||documentStates.get(patient)!==state)return;captureDocumentDraft();const ids=new Set(state.items.map(x=>x.id));state.items.push(...data.items.filter(x=>!ids.has(x.id)));state.next_cursor=data.next_cursor;showDocuments();return;}
+  if(b.hasAttribute('data-document-more')){
+   if(!state.next_cursor||documentPagesLoading.has(state))return;
+   const section=chartSection,visit=typeof activeVisit==='undefined'?null:activeVisit?.id;
+   documentPagesLoading.add(state);
+   let data;
+   try{data=await api(`/api/v1/patients/${patient}/documents?_after=${encodeURIComponent(state.next_cursor)}`);}
+   finally{documentPagesLoading.delete(state);}
+   if(me!==account||selected!==patient||chartSection!==section||(typeof activeVisit==='undefined'?null:activeVisit?.id)!==visit||documentStates.get(patient)!==state)return;
+   captureDocumentDraft();const ids=new Set(state.items.map(x=>x.id));
+   state.items.push(...data.items.filter(x=>!ids.has(x.id)));state.next_cursor=data.next_cursor;state.paged=true;
+   showDocuments();(document.querySelector?.('[data-document-more]')||document.querySelector?.('[name="file_search"]'))?.focus?.({preventScroll:true});return;
+  }
   if(!documentCanEdit())return;
   if(b.hasAttribute('data-document-discard')){if(!await confirmAction('Unsaved document metadata and the retained upload file will be removed.',{title:'Discard document edits?',confirmLabel:'Discard edits',tone:'danger'}))return;if(me!==account||selected!==patient||documentDrafts.get(patient)!==draft)return;documentDrafts.delete(patient);showDocuments();return;}
   if(b.hasAttribute('data-document-rebase')){if(draft?.current){draft.version=draft.current.version;delete draft.current;showDocumentEditor(draft);}return;}

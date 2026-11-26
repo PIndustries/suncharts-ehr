@@ -136,6 +136,29 @@ async fn public_booking_assigns_mrn_intake_and_staff_readiness_with_audited_revi
         .await
         .unwrap();
     assert!(assigned_mrn.starts_with("SC-"));
+    let patient: Uuid = sqlx::query_scalar("SELECT id FROM patients WHERE tenant_id=$1")
+        .bind(fixture.tenant)
+        .fetch_one(&fixture.db)
+        .await
+        .unwrap();
+    let unissued_appointment = Uuid::new_v4();
+    let sent_appointment = Uuid::new_v4();
+    for (appointment, days) in [(unissued_appointment, 1), (sent_appointment, 2)] {
+        let begins = starts + Duration::days(days);
+        sqlx::query("INSERT INTO appointments(tenant_id,id,patient_id,clinician_id,starts_at,ends_at,status) VALUES ($1,$2,$3,$4,$5,$6,'booked')")
+            .bind(fixture.tenant).bind(appointment).bind(patient).bind(fixture.user)
+            .bind(begins).bind(begins + Duration::hours(1)).execute(&fixture.db).await.unwrap();
+    }
+    let (issue_status, issued) = fixture
+        .call(
+            "POST",
+            &format!("/api/v1/appointments/{sent_appointment}/intake-packet"),
+            true,
+            Some(json!({})),
+            None,
+        )
+        .await;
+    assert_eq!(issue_status, StatusCode::CREATED, "{issued}");
     let intake = booking["intake_url"].as_str().unwrap();
     let token = intake.split("#token=").nth(1).unwrap();
     let (packet_status, packet) = fixture
@@ -157,7 +180,17 @@ async fn public_booking_assigns_mrn_intake_and_staff_readiness_with_audited_revi
         .await;
     assert_eq!(ready_status, StatusCode::OK);
     assert_eq!(ready["items"][0]["status"], "submitted");
+    assert_eq!(ready["items"][1]["status"], "not_issued");
+    assert_eq!(ready["items"][2]["status"], "sent");
     let packet_id = ready["items"][0]["packet_id"].as_str().unwrap();
+    let queued_path = "/api/v1/previsit/readiness?status=submitted";
+    let (queued_status, queued) = fixture.call("GET", queued_path, true, None, None).await;
+    assert_eq!(queued_status, StatusCode::OK, "{queued}");
+    assert_eq!(queued["total"], 1);
+    assert_eq!(queued["items"].as_array().unwrap().len(), 1);
+    assert_eq!(queued["items"][0]["packet_id"], packet_id);
+    assert!(queued["items"][0].get("response").is_none());
+    assert!(queued["next_offset"].is_null());
     let (review_status, review) = fixture
         .call(
             "POST",
@@ -169,6 +202,10 @@ async fn public_booking_assigns_mrn_intake_and_staff_readiness_with_audited_revi
         .await;
     assert_eq!(review_status, StatusCode::OK, "{review}");
     assert_eq!(review["status"], "reviewed");
+    let (queued_status, queued) = fixture.call("GET", queued_path, true, None, None).await;
+    assert_eq!(queued_status, StatusCode::OK);
+    assert_eq!(queued["total"], 0);
+    assert_eq!(queued["items"], json!([]));
     let counts:(i64,i64,i64)=sqlx::query_as("SELECT (SELECT count(*) FROM patients WHERE tenant_id=$1),(SELECT count(*) FROM previsit_intake_responses WHERE tenant_id=$1),(SELECT count(*) FROM audit_events WHERE tenant_id=$1 AND action IN('appointment.public_booked','previsit.packet_review'))").bind(fixture.tenant).fetch_one(&fixture.db).await.unwrap();
     assert_eq!(counts, (1, 1, 2));
 }

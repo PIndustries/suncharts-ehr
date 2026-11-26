@@ -279,7 +279,7 @@ async fn edit_partner(
     tx.commit().await?;
     Ok(Json(p))
 }
-fn development_live_claim_allowed(
+pub(crate) fn development_live_claim_allowed(
     environment: Option<&str>,
     usage: &str,
     synthetic_test: bool,
@@ -298,9 +298,46 @@ async fn generate(
     h: HeaderMap,
     Json(v): Json<Generate>,
 ) -> Result<Json<Submission>> {
+    generate_versioned(a, s, id, crate::expected(&h)?, v, false).await
+}
+
+pub(crate) async fn generate_handoff_file(
+    s: &State,
+    a: &Actor,
+    id: Uuid,
+    version: i64,
+    request_id: Uuid,
+    partner: &Partner,
+    details: Details,
+) -> Result<Submission> {
+    Ok(generate_versioned(
+        a.clone(),
+        s.clone(),
+        id,
+        version,
+        Generate {
+            request_id,
+            partner_id: partner.id,
+            partner_version: partner.version,
+            details,
+            reason: "Prepared during authorized encounter claim handoff".into(),
+        },
+        true,
+    )
+    .await?
+    .0)
+}
+
+async fn generate_versioned(
+    a: Actor,
+    s: State,
+    id: Uuid,
+    version: i64,
+    v: Generate,
+    resume: bool,
+) -> Result<Json<Submission>> {
     a.scheduling()?;
     text(&v.reason, 1000)?;
-    let version = crate::expected(&h)?;
     let hash = digest(&(id, &v))?;
     let mut tx = db(&s)?.begin().await?;
     billing::tenant_lock(&mut tx, &a).await?;
@@ -332,6 +369,21 @@ async fn generate(
         serde_json::from_value(p.content.clone()).map_err(|_| Error::Invalid("invalid partner"))?;
     if p.version != v.partner_version || !pc.active {
         return Err(Error::Conflict("review the current active trading partner"));
+    }
+    if resume {
+        // The manual 837P generator may have completed while the encounter was being signed.
+        if let Some(prior) = crate::visit_claim_handoff::evidence(&mut tx, &a, id).await? {
+            if prior["outcome"] == "prepared"
+                && prior["claim_version"] == version
+                && prior["partner_id"] == json!(p.id)
+                && prior["partner_version"] == p.version
+            {
+                let sid: Uuid = serde_json::from_value(prior["submission_id"].clone())
+                    .map_err(|_| Error::Integrity("invalid submission ID"))?;
+                return Ok(Json(submission(&mut tx, &a, sid).await?));
+            }
+            return Err(Error::Conflict("A clearinghouse file or delivery attempt already exists. Refresh the encounter to review its status."));
+        }
     }
     let synthetic_test = c.content["synthetic_test"].as_bool().unwrap_or(false);
     if !development_live_claim_allowed(

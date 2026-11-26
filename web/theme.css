@@ -222,7 +222,7 @@
 :root[data-theme=dark] .login-screen{background:#081811;color:#e7f2ea}
 :root[data-theme=dark] .login-screen .login-card{background:#13281f;color:#e7f2ea;border-color:#355345;box-shadow:0 28px 80px #0006}
 :root[data-theme=dark] :is(.login-screen .login-card h2,.login-screen .login-card label,.clinic-login-brand strong){color:#e7f2ea}
-:root[data-theme=dark] :is(.login-screen .login-card-heading p,.login-connection,.login-secondary,.login-meta,.login-screen .login-card .preview){color:#b2cabc}
+:root[data-theme=dark] :is(.login-screen .login-card-heading p,.login-secondary,.login-meta,.login-screen .login-card .preview){color:#b2cabc}
 :root[data-theme=dark] .login-screen .login-card-heading .eyebrow,:root[data-theme=dark] .login-secondary a{color:#9ddeae}
 :root[data-theme=dark] :is(.login-screen .login-card input,.login-screen .login-card select){background:#0d1f17;color:#edf7f0;border-color:#4e6c5a}
 :root[data-theme=dark] :is(.login-screen .login-card .clinic-login-brand,.login-secondary){border-color:#355345}

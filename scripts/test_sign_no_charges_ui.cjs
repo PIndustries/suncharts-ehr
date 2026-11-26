@@ -12,10 +12,10 @@ function fixture({role='clinician',accounts=[],billingVisible=true,billingAllowe
   function node(id){
     if(nodes.has(id))return nodes.get(id);
     let html='';
-    const n={id,hidden:false,disabled:false,isConnected:true,dataset:{},value:'',textContent:'',className:'',
+    const n={id,hidden:false,disabled:false,isConnected:true,dataset:{},childNodes:[],value:'',textContent:'',className:'',
       classList:{add(){},remove(){},contains:()=>false,toggle(){}},
       setAttribute(){},removeAttribute(){},addEventListener(){},replaceChildren(){this.innerHTML='';},
-      querySelector(){return null;},querySelectorAll(){return [];},focus(){},scrollIntoView(){},append(){}};
+      querySelector(){return null;},querySelectorAll(){return [];},contains(){return false;},focus(){},scrollIntoView(){},append(){}};
     Object.defineProperty(n,'innerHTML',{get:()=>html,set(value){html=value;if(id==='visit-editor')parseEditor(value);else if(id!=='encounter-progress')parseChart(value);}});
     nodes.set(id,n);return n;
   }
@@ -41,15 +41,18 @@ function fixture({role='clinician',accounts=[],billingVisible=true,billingAllowe
     crypto:{randomUUID:()=>'synthetic-request'},location:{search:'',hash:'',pathname:'/'},
     FormData:class{constructor(form){this.form=form;}*[Symbol.iterator](){yield*Object.entries(this.form.values||{});}},
     document:{documentElement:{classList:{add(){},remove(){}}},getElementById:id=>known(id)?node(id):nodes.get(id)||null,querySelectorAll:()=>[],addEventListener(type,callback){if(!listeners.has(type))listeners.set(type,[]);listeners.get(type).push(callback);}},
-    window:{scrollTo(){},addEventListener(){}},fetch(){throw new Error('Unexpected network request');},
+    window:{scrollTo(){},addEventListener(){}},clearTimeout(){},fetch(){throw new Error('Unexpected network request');},
     confirmAction:async(message,options)=>{asked.push({message,options});return true;},
     localStorage:{setItem(){throw new Error('PHI must not be persisted');}},sessionStorage:{setItem(){throw new Error('PHI must not be persisted');}}});
   vm.runInContext(app,context);
+ const noteMarkup=fs.readFileSync('web/visit-note.js','utf8');
+vm.runInContext(noteMarkup.slice(noteMarkup.indexOf('let visitNoteSaveQueue='),noteMarkup.indexOf('const visitNoteSearches=')),context);
   // Signing needs all four note sections filled, and the reminder asks the encounter
   // account whether charges are posted; both live in deferred modules this chart omits.
   vm.runInContext([
     "noteMissingForSign=form=>noteSectionKeys.slice(0,4).filter(key=>!String(form?.elements[key]?.value??'').trim());",
     "refuseVisitNoteSigning=(form,missing)=>{const host=$('note-message');if(host)host.textContent='Fill in '+missing.join(', ')+' before signing.';};",
+    "hasVisitNoteText=form=>noteSectionKeys.some(key=>String(form?.elements[key]?.value??'').trim());",
     "encounterChargeAccount=()=>(workspace?.billing?.accounts||[]).find(a=>a.status!=='void'&&String(a.content?.visit_id||'')===activeVisit?.id)||null;",
   ].join("\n"),context);
   Object.assign(context,{testNodes:nodes,testRequests:requests,testSections:sections,
@@ -60,7 +63,7 @@ function fixture({role='clinician',accounts=[],billingVisible=true,billingAllowe
     if(path==='/api/v1/visits/visit-1/sign'&&method==='POST')return {...activeVisit,status:'signed',version:activeVisit.version+1,signed_at:'2026-11-14T10:00:00Z'};
     throw new Error('Unexpected request '+path);};
     // A chart tab opened on its own: the page parts are defined by app.js, the tab itself is another area.
-    chartSection='visits';
+    chartSection='visits';alignChartContent=()=>{};
     window.__openTab=()=>{chartSection='clinical';testRefresh();};
     window.__closeTab=()=>{chartSection='visits';testRefresh();};
     selectPatient=async(patient,keep)=>{record('selectPatient',keep);};
@@ -78,7 +81,7 @@ function fixture({role='clinician',accounts=[],billingVisible=true,billingAllowe
   const settle=async()=>{for(let i=0;i<8;i++)await new Promise(done=>setImmediate(done));};
   async function click(dataset){
     const button={id:'',type:'button',dataset,closest:()=>null,hasAttribute:()=>false};
-    for(const callback of listeners.get('click')||[])callback({target:{closest:()=>button}});
+    for(const callback of listeners.get('click')||[])callback({target:{closest:selector=>selector==='button'?button:null}});
     await settle();
   }
   // Runs in-sandbox control flow (awaits allowed) without a dynamic import in the vm.
@@ -126,13 +129,13 @@ async function main(){
   assert.match(reminder,/role="status"/,'the reminder is announced but never blocks');
   assert.match(reminder,/No charges are posted for this encounter yet\./);
   assert.equal(reminder.match(/<span>([\s\S]*?)<\/span>/)?.[1],'No charges are posted for this encounter yet.','the reminder is the plain sentence, with no alarm prefix');
-  assert.match(reminder,/data-encounter-section="charges"[^>]*>Open Charges &amp; billing<\/button>/,'the link goes back to the encounter\u2019s charges block');
+  assert.match(reminder,/data-encounter-section="charges"[^>]*>Open Charges &amp; billing<\/button>/,'the link opens Charges & billing');
   assert.doesNotMatch(reminder,/\$|cents|amount/i,'the reminder names no money');
   // Clicking the link uses the real step handler.
   f.sections.length=0;
   await f.click({encounterSection:'charges'});
   assert.deepEqual(f.sections.filter(([kind])=>kind==='section'),[['section','charges']]);
-  console.log('PASS signing on one page stays quiet; away from the encounter a reminder links back to Charges & billing');
+  console.log('PASS signing on one page stays quiet; the reminder in another record area links to Charges & billing');
 
   // The reminder survives chart re-renders for the same visit and reopens with it.
   f.context.renderChart?null:null;
@@ -140,24 +143,19 @@ async function main(){
   await f.settle();
   assert.ok(f.reminder(),'the reminder stays while the signed visit is open');
 
-  // The sign question and the signed notice only name steps this practice actually shows.
+  // Signing the assigned visit skips confirmation. The signed notice only names visible steps.
   async function signNextStepWordings(){
     const cases=[
       {label:'charges and checkout',checkout:true,billingVisible:true,billingAllowed:true,
-        asked:'Signing locks the clinical note. Continue to charges and the encounter summary after signing. Later corrections are preserved as signed amendments.',
-        notice:'Note signed. Next: charges, then the encounter summary.',landed:null},
+        notice:'Note signed. Next: charges, then the encounter summary.'},
       {label:'checkout off',checkout:false,billingVisible:true,billingAllowed:true,
-        asked:'Signing locks the clinical note. Continue to charges after signing. Later corrections are preserved as signed amendments.',
-        notice:'Note signed. Next: charges.',landed:null},
+        notice:'Note signed. Next: charges.'},
       {label:'billing off',checkout:true,billingVisible:false,billingAllowed:true,
-        asked:'Signing locks the clinical note. Continue to the encounter summary after signing. Later corrections are preserved as signed amendments.',
-        notice:'Note signed. Next: the encounter summary.',landed:null},
+        notice:'Note signed. Next: the encounter summary.'},
       {label:'billing not allowed for the role',checkout:true,billingVisible:true,billingAllowed:false,
-        asked:'Signing locks the clinical note. Continue to the encounter summary after signing. Later corrections are preserved as signed amendments.',
-        notice:'Note signed. Next: the encounter summary.',landed:'section:checkout'},
+        notice:'Note signed. Next: the encounter summary.'},
       {label:'both off',checkout:false,billingVisible:false,billingAllowed:true,
-        asked:'Signing locks the clinical note. Later corrections are preserved as signed amendments.',
-        notice:'Note signed.',landed:null},
+        notice:'Note signed.'},
     ];
     for(const testCase of cases){
       const options={billingVisible:testCase.billingVisible,billingAllowed:testCase.billingAllowed};
@@ -165,15 +163,15 @@ async function main(){
       const f=fixture(options);
       await f.click({action:'sign'});
       assert.ok(f.requests.some(r=>r.path==='/api/v1/visits/visit-1/sign'),testCase.label+': signing still works');
-      assert.equal(f.asked[0]?.message,testCase.asked,testCase.label+': the sign question names only the steps shown');
+      assert.equal(f.asked.length,0,testCase.label+': signing your own visit needs no additional confirmation');
       const steps=f.sections.map(([kind,key])=>`${kind}:${key}`);
       const notice=steps.find(step=>step.startsWith('notice:'));
       assert.equal(notice,'notice:'+testCase.notice,testCase.label+': the signed notice names only the steps shown');
       assert.ok(!steps.some(step=>step.startsWith('section:')),testCase.label+': signing leaves staff on the encounter page itself');
-      const named=/encounter summary/i.test(testCase.notice+testCase.asked);
+      const named=/encounter summary/i.test(testCase.notice);
       if(testCase.checkout===false)assert.ok(!named,testCase.label+': checkout is never mentioned');
     }
-    console.log('PASS the sign question and signed notice skip chart areas the practice hid');
+    console.log('PASS signing the assigned visit needs no confirmation, and the signed notice skips hidden areas');
   }
   await signNextStepWordings();
 
@@ -228,8 +226,9 @@ async function main(){
     const f=fixture();
     // The reload after signing replaces the whole chart, so cached nodes are dropped
     // with every read; anything not canned here fails loudly.
-    vm.runInContext(`api=async(path,method='GET')=>{testRequests.push(JSON.parse(JSON.stringify({path,method})));testNodes.clear();
-      if(path==='/api/v1/visits/visit-1/sign'&&method==='POST')return {...activeVisit,status:'signed',version:activeVisit.version+1,signed_at:'2026-11-14T10:00:00Z'};
+    vm.runInContext(`const savedPatientChart=JSON.parse(JSON.stringify(workspace));
+    api=async(path,method='GET')=>{testRequests.push(JSON.parse(JSON.stringify({path,method})));testNodes.clear();
+      if(path==='/api/v1/visits/visit-1/sign'&&method==='POST'){const signed={...activeVisit,status:'signed',version:activeVisit.version+1,signed_at:'2026-11-14T10:00:00Z'};savedPatientChart.visits=savedPatientChart.visits.map(visit=>visit.id===signed.id?signed:visit);return signed;}
       if(path==='/api/v1/billing/payers')return {items:[]};
       const m=method==='GET'&&path.match(/^\\/api\\/v1\\/patients\\/([^/]+)\\/(workspace|history|clinical|orders|billing|demographics)$/);
       if(m){const[,patient,part]=m;
@@ -240,8 +239,8 @@ async function main(){
         if(part==='workspace'){
           // Patient-1 keeps the signed visit-1 and gains a second encounter; patient-2
           // has one encounter of their own.
-          if(patient==='patient-1')return JSON.parse(JSON.stringify({...workspace,visits:[...workspace.visits,{...workspace.visits[0],id:'visit-2',status:'in_progress'}]}));
-          return JSON.parse(JSON.stringify({...workspace,visits:[{...workspace.visits[0],patient_id:patient,id:'visit-9',status:'in_progress'}]}));
+          if(patient==='patient-1')return JSON.parse(JSON.stringify({...savedPatientChart,patient:{id:patient},visits:[savedPatientChart.visits[0],{...savedPatientChart.visits[0],id:'visit-2',status:'in_progress'}]}));
+          return JSON.parse(JSON.stringify({...savedPatientChart,patient:{id:patient},visits:[{...savedPatientChart.visits[0],patient_id:patient,id:'visit-9',status:'in_progress'}]}));
         }
         return {accounts:[],coverages:[],copays:[],entries:[]};
       }

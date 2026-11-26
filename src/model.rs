@@ -37,9 +37,18 @@ pub struct Patient {
     pub birth_date: NaiveDate,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct VisitTypeSelection {
+    pub id: Uuid,
+    pub version: i64,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct NewAppointment {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visit_type: Option<VisitTypeSelection>,
     pub request_id: Option<Uuid>,
     pub source_history_id: Option<Uuid>,
     #[serde(default = "office_visit")]
@@ -69,6 +78,9 @@ fn booking_reason() -> String {
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
 pub struct Appointment {
+    #[sqlx(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub visit_type: Option<Value>,
     pub version: i64,
     pub title: String,
     pub category: String,

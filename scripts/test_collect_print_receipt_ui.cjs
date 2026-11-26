@@ -51,7 +51,7 @@ function harness(opts){
     documentElement:{classList:{add(){},remove(){}}},
     createElement:tag=>tag==='iframe'?frame:messageNode()};
   const ctx={console,Date,Intl,Math,Number,String,JSON,Array,Set,Map,URL,encodeURIComponent,Boolean,Promise,setTimeout,
-    window:{SunChartsDialog:null},
+    window:new EventTarget(),
     esc,money:n=>'$'+(n/100).toFixed(2),cents:Number,date:v=>String(v),
     crypto:{randomUUID:()=>'group-1'},
     document:doc,

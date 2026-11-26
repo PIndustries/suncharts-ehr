@@ -35,7 +35,7 @@ function fixture(){
  nodes.panel=null;
  const claim={id:'claim',patient_id:'patient',account_id:'account',version:1,status:'ready',control_number:'SYN-CLAIM',snapshot:{account:{coverage_snapshot:{}}}};
  const encounterShowsStub=part=>['visit','intake','documentation','charges','checkout'].includes(context.encounterSection)?['charges','note','intake','checkout'].includes(part):false;
- const context=vm.createContext({encounterShowsStub,console,Map,WeakMap,JSON,Date,Error,Array,Object,Boolean,Number,String,RegExp,Math,isNaN,parseInt,parseFloat,WeakSet,document:{addEventListener:(name,fn)=>(handlers[name]??=[]).push(fn)},$:id=>id==='encounter-claims-detail'?host:null,me:{role:'clinician'},selected:'patient',activeVisit:{id:'visit'},chartSection:'visits',encounterSection:'charges',encounterShows:part=>encounterShowsStub(part),workspace:{billing:{accounts:[{id:'account',content:{visit_id:'visit'}}]}},esc:v=>String(v??''),human:String,date:String,billingWrite:()=>true,notice:message=>notices.push(message),run:fn=>context.pending=fn(),api:async path=>{calls.push(path);return typeof response==='function'?response(path):response;},setTimeout:fn=>{const id=++sequence;timers.set(id,fn);return id;},clearTimeout:id=>timers.delete(id)});
+ const context=vm.createContext({encounterShowsStub,console,Map,WeakMap,JSON,Date,Error,Array,Object,Boolean,Number,String,RegExp,Math,isNaN,parseInt,parseFloat,WeakSet,document:{addEventListener:(name,fn)=>(handlers[name]??=[]).push(fn),querySelectorAll:()=>[]},$:id=>id==='encounter-claims-detail'?host:null,me:{role:'clinician'},selected:'patient',activeVisit:{id:'visit'},chartSection:'visits',encounterSection:'charges',encounterShows:part=>encounterShowsStub(part),workspace:{billing:{accounts:[{id:'account',content:{visit_id:'visit'}}]}},esc:v=>String(v??'').replaceAll('<','&lt;').replaceAll('>','&gt;'),human:String,date:String,billingWrite:()=>true,notice:message=>notices.push(message),run:fn=>context.pending=fn(),api:async path=>{calls.push(path);return typeof response==='function'?response(path):response;},setTimeout:fn=>{const id=++sequence;timers.set(id,fn);return id;},clearTimeout:id=>timers.delete(id)});
  vm.runInContext(fs.readFileSync('web/claims.js','utf8'),context);vm.runInContext(fs.readFileSync('web/claimmd-native.js','utf8'),context);context.fixtureClaim=claim;
  vm.runInContext("claimCurrent=fixtureClaim;claimViewContext={kind:'encounter',identity:me,patient:selected,visit:'visit',account:'account',host:$('encounter-claims-detail')};claimMdConnectionState={connected:true,active:{id:'setting'}}",context);
  return {context,nodes,host,claim,handlers,timers,calls,notices,setResponse:value=>response=value,
@@ -46,6 +46,57 @@ function fixture(){
 (async()=>{
  for(const status of ['submitted','rejected']){
   const f=fixture();f.setResponse({claim:{...f.claim,status,version:2},tracking:{}});f.context.startClaimMdTracking('claim');const screen=await f.poll();assert.match(screen,new RegExp('claim-current-status>'+f.context.claimPlainStatus({...f.claim,status}),''),'the one status word follows the answer that came back');assert.match(screen,/SYN-CLAIM · v2/,'the claim version shown is the one that came back');assert.doesNotMatch(screen,/data-claimmd-submit/,'a claim already sent is not offered for sending again');assert.match(screen,/class="claim-progress-now"/,'the progress bar says where the claim is in one line');assert.equal(f.nodes.draft.value,'Unsaved claim details');assert.equal(f.nodes.draft.disabled,false);assert.equal(f.calls.length,1);assert.equal(f.timers.size,1);
+ }
+ {
+  const f=fixture(),open=f.context.claimContextSnapshot(),draft=f.nodes.draft;
+  open.claim=f.claim.id;
+  const query=f.host.querySelector.bind(f.host);
+  f.host.querySelector=selector=>selector==='.billing-account-detail'?{outerHTML:f.host.innerHTML}:query(selector);
+  f.context.claimPane=()=>{throw new Error('Do not replace the claim pane while staff are editing');};
+  f.host.innerHTML=f.host.innerHTML.replace('<div class="claim-lines"','<form id="claim-editor-form"><textarea name="notes">Unsaved claim details</textarea></form><div class="claim-lines"');
+  f.setResponse({claim:{...f.claim,status:'submitted',version:2},tracking:{}});
+  await f.context.claimDetailAutoRefreshLoad();
+  assert.deepEqual(f.calls,['/api/v1/billing/claims/claim']);
+  assert.match(f.host.innerHTML,/data-claim-current-status>Sent/);
+  assert.match(f.host.innerHTML,/SYN-CLAIM · v2/);
+  assert.match(f.host.innerHTML,/Unsaved claim details<\/textarea>/);
+  assert.equal(f.nodes.draft,draft);assert.equal(draft.value,'Unsaved claim details');
+ }
+ // The current hold and its message come from the clearinghouse projection. Reports still
+ // show earlier provider warnings and third-party advisories under their own sender names.
+ {
+  const f=fixture(),claim={...f.claim,status:'submitted',version:2};
+  const tracking={connections:[{}],submissions:[{id:'submission',status:'delivered'}],reports:[
+   {received_at:'2026-11-12',evidence:{senderid:'CLMMD',message:{status:'W',message:'Earlier Claim.MD warning'}}},
+   {received_at:'2026-11-13',evidence:{senderid:'SYN-PAYER',sender_name:'Synthetic Payer',message:{status:'W',message:'Payer advisory only'}}}
+  ]};
+  const active={claim,tracking,claimmd_position:{needs_correction:true,correction:{message:'Procedure <11111> requires a modifier.'}}};
+  f.setResponse(active);f.context.startClaimMdTracking('claim');const held=await f.poll();
+  assert.match(held,/data-claim-current-status>Needs correcting</);
+  assert.match(held,/aria-label="Now: Clearinghouse correction\./);
+  assert.match(held,/Now: Needs correcting<\/b> · Review the Claim\.MD response\./);
+  assert.match(held,/Claim\.MD response<\/b><p>Procedure &lt;11111&gt; requires a modifier\./);
+  assert.match(held,/data-claimmd-review-response>Review status and responses/);
+  assert.match(held,/data-claimmd-check="claim"/);
+  assert.match(held,/data-claim-existing-submission="submission"/);
+  assert.match(held,/\/claim\/packet" download/);
+  assert.doesNotMatch(held,/Waiting for the payer|Nothing to do|data-claimmd-submit|data-claim-fix-resend|send it again/i);
+  assert.match(held,/Warning from Synthetic Payer/);
+  assert.match(held,/Warning from Claim\.MD/);
+
+  const focus=[];
+  const more={open:false},summary={focus:()=>focus.push('focus'),scrollIntoView:()=>focus.push('scroll')};
+  const responses={open:false,closest:()=>more,querySelector:()=>summary};
+  const review={closest:()=>({querySelector:()=>responses})};
+  for(const handler of f.handlers.click)await handler({target:{closest:selector=>selector==='[data-claimmd-review-response]'?review:null},preventDefault(){}});
+  assert.ok(responses.open&&more.open);assert.deepEqual(focus,['focus','scroll']);assert.equal(f.calls.length,1);
+
+  f.setResponse({...active,claim:{...claim,version:3},claimmd_position:{needs_correction:false}});const settled=await f.poll();
+  assert.match(settled,/data-claim-current-status>Sent</);
+  assert.doesNotMatch(settled,/holding this claim|data-claimmd-review-response|Procedure &lt;11111&gt;|send it again/i);
+  assert.match(settled,/Warning from Synthetic Payer/);assert.match(settled,/Earlier Claim\.MD warning/);
+  assert.match(f.context.claimPlainStatus({...claim,status:'rejected'},active),/^Rejected$/);
+  assert.match(f.context.claimPlainStatus({...claim,status:'accepted'},active),/^Needs correcting$/);
  }
  // A claim the clearinghouse has already received must not offer "Send claim" again, whether the
  // delivery came back from the clearinghouse or was recorded by hand outside SunCharts.

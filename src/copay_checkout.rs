@@ -134,8 +134,52 @@ impl Reply {
     pub(crate) fn code(&self) -> &str {
         self.body["error"].as_str().unwrap_or_default()
     }
+    pub(crate) fn confirmed(self) -> Result<Value> {
+        if self.status == 404 {
+            return Err(Error::NotFound);
+        }
+        if !(200..300).contains(&self.status) {
+            return Err(Error::Invalid("payment provider request not confirmed"));
+        }
+        if self.body.is_null() {
+            return Err(Error::Invalid("payment provider response unsupported"));
+        }
+        Ok(self.body)
+    }
 }
 pub(crate) struct HttpBroker;
+impl HttpBroker {
+    // The caller validates the broker origin before passing it here.
+    pub(crate) async fn request(
+        base: &str,
+        installation: Uuid,
+        token: &str,
+        method: Method,
+        path: &str,
+        body: Option<Value>,
+    ) -> Result<Reply> {
+        let mut call = crate::stedi::client()?
+            .request(
+                method,
+                format!("{base}/api/v1/payments/connect/installations/{installation}{path}"),
+            )
+            .bearer_auth(token);
+        if let Some(body) = body {
+            call = call.json(&body);
+        }
+        let response = call
+            .send()
+            .await
+            .map_err(|_| Error::Invalid("payment provider response unavailable"))?;
+        let status = response.status();
+        let bytes = crate::stedi::bytes(response, 131072).await?;
+        // A body that is not JSON (a proxy error page, for example) is carried as null.
+        Ok(Reply {
+            status: status.as_u16(),
+            body: serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        })
+    }
+}
 #[derive(Clone, Copy)]
 pub(crate) struct Binding {
     pub(crate) tenant: Uuid,
@@ -165,17 +209,9 @@ impl Broker for HttpBroker {
         path: &str,
         body: Option<Value>,
     ) -> Result<Value> {
-        let reply = self.reply(pool, binding, method, path, body).await?;
-        if reply.status == 404 {
-            return Err(Error::NotFound);
-        }
-        if !(200..300).contains(&reply.status) {
-            return Err(Error::Invalid("payment provider request not confirmed"));
-        }
-        if reply.body.is_null() {
-            return Err(Error::Invalid("payment provider response unsupported"));
-        }
-        Ok(reply.body)
+        self.reply(pool, binding, method, path, body)
+            .await?
+            .confirmed()
     }
     async fn reply(
         &self,
@@ -189,31 +225,15 @@ impl Broker for HttpBroker {
         if config.installation_id != Some(binding.installation) {
             return Err(Error::Invalid("stored payment installation changed"));
         }
-        let mut call = crate::stedi::client()?
-            .request(
-                method,
-                format!(
-                    "{}/api/v1/payments/connect/installations/{}{}",
-                    crate::payments::broker_base()?,
-                    binding.installation,
-                    path
-                ),
-            )
-            .bearer_auth(config.broker_token.as_deref().ok_or(Error::NotFound)?);
-        if let Some(body) = body {
-            call = call.json(&body);
-        }
-        let response = call
-            .send()
-            .await
-            .map_err(|_| Error::Invalid("payment provider response unavailable"))?;
-        let status = response.status();
-        let bytes = crate::stedi::bytes(response, 131072).await?;
-        // A body that is not JSON (a proxy error page, for example) is carried as null.
-        Ok(Reply {
-            status: status.as_u16(),
-            body: serde_json::from_slice(&bytes).unwrap_or(Value::Null),
-        })
+        Self::request(
+            &crate::payments::broker_base()?,
+            binding.installation,
+            config.broker_token.as_deref().ok_or(Error::NotFound)?,
+            method,
+            path,
+            body,
+        )
+        .await
     }
 }
 #[derive(Clone, sqlx::FromRow)]
@@ -1506,3 +1526,68 @@ pub async fn run(pool: PgPool) {
 #[cfg(test)]
 #[path = "copay_checkout_tests.rs"]
 mod tests;
+
+// Refund commands never post money. Only the original payment's retrieved,
+// account-bound capture/refund evidence can change the ledger.
+pub(crate) async fn refund_receipt(
+    pool: &PgPool,
+    a: &Actor,
+    id: Uuid,
+    request: Uuid,
+    amount: i64,
+    reason: &str,
+) -> Result<()> {
+    refund_receipt_with(
+        pool,
+        a,
+        id,
+        request,
+        amount,
+        reason,
+        &HttpBroker,
+        Policy::current(),
+    )
+    .await
+}
+#[allow(clippy::too_many_arguments)]
+async fn refund_receipt_with(
+    pool: &PgPool,
+    a: &Actor,
+    id: Uuid,
+    request: Uuid,
+    amount: i64,
+    reason: &str,
+    broker: &dyn Broker,
+    policy: Policy,
+) -> Result<()> {
+    let mut tx = pool.begin().await?;
+    let row = load(&mut tx, a.tenant_id, id).await?;
+    tx.commit().await?;
+    if !policy.permits(row.livemode)
+        || row.receipt_id.is_none()
+        || !["paid", "refunded"].contains(&row.status.as_str())
+    {
+        return Err(Error::Conflict(
+            "Refresh the original card payment before requesting a refund.",
+        ));
+    }
+    // Reconcile first: a previous command may have succeeded despite a lost response.
+    process_id_mode(pool, a, id, broker, policy, false).await?;
+    let mut tx = pool.begin().await?;
+    let current = load(&mut tx, a.tenant_id, id).await?;
+    let (baseline,created): (i64,DateTime<Utc>)=sqlx::query_as("SELECT baseline_refunded_cents,created_at FROM billing_receipt_actions WHERE tenant_id=$1 AND request_id=$2 AND receipt_id=$3 AND kind='refund'")
+        .bind(a.tenant_id).bind(request).bind(row.receipt_id).fetch_one(&mut *tx).await?;
+    tx.commit().await?;
+    if current.refunded_cents >= baseline + amount {
+        return Ok(());
+    }
+    if (Utc::now() - created).num_hours() >= 23 {
+        return Err(Error::Conflict("The refund is still unconfirmed. Reconcile it in the payment account before issuing another refund."));
+    }
+    broker.call(pool,&row.binding(),Method::POST,"/refunds",Some(json!({
+        "request_id":request,"payment_request_id":row.id,"payment_intent":row.provider_payment_intent,
+        "amount_cents":amount,"currency":row.currency,"account_id":row.provider_account_id,
+        "livemode":row.livemode,"remote_tenant_id":a.tenant_id,"reason":reason
+    }))).await?;
+    process_id_mode(pool, a, id, broker, policy, false).await
+}

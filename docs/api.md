@@ -446,3 +446,21 @@ and status cannot change through correction; entered-in-error uses the native
 reviewed action. These records do not provide vaccine forecasting, terminology
 validation, inventory, registry enrollment/exchange, evaluation or recommendation
 resources. See [FHIR R4 Immunization](https://hl7.org/fhir/R4/immunization.html).
+
+### Global staff search
+
+`GET /api/v1/search?q=...&limit=5` returns practice-scoped groups with `key`,
+`label`, `items`, `more` and `offset`. Each item includes `id`, `patient_id`,
+`title`, `detail` and `kind`; payment results also identify their receipt or
+ledger source. The authenticated practice is always used. Custom access policies
+filter each source; billing and claims require their respective read permissions.
+OAuth clients need `clinical.read`, `billing.read` and `scheduling.read` together.
+Every search is audited without storing the query text.
+
+Queries need two characters and accept at most 150. Matching ignores case and
+uses field or word prefixes, treating wildcard characters literally. Each group
+returns at most five records. Use `group` with `offset` to page through one group
+(the offset is bounded to 10,000). Search includes native records, rather than
+imported historical source records or clinical note text. Click Search in the
+header or press Command+K / Control+K; arrows select results, Enter opens the
+record, and Escape dismisses the panel. Form patient pickers remain patient-only.

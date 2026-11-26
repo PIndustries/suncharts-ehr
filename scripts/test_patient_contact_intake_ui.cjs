@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 'use strict';
+require('./chart_test_context.cjs');
 const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
-const app=fs.readFileSync('web/app.js','utf8'),previsit=fs.readFileSync('web/previsit.js','utf8'),css=fs.readFileSync('web/style.css','utf8');
+const app=fs.readFileSync('web/app.js','utf8'),previsit=fs.readFileSync('web/previsit.js','utf8'),css=fs.readFileSync('web/frame.css','utf8');
 const extract=(source,start,end)=>{const a=source.indexOf(start),b=source.indexOf(end,a);assert.ok(a>=0&&b>a);return source.slice(a,b);};
 const escape=v=>String(v??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;');
 function fixture(){
@@ -35,7 +36,8 @@ function fixture(){
  f=fixture();c=f.ctx;c.api=async()=>{throw Error('Unavailable');};await c.renderPatientIntakePackets();assert.match(f.nodes['patient-intake-panel'].innerHTML,/Form count is unavailable, not zero/);assert.match(f.nodes['patient-intake-summary'].textContent,/unavailable/);
  // Pagination retains earlier forms, and uses only the returned patient-specific cursor.
  f=fixture();c=f.ctx;c.api=async path=>{f.calls.push([path,'GET']);return {patient_id:'patient-one',items:[{...f.item,packet_id:path.includes('?')?'older':'newer'}],summary:{total:2,submitted:2,reviewed:0},next_cursor:path.includes('?')?null:'newer'};};await c.renderPatientIntakePackets();await c.renderPatientIntakePackets(true);assert.match(f.calls[1][0],/intake-packets\?after=newer$/);assert.match(f.nodes['patient-intake-panel'].innerHTML,/data-patient-intake-packet="newer"/);assert.match(f.nodes['patient-intake-panel'].innerHTML,/data-patient-intake-packet="older"/);
- assert.match(app,/documents:\['documents-panel','patient-intake-panel'\]/);assert.match(app,/Contact &amp; demographics|Contact & demographics/);
- assert.ok(css.lastIndexOf('.chart-context{overflow:visible}')>css.indexOf('overflow:hidden'),'final header override lets the dropdown extend beyond its ancestor');assert.match(css,/\.patient-record-navigation>div\{max-height:min\(65vh,500px\);overflow-y:auto/);assert.match(css,/\.patient-record-navigation>div\{position:static/,'narrow viewports expand the menu in flow');
+ assert.match(app,/documents:\['documents-panel'\]/);assert.match(app,/\$\('patient-intake-panel'\)\.hidden=chartSection!=='documents'/);assert.match(c.chartContactSummary(),/<h2>Contact details<\/h2>/);
+ assert.match(css,/\[data-chart-group-flyout\]\[open\]\{[^}]*position:fixed;[^}]*max-height:calc\(100dvh - 20px\);overflow-y:auto/,'collapsed sidebar flyouts stay within the viewport');
+ assert.match(css,/\.frame-chart-navigation \.frame-chart-select\{display:flex/,'narrow viewports use the in-flow section selector');
  console.log('PASS patient contacts/intake: direct escaped contact summary; retained old completed forms; clinical-only reads; patient/session/host/read-order isolation; safe detail/back; cursor pagination; unclipped keyboard menu');
 })().catch(error=>{console.error(error);process.exitCode=1;});

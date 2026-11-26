@@ -90,3 +90,5 @@
 /* Only a very wide chart area has room for everything on one line. */
 @container (min-width:2000px){.patient-banner{display:flex;align-items:center;gap:4px 14px}.patient-banner-row{display:contents}.patient-banner-who{flex:0 1 auto;order:1}.patient-banner-name{max-width:420px}.patient-banner-bottom>.patient-banner-allergies{max-width:20%}.patient-banner-bottom>*{order:2}.patient-banner-bottom>.patient-banner-visit{margin-left:0}.patient-banner-top>.patient-banner-flags{order:3}.patient-banner-actions{order:4}}
 @media print{.patient-banner{position:static}.patient-banner-actions{display:none}}
+
+.patient-banner-insurance .eligibility-pill{white-space:normal;overflow-wrap:anywhere}

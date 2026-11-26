@@ -8,7 +8,54 @@ use crate::{
     stedi,
 };
 use serde_json::{json, Value};
+use sqlx::PgPool;
+use std::future::Future;
 pub const UPLOAD: &str = "https://svc.claim.md/services/upload/";
+fn retry_after_seconds(value: Option<&str>, now: chrono::DateTime<chrono::Utc>) -> u32 {
+    value
+        .and_then(|value| {
+            value.trim().parse::<u32>().ok().or_else(|| {
+                let date = chrono::DateTime::parse_from_rfc2822(value.trim()).ok()?;
+                Some((date.timestamp() - now.timestamp()).clamp(1, i64::from(u32::MAX)) as u32)
+            })
+        })
+        .unwrap_or(60)
+        .max(1)
+}
+fn poll_http_status(response: &reqwest::Response, failure: &'static str) -> Result<()> {
+    match response.status() {
+        reqwest::StatusCode::OK => Ok(()),
+        reqwest::StatusCode::TOO_MANY_REQUESTS => {
+            Err(Error::ClaimMdRateLimited(retry_after_seconds(
+                response
+                    .headers()
+                    .get(reqwest::header::RETRY_AFTER)
+                    .and_then(|value| value.to_str().ok()),
+                chrono::Utc::now(),
+            )))
+        }
+        _ => Err(Error::Invalid(failure)),
+    }
+}
+pub(crate) enum ApiBudget {
+    Background,
+    Foreground,
+}
+
+pub(crate) async fn paced<T>(
+    pool: &PgPool,
+    route: &Route,
+    budget: ApiBudget,
+    request: impl Future<Output = Result<T>>,
+) -> Result<T> {
+    let hash = crate::oauth::hash(&token(route)?);
+    crate::claimmd_eligibility::take_api_budget(pool, &hash, budget).await?;
+    let result = request.await;
+    if let Err(Error::ClaimMdRateLimited(seconds)) = &result {
+        crate::claimmd_eligibility::pause_api_budget(pool, &hash, *seconds).await?;
+    }
+    result
+}
 pub(crate) fn validate(r: &Route) -> Result<()> {
     if !r.loopback_test && r.endpoint != UPLOAD {
         return Err(Error::Invalid(
@@ -462,9 +509,7 @@ async fn page_request(r: &Route, cursor: &str, claim_id: Option<&str>) -> Result
         .send()
         .await
         .map_err(|_| Error::Invalid("Claim.MD response request failed"))?;
-    if response.status() != 200 {
-        return Err(Error::Invalid("Claim.MD response HTTP failure"));
-    }
+    poll_http_status(&response, "Claim.MD response HTTP failure")?;
     let raw = stedi::bytes(response, 4194304).await?;
     let v: Value =
         serde_json::from_slice(&raw).map_err(|_| Error::Invalid("invalid Claim.MD response"))?;
@@ -587,9 +632,7 @@ async fn era_request(r: &Route, service: &str, fields: Vec<(&str, String)>) -> R
         .send()
         .await
         .map_err(|_| Error::Invalid("Claim.MD ERA request failed"))?;
-    if response.status() != 200 {
-        return Err(Error::Invalid("Claim.MD ERA HTTP failure"));
-    }
+    poll_http_status(&response, "Claim.MD ERA HTTP failure")?;
     let v: Value =
         serde_json::from_slice(&stedi::bytes(response, 4 * crate::era835::MAX_FILE_BYTES).await?)
             .map_err(|_| Error::Invalid("invalid Claim.MD ERA response"))?;
@@ -737,6 +780,23 @@ pub(crate) async fn era_input(r: &Route, remote: &str) -> Result<String> {
 mod tests {
     use super::*;
     use uuid::Uuid;
+
+    #[test]
+    fn claimmd_poll_retry_after_handles_seconds_and_http_dates() {
+        let now = chrono::DateTime::parse_from_rfc3339("2015-10-21T07:26:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        assert_eq!(retry_after_seconds(Some("240"), now), 240);
+        assert_eq!(
+            retry_after_seconds(Some("Wed, 21 Oct 2015 07:28:00 GMT"), now),
+            120
+        );
+        assert_eq!(
+            retry_after_seconds(Some("Wed, 21 Oct 2015 07:24:00 GMT"), now),
+            1
+        );
+        assert_eq!(retry_after_seconds(Some("invalid"), now), 60);
+    }
 
     fn submission() -> Submission {
         let id = Uuid::new_v4();

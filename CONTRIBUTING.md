@@ -21,6 +21,8 @@ done
 for source_file in web/*.js; do node --check "$source_file" || exit 1; done
 ```
 
+Use Node 22.13 or a newer supported Node release and run `npm ci --ignore-scripts` from the repository root before running the browser fixtures.
+
 The three optional SSH tests require a provisioned loopback fixture. See
 `scripts/verify_provider_sftp.py` for its prerequisites. Do not report skipped
 transport tests as successful provider validation.

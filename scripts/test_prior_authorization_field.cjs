@@ -43,7 +43,7 @@ ctx.encounterChargeAccount=()=>({content:{claim_details:{}}});
 assert.equal(vm.runInContext('visitBillingAuthorizationNote',ctx)(),'');
 
 // Once the charges are final (the claim is out), it is shown as text with no input.
-const finished=vm.runInContext('chargeTableFinishedMarkup',ctx)({status:'posted',content:{visit_id:'visit-a',service_date:'2026-11-13',lines:[],claim_details:{prior_authorization_number:'PA-SYN-9'}}});
+const finished=vm.runInContext('chargeTableFinishedMarkup',ctx)({id:'account-a',status:'posted',content:{visit_id:'visit-a',service_date:'2026-11-13',lines:[],claim_details:{prior_authorization_number:'PA-SYN-9'}}});
 assert.match(finished,/Prior authorization number <b>PA-SYN-9<\/b>/);
 assert.doesNotMatch(finished,/<input[^>]*prior_authorization/);
 
@@ -52,8 +52,8 @@ const css=fs.readFileSync('web/visit-billing.css','utf8');
 assert.ok(!/data-billing-part="codes"\][^{]*data-charge-prior-auth[^{]*\{display:none/.test(css));
 // Charges posted, claim not sent: the box stays editable and saves onto the draft claim.
 const posted=claim_=>{
- ctx.encounterRevenueState={data:{summary:{claim:claim_}}};
- return vm.runInContext('chargeTableFinishedMarkup',ctx)({status:'posted',content:{visit_id:'visit-a',service_date:'2026-11-13',lines:[],claim_details:{}}});
+ ctx.encounterRevenueState={data:{summary:{account:{id:'account-a'},claim:claim_}}};
+ return vm.runInContext('chargeTableFinishedMarkup',ctx)({id:'account-a',status:'posted',content:{visit_id:'visit-a',service_date:'2026-11-13',lines:[],claim_details:{}}});
 };
 const draft=posted({id:'claim-1',status:'draft',content:{encounter:{prior_authorization_number:'PA-SYN-1'}}});
 assert.match(draft,/data-prior-auth-edit data-claim="claim-1"/);
@@ -79,23 +79,26 @@ assert.equal(calls.at(-1)[3],4);
 // A claim released since the page was drawn is refused in plain words.
 ctx.api=async()=>({claim:{id:'claim-1',status:'ready',version:5,content:{}}});
 await assert.rejects(vm.runInContext('chargePriorAuthorizationSave',ctx)('claim-1','X'),/already been released/);
-// The Billing summary's Charges card carries the box for a draft claim, with its own Save.
-const {visitSummary}=require('./visit_billing_fixture.cjs');
-const postedAccount={id:'account',status:'posted',version:3,patient_id:'patient',total_cents:28000,content:{visit_id:'visit-a',service_date:'2026-11-13',coverage_id:'cov',lines:[{code:'99213',units:1,amount_cents:28000,diagnosis_codes:['M62.81']}],claim_details:{prior_authorization_number:'PA-SYN-1'}}};
-ctx.workspace.billing.accounts=[postedAccount];ctx.activeVisit={id:'visit-a',appointment_id:'appt-a',status:'signed'};
-ctx.encounterChargeAccount=()=>postedAccount;
-const column=claim_=>vm.runInContext('visitBillingColumn',ctx)(visitSummary({state:'send_claim',claim:claim_}),{canCreate:true,canWrite:true,claimsAllowed:true});
-const cardDraft=column({id:'claim-1',status:'draft',content:{encounter:{prior_authorization_number:'PA-SYN-1'}}});
-assert.match(cardDraft,/data-prior-auth-save/,'the Charges card has the box and its Save for a draft claim');
-assert.match(cardDraft,/Prior authorization PA-SYN-1/,'and the row names the number');
-assert.doesNotMatch(column({id:'claim-1',status:'submitted',content:{}}),/data-prior-auth-save/);
-assert.doesNotMatch(column({id:'claim-1',status:'ready',content:{}}),/data-prior-auth-save/);
-
-// The charge editor for posted charges (a correction) never offers it for change.
-ctx.accountEditor(postedAccount,null,true,{correction:true});
-const editor=nodes['encounter-billing-editor'].innerHTML;
-assert.match(editor,/name="cd_prior_authorization_number"[^>]*readonly/,'read-only in the correction editor');
-assert.match(editor,/Change it from the Charges card/);
-assert.equal(vm.runInContext('encounterClaimDetailsValue',ctx)({elements:new Proxy({},{get:(_,k)=>k==='cd_place_of_service'?{value:'11'}:k==='cd_prior_authorization_number'?{value:'PA-SYN-1'}:String(k).startsWith('cd_')?{value:''}:undefined})}).prior_authorization_number,'PA-SYN-1','the value it carries is the stored one, unchanged');
+const auth=vm.runInContext('chargePriorAuthorizationFinishedMarkup',ctx);
+const account={id:'account-a',status:'posted',content:{visit_id:'visit-a',lines:[],claim_details:{prior_authorization_number:'PA-OLD'}}};
+const displayed={id:'claim-here',status:'draft',content:{encounter:{prior_authorization_number:'PA-HERE'}}};
+ctx.encounterRevenueState={data:{summary:{account:{id:'other-account'},claim:{id:'other-claim',status:'draft',content:{encounter:{prior_authorization_number:'PA-ELSEWHERE'}}}}}};
+assert.doesNotMatch(auth(account),/other-claim|PA-ELSEWHERE|data-prior-auth-edit/);
+assert.match(auth(account,{claim:displayed}),/data-claim="claim-here"/);
+assert.doesNotMatch(auth(account,{claim:{...displayed,content:{}}}),/PA-OLD/,'a cleared claim value stays cleared');
+ctx.workspaceResourceAllowed=(resource,action)=>resource!=='claims'||action!=='edit';
+assert.doesNotMatch(auth(account,{claim:displayed}),/data-prior-auth-edit/);
+delete ctx.workspaceResourceAllowed;
+assert.doesNotMatch(auth(account,{claim:displayed,readOnly:true}),/data-prior-auth-save/);
+ctx.accountEditor(account,null,true,{correction:true});
+assert.match(nodes['encounter-billing-editor'].innerHTML,/name="cd_prior_authorization_number"[^>]*readonly/);
+let readCount=0;
+ctx.api=async()=>{readCount++;return {claim:{...displayed,version:4}};};
+assert.equal(await ctx.chargePriorAuthorizationSave('claim-here','PA-NEW',()=>false),false);
+assert.equal(await ctx.chargePriorAuthorizationSave('claim-other','PA-NEW'),false);
+assert.equal(readCount,2,'switching charts or loading a different claim never writes the requested change');
+const note=vm.runInContext('visitBillingAuthorizationNote',ctx);
+assert.match(note({claim:{content:{encounter:{prior_authorization_number:'PA-UPDATED'}}}}),/Prior authorization PA-UPDATED/,'the summary uses the saved claim number');
+assert.equal(ctx.encounterClaimDetailsValue(els({prior_authorization_number:'PA-SYN-1',place_of_service:'11'})).prior_authorization_number,'PA-SYN-1','a charge correction carries the stored value unchanged');
 console.log('prior authorization field checks ok');
 })().catch(e=>{console.error(e);process.exit(1);});

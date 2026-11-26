@@ -45,7 +45,7 @@ async function main(){
   history:{replaceState(_state,_title,url){const parsed=new URL(url,'https://ehr.invalid');location.pathname=parsed.pathname;location.search=parsed.search;location.hash=parsed.hash;}},
   URL,URLSearchParams,Promise,Map,Set,Date,crypto:{randomUUID:()=> 'request-id'},
   esc:value=>String(value??''),
-  busy:false,me:{role:'owner'},selected:null,activeVisit:null,cursor:null,patients:[],studioView:'overview',
+  busy:false,patientWorkspaceGeneration:0,me:{role:'owner'},selected:null,activeVisit:null,cursor:null,patients:[],studioView:'overview',
   $:id=>nodes[id]||(nodes[id]={hidden:false,classList:{add(){},remove(){},toggle(){return false},contains(){return false}},setAttribute(){},focus(){},replaceChildren(){}}),
   notice(){},closeNavigation(){},setPage(value){pageTitle=value;},captureSupportDrafts(){},showChartSection(){},openEncounterStep(){},canRegisterPatient:()=>true,
   showSchedule:()=>{scheduleCalls++;return new Promise(resolve=>{releaseSchedule=resolve;});},showWorkflowStudio:async()=>{},showAutomationCenter:async()=>{},showIntegrationInbox:async()=>{},
@@ -59,7 +59,7 @@ async function main(){
  context.location.assign=context.locationAssign;
 
  vm.runInContext(between(appSource,"function notice(message, error = false) { $('notice').textContent=message; $('notice').className=`notice${error?' error':''}`; $('notice').hidden=false; if(typeof motionNotice==='function')motionNotice($('notice'),error); }\n",'async function enter()'),context,{filename:'app-run.js'});
- const appClick=between(appSource,"document.addEventListener('click',e=>{", "\ndocument.addEventListener('keydown',e=>");
+ const appClick=between(appSource,"document.addEventListener('click',e=>{", "\nif(typeof document!=='undefined'&&document.addEventListener)document.addEventListener('keydown',e=>");
  vm.runInContext(`document.addEventListener('click',e=>{${appClick}`,context,{filename:'app-click.js'});
  const showToolSource=between(appSource,'function showTool(title) {','\nasync function showConsent()');
  vm.runInContext(`function showTool(title) {${showToolSource}`,context,{filename:'show-tool.js'});

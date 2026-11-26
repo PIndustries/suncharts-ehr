@@ -16,14 +16,25 @@ function fixture(){
  return {run,node,context,events,pending};
 }
  async function main(){
+ let direct=fixture(),submitted=0,highlighted=0;
+ direct.run(`checkoutState.current_avs={version:1};checkoutState.events=[{action:'delivery',avs_version:1}];`);
+ direct.node('checkout-complete-form').checkValidity=()=>true;direct.node('checkout-complete-form').requestSubmit=()=>submitted++;
+ await direct.run('finishVisitEncounter()');assert.equal(submitted,1,'ready encounter submits on first press');
+ const missing={closest:()=>null,setAttribute:()=>highlighted++,scrollIntoView(){},focus(){}};
+ direct.node('checkout-complete-form').checkValidity=()=>false;direct.node('checkout-complete-form').querySelector=()=>missing;
+ direct.context.encounterStepOpen=()=>{throw new Error('Finish must not navigate');};await direct.run('finishVisitEncounter()');assert.equal(highlighted,1);assert.equal(submitted,1);
+ console.log('PASS explicit finish submits immediately when ready and highlights required wrap-up input otherwise');
  let f=fixture();f.run('renderVisitCheckoutContent()');
  let html=f.node('visit-checkout').innerHTML;
  assert.match(html,/data-version="0" data-digest="digest-v1"/);
+ assert.match(html,/<details class="avs-editor" data-inline data-checkout-disclosure="instructions">/,'blank instructions are closed until requested');
+ assert.match(html,/<details data-checkout-snapshot [^>]*><summary>/,'clinical snapshot is available for review');
+ assert.match(html,/<details class="checkout-followups" [^>]*><summary>Follow-up tasks<\/summary>/);
  // One button releases the summary and checks the encounter out; no acknowledgement checkbox.
  assert.match(html,/<button type="submit" class="primary">Release encounter summary<\/button>/);
  assert.doesNotMatch(html,/I reviewed the patient instructions|name="reviewed"|Release after-visit summary/);
  assert.match(html,/data-checkout-discard>Discard instruction edits</);
- assert.match(html,/<h2>Encounter summary and follow-up<\/h2>/);
+ assert.match(html,/<h2>Patient instructions and follow-up<\/h2>/);
  assert.doesNotMatch(html,/id="avs-delivery-form"|id="checkout-complete-form"/);
  // Payment is collected in the encounter's payment block, never duplicated inside checkout.
  assert.doesNotMatch(html,/Account payment links|Separate from appointment copay|Create test payment link|Payment account|renderAccountPaymentPanel/);
@@ -32,15 +43,37 @@ function fixture(){
  assert.match(html,/Follow-up tasks/);assert.match(html,/name="instructions"/);
  console.log('PASS one release-and-checkout button, no acknowledgement, no duplicated charges or payment links');
  f.run(`checkoutState.visit={...activeVisit,status:'in_progress'};renderVisitCheckoutContent()`);
- assert.match(f.node('visit-checkout').innerHTML,/Sign the note before/);assert.doesNotMatch(f.node('visit-checkout').innerHTML,/id="avs-release-form"/);
+ assert.match(f.node('visit-checkout').innerHTML,/Sign the note to release instructions/);assert.doesNotMatch(f.node('visit-checkout').innerHTML,/id="avs-release-form"/);
  for(const role of ['front_desk','read_only']){f.run(`me.role=${JSON.stringify(role)};checkoutState.visit=activeVisit;renderVisitCheckoutContent()`);assert.doesNotMatch(f.node('visit-checkout').innerHTML,/id="avs-release-form"/);}
  console.log('PASS unsigned visits and role-protected AVS release');
  f=fixture();f.run(`checkoutState.current_avs={version:2,content:{instructions:'<script>unsafe()</script>',follow_up_instructions:'Call <clinic>'},snapshot:checkoutState.preview_snapshot,released_at:'2026-10-25T12:00:00Z'};checkoutState.releases=[checkoutState.current_avs];renderVisitCheckoutContent()`);
  html=f.node('visit-checkout').innerHTML;assert.match(html,/&lt;script&gt;unsafe\(\)&lt;\/script&gt;/);assert.doesNotMatch(html,/<script>/);assert.match(html,/data-avs-version="2"/);assert.match(html,/opening the print dialog does not record that the summary was given/);assert.match(html,/does not collect a payment or mark charges paid/);
  f.run(`checkoutState.checkout={completed:true,checked_out_at:'2026-10-25T13:00:00Z'};renderVisitCheckoutContent()`);assert.match(f.node('visit-checkout').innerHTML,/type="submit" disabled>Finish encounter/);
+ assert.match(f.node('visit-checkout').innerHTML,/Encounter finished/);assert.match(f.node('visit-checkout').innerHTML,/data-checkout-next>Next patient/);assert.match(f.node('visit-checkout').innerHTML,/data-checkout-book>Book next visit/);
+ f.context.encounterRevenueState={data:{summary:{patient:{received_cents:18000},claim_handoff:{outcome:'queued'}}}};
+ f.context.encounterStepsModel=()=>({sent:false});f.context.visitHandoffEvidence=s=>s.claim_handoff;f.context.money=n=>'$'+(n/100).toFixed(2);
+ assert.match(f.run('checkoutResultMarkup()'),/claim queued/);assert.doesNotMatch(f.run('checkoutResultMarkup()'),/claim sent/);
+ f.context.encounterRevenueState.data.summary.claim_handoff.outcome='delivered';f.context.encounterStepsModel=()=>({sent:true});
+ assert.match(f.run('checkoutResultMarkup()'),/claim sent/);
+ // Next patient reads today's tenant-scoped schedule and filters the same provider, date and status.
+ const nextFixture=fixture(),nextButton={textContent:'Next patient'};nextFixture.node('visit-checkout').querySelector=()=>nextButton;
+ nextFixture.run(`activeVisit.appointment_id='current';workspace={appointments:[{id:'current',starts_at:new Date(new Date().setHours(8,0,0,0)).toISOString()}],visits:[]};
+ api=async p=>{calls.push(p);const at=hour=>new Date(new Date().setHours(hour,0,0,0)).toISOString();return {appointments:[
+ {id:'wrong-provider',clinician_id:'other',status:'booked',starts_at:at(9)},
+ {id:'cancelled',clinician_id:'clinician-1',status:'cancelled',starts_at:at(9)},
+ {id:'earlier',clinician_id:'clinician-1',status:'booked',starts_at:at(7)},
+ {id:'later',patient_id:'next-patient',clinician_id:'clinician-1',status:'checked_in',starts_at:at(11)},
+ {id:'next',patient_id:'next-patient',clinician_id:'clinician-1',status:'booked',starts_at:at(10)}]};};`);
+ assert.equal((await nextFixture.run('checkoutFindNext()')).id,'next');assert.equal(nextButton.textContent,'Next patient');
+ assert.match(nextFixture.context.calls[0],/clinician_id=clinician-1/);
+ nextFixture.run(`showSchedule=async()=>calls.push('schedule');showClinical=async()=>{};selectPatient=async p=>{selected=p;};showChartSection=s=>calls.push(s);appointmentDetail=async id=>calls.push(id);`);
+ await nextFixture.run('checkoutNextPatient()');assert.equal(nextFixture.run('selected'),'next-patient');assert.equal(nextFixture.context.calls.at(-1),'next');
+ nextFixture.run(`selected='patient-1';checkoutNext={key:null};api=async()=>({appointments:[]});`);
+ await nextFixture.run('checkoutFindNext()');assert.equal(nextButton.textContent,'Schedule');await nextFixture.run('checkoutNextPatient()');assert.equal(nextFixture.context.calls.at(-1),'schedule');
+ console.log('PASS completion result, book-next action, same-provider next patient and Schedule fallback');
  console.log('PASS released summaries escaped and handoff/payment statuses independent');
  f=fixture();f.run(`checkoutDrafts.set(checkoutContext.key,{instructions:'Retained instruction edits',follow_up_instructions:'',version:1,digest:'old-digest'});checkoutState.version=2;renderVisitCheckoutContent()`);
- assert.match(f.node('visit-checkout').innerHTML,/Retained instruction edits/);assert.match(f.node('visit-checkout').innerHTML,/data-version="1" data-digest="old-digest"/);assert.match(f.node('visit-checkout').innerHTML,/data-checkout-rebase/);
+ assert.match(f.node('visit-checkout').innerHTML,/<details class="avs-editor" data-inline data-checkout-disclosure="instructions" open>/);assert.match(f.node('visit-checkout').innerHTML,/Retained instruction edits/);assert.match(f.node('visit-checkout').innerHTML,/data-version="1" data-digest="old-digest"/);assert.match(f.node('visit-checkout').innerHTML,/data-checkout-rebase/);
  f.run(`api=async(p,m,b,v)=>{calls.push({p,m,b,v});return {};};loadVisitCheckout=async()=>calls.push({refreshed:true});notice=()=>{};run=action=>pending.push(Promise.resolve().then(action));`);
  const form={id:'avs-release-form',dataset:{version:'1',digest:'old-digest'},values:{instructions:'Retained instruction edits',follow_up_instructions:'Follow up',reason:'Reviewed patient summary'},remove(){},closest(){return null;}};
  f.events.get('submit').find(e=>e.options===true).callback({target:form,preventDefault(){},stopImmediatePropagation(){}});await Promise.all(f.pending);
@@ -51,14 +84,18 @@ function fixture(){
   // The reviewed-copy rebase button: label, attribute and click handler path.
   f=fixture();f.run(`checkoutDrafts.set(checkoutContext.key,{instructions:'Retained instruction edits',follow_up_instructions:'',version:1,digest:'old-digest'});checkoutState.version=2;renderVisitCheckoutContent()`);
   html=f.node('visit-checkout').innerHTML;
+  assert.match(html,/data-checkout-disclosure="snapshot" open>/,'changed clinical information is visible before rebasing');
   assert.match(html,/<button type="button" data-checkout-rebase>Use this reviewed copy<\/button>/);
   {
     const attr='data-checkout-rebase';
     const btn={hasAttribute:a=>a===attr,dataset:{},closest:sel=>sel==='button'?btn:null};
-    let ran=false;
-    f.run(`api=async(p,m,b,v)=>{calls.push({p,m,b,v});return {};};loadVisitCheckout=async()=>{throw new Error('rebase must not reload checkout');};notice=()=>{};captureCheckoutDraft=()=>{ran=true;};run=action=>pending.push(Promise.resolve().then(action));`);
-    f.context.run('ran=false;');
-    f.events.get('click').find(e=>e.options===true).callback({target:btn,preventDefault(){},stopImmediatePropagation(){}});
+    f.run(`ran=false;api=async(p,m,b,v)=>{calls.push({p,m,b,v});return {};};loadVisitCheckout=async()=>{throw new Error('rebase must not reload checkout');};notice=()=>{};captureCheckoutDraft=()=>{ran=true;};run=action=>pending.push(Promise.resolve().then(action));`);
+    let stopped=false;
+    const click={target:btn,preventDefault(){},stopImmediatePropagation(){stopped=true;}};
+    for(const listener of f.events.get('click').filter(e=>e.options===true)){
+      listener.callback(click);
+      if(stopped)break;
+    }
     await Promise.all(f.pending);
     assert.equal(f.context.ran,true,'captureCheckoutDraft (data-checkout-rebase handler) was not reached');
     assert.equal(f.context.calls.length,0,'rebase handler must not call the api or reload checkout');
@@ -80,5 +117,20 @@ function fixture(){
  f.run("checkoutState.followups=[{id:'t',title:'check result: panel <b>',status:'open',due_date:'2031-01-01',patient_id:'patient-1',visit_id:'visit-1',instructions:'',version:1}]");
  assert.deepEqual(JSON.parse(JSON.stringify(f.run('followupSuggestions(checkoutState).map(x=>x.title)'))),['Follow up on referral: Cardiology consult']);
  console.log('PASS follow-up rendering respects task permissions and escapes clinical text; suggestions come from this encounter only');
+ // Version conflicts must remain visible inside the modal without replacing its editable form.
+ f=fixture();
+ const feedback={hidden:true,append(...children){this.children=children;}};
+ const dialog={open:true,querySelector:()=>feedback};
+ f.context.document.createElement=()=>({dataset:{}});
+ f.run("run=action=>pending.push(Promise.resolve().then(action));api=async()=>{const e=new Error('Encounter changed');e.status=409;throw e;};");
+ const retained={id:'avs-release-form',dataset:{version:'1',digest:'old-digest'},values:{instructions:'Still editing',reason:'Review'},closest:selector=>selector==='[data-visit-followup-dialog]'?dialog:null};
+ f.events.get('submit').find(e=>e.options===true).callback({target:retained,preventDefault(){},stopImmediatePropagation(){}});
+ await assert.rejects(Promise.all(f.pending),/Encounter changed/);
+ assert.equal(feedback.hidden,false);
+ assert.equal(feedback.textContent,'Encounter changed');
+ assert.ok(Object.hasOwn(feedback.children[1].dataset,'checkoutRefresh'));
+ assert.equal(retained.values.instructions,'Still editing');
+ console.log('PASS checkout conflict and recovery action remain visible in the open dialog alongside the current draft');
+
 }
 main().catch(e=>{console.error(e);process.exitCode=1;});

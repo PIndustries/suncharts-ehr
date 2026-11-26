@@ -8,7 +8,8 @@ const tick=async(times=6)=>{for(let i=0;i<times;i++)await new Promise(resolve=>s
 const text=html=>html.replace(/<[^>]*>/g,' ');
 // Words that belong to the wire format, not to the front desk.
 const technical=/structured real-time|benefit type codes|administrative sex|diagnostic|HTTP ?\d|No diagnostic code|review the saved|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}|provider_rejected|\bnull\b|undefined|\{"/i;
-const TODAY=new Date().toISOString().slice(0,10),daysAgo=days=>new Date(Date.now()-days*86400000).toISOString();
+const displaySource=fs.readFileSync(path.resolve(__dirname,'../web/display-format.js'),'utf8');
+const TODAY=vm.runInNewContext(displaySource+'\nlocalIsoDate()', {Date,Intl}),daysAgo=days=>new Date(Date.now()-days*86400000).toISOString();
 const ids={check:'5b1f0c1e-7c1d-4b1a-9d43-0a1b2c3d4e5f',actor:'9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d',coverage:'coverage-1'};
 
 function setup(options={}){
@@ -30,6 +31,7 @@ function setup(options={}){
   revenueAppointment:()=>({id:'appointment-1'}),revenueServiceDate:()=>TODAY,
   selectPatient:async()=>{const saved=calls.filter(call=>call.method==='PUT').at(-1);if(saved)c.workspace.billing.coverages=[{...coverage,version:coverage.version+1,content:saved.body.content}];},showChartSection(){},
   supportHelpAvailable:()=>true,supportDrafts:support,openSupportFromHere:async()=>{calls.push({url:'support'});},showEdiWorkspace:async()=>{calls.push({url:'connections'});},showBillingQueue:async()=>{calls.push({url:'payers'});},payerEditor:payer=>calls.push({url:'payer-editor',body:payer.id})});
+ vm.runInContext(displaySource,c);
  vm.runInContext(source,c);
  const button=(dataset,attributes=[])=>({target:{closest:selector=>selector==='button'?{dataset,hasAttribute:name=>attributes.includes(name)}:null},preventDefault(){},stopImmediatePropagation(){}});
  const card=()=>node('insurance-eligibility-'+ids.coverage).innerHTML;
@@ -78,8 +80,36 @@ const rich=plan([
  assert.doesNotMatch(lookup,/<form|<button/);
  assert.match(lookup,/coverage-claimmd-payer-results/);
  vm.runInContext("claimmdProviderDefaults={providers:[{id:'provider-1',display_name:'Synthetic Provider',npi:'1234567893'}],facilities:[{id:'facility-1',name:'Synthetic Clinic',address:'100 Test Way'}],default_provider_id:'provider-1',default_facility_id:'facility-1'}",base.c);
- assert.deepEqual(JSON.parse(JSON.stringify(base.c.claimmdClaimProviderDefaults())),{billing_provider_name:'Synthetic Clinic',billing_npi:'1234567893',rendering_npi:'1234567893',billing_address:'100 Test Way',tax_id:''});
- console.log('PASS payer directory, claim defaults and no credential fields in browser source');
+ assert.deepEqual(JSON.parse(JSON.stringify(base.c.claimmdClaimProviderDefaults())),{billing_provider_name:'Synthetic Clinic',billing_organization_name:'',billing_organization_count:0,rendering_provider_name:'Synthetic Provider',billing_npi:'1234567893',rendering_npi:'1234567893',billing_address:'100 Test Way',tax_id:''});
+ const directory={providers:[{id:'assigned',display_name:'Assigned MD',npi:'1234567893'}],facilities:[],billing_organizations:[{name:'Billing group',npi:'1346327099'}]};
+ const resolve=(clinician_id,details={})=>base.c.claimmdClaimProviderDefaults({clinician_id},details,directory);
+ assert.equal(resolve('assigned').billing_provider_name,'Billing group');
+ const separate={providers:directory.providers,facilities:[],billing_organizations:[{name:'Practice',npi:''}]};
+ const snapshot=(visit,details,organizations=separate.billing_organizations)=>base.c.claimmdClaimProviderDefaults(visit,details,{...separate,billing_organizations:organizations});
+ const missing=snapshot({id:'visit',clinician_id:'another',clinician_name:'Assigned staff'}, {});
+ assert.equal(missing.rendering_provider_name,'Assigned staff');
+ assert.equal(missing.billing_organization_name,'Practice');
+ assert.equal(missing.rendering_npi,'');
+ assert.equal(missing.billing_npi,'');
+ const override={rendering_npi:'1346327099',rendering_provider_name:'Covering MD'};
+ const changed=snapshot({id:'visit',clinician_id:'assigned'},override);
+ assert.equal(changed.rendering_npi,override.rendering_npi);
+ assert.equal(changed.billing_npi,override.rendering_npi);
+ assert.equal(changed.rendering_provider_name,'Covering MD');
+ assert.equal(snapshot({id:'visit',clinician_id:'assigned'},override,[{name:'A',npi:''},{name:'B',npi:'1234567893'}]).billing_npi,'');
+ assert.equal(snapshot({id:'unresolved'},{},[]).rendering_npi,'');
+ assert.equal(resolve('assigned').billing_npi,'1346327099');
+ assert.equal(resolve('assigned').rendering_npi,'1234567893');
+ assert.equal(resolve('unmatched').rendering_npi,'');
+ assert.equal(resolve('unmatched',{rendering_npi:'1234567893'}).rendering_npi,'1234567893');
+ assert.equal(resolve(null).rendering_npi,'1234567893');
+ assert.deepEqual(Object.keys(base.c.claimmdClaimProviderDefaults(null,{},null)),[]);
+ assert.equal(base.c.claimmdSubscriberBirthMissing({relationship:'self'},{birth_date:'1980-02-01'}),false);
+ assert.equal(base.c.claimmdSubscriberBirthMissing({relationship:'spouse'},{birth_date:'1980-02-01'}),true);
+ assert.equal(base.c.claimmdSubscriberBirthMissing({relationship:'self'},null),false);
+ assert.equal(base.c.claimmdSubscriberBirthMissing({relationship:'self',subscriber_birth_date:'1980-02-01'},{birth_date:null},{claim:true}),false);
+ assert.equal(base.c.claimmdSubscriberBirthMissing({relationship:'self',subscriber_birth_date:'1980-02-01'},{birth_date:null}),true,'eligibility uses the patient birth date for self coverage');
+ console.log('PASS payer directory, claim defaults, assigned provider and self/dependent subscriber date sourcing');
 
  // ---- One click, no form ---------------------------------------------------------------------
  {
@@ -116,7 +146,7 @@ const rich=plan([
   await dependent.submit({dataset:{eligibilityNeed:'subscriber_birth_date',coverage:ids.coverage},values:{subscriber_birth_date:'1955-02-03'}});
   const saved=dependent.calls.find(call=>call.method==='PUT');assert.equal(saved.url,`/api/v1/patients/patient-1/coverages/${ids.coverage}`);assert.equal(saved.version,3);assert.equal(saved.body.content.subscriber_birth_date,'1955-02-03');assert.equal(saved.body.content.member_id,'SYN-MEMBER');assert.match(saved.body.reason,/date of birth/);
   assert.equal(dependent.posts().length,2,'the check runs again once the missing date is on the coverage');
-  for(const [need,words,ownerAction,staffWords] of [[{kind:'payer_id',payer_id:'payer-1'},/This insurance company has no payer ID yet\./,/data-eligibility-payer="payer-1"/,/Ask the practice owner to add it/],[{kind:'provider_npi'},/No provider has an NPI on file yet\./,/data-practice-providers/,/Ask the practice owner/],[{kind:'billing_organization_missing'},/no billing organization with a tax ID yet/,/data-billing-organizations/,/Ask the practice owner/],[{kind:'claim_connection'},/Claim\.MD is not connected\./,/data-eligibility-connections/,/Ask the practice owner to check Claim connections/],[{kind:'member_id'},/This coverage has no member ID\./,/data-edit-coverage/,/data-edit-coverage/],[{kind:'subscriber_name'},/Policy holder's first name/,/name="family"/,/name="family"/]]){
+  for(const [need,words,ownerAction,staffWords] of [[{kind:'payer_id',payer_id:'payer-1'},/This insurance company has no payer ID yet\./,/data-eligibility-payer="payer-1"/,/Ask the practice owner to add it/],[{kind:'provider_npi'},/No provider has an NPI on file yet\./,/data-practice-providers/,/Ask the practice owner/],[{kind:'billing_organization_missing'},/no billing organization with a tax ID yet/,/data-billing-organizations/,/Ask the practice owner/],[{kind:'claim_connection'},/the clearinghouse is not connected yet\./,/data-eligibility-connections/,/Ask the practice owner to check Claim connections/],[{kind:'member_id'},/This coverage has no member ID\./,/data-edit-coverage/,/data-edit-coverage/],[{kind:'subscriber_name'},/Policy holder's first name/,/name="family"/,/name="family"/]]){
    for(const role of ['owner','front_desk']){const n=setup({role});n.c.respond=(url,method)=>method==='GET'?{items:[]}:{outcome:'needs',insurer:'Synthetic Health',needs:[need]};await n.click({claimmdEligibility:ids.coverage});assert.match(n.card(),words,need.kind);assert.match(n.card(),role==='owner'?ownerAction:staffWords,`${need.kind} ${role}`);assert.doesNotMatch(text(n.card()),technical);}
   }
   const payer=setup();payer.c.respond=(url,method)=>method==='GET'?{items:[]}:{outcome:'needs',needs:[{kind:'payer_id',payer_id:'payer-1'}]};await payer.click({claimmdEligibility:ids.coverage});await payer.click({eligibilityPayer:'payer-1'});assert.deepEqual(payer.calls.slice(-2).map(call=>call.url),['payers','payer-editor'],'the button opens the place the payer ID is set');
@@ -193,7 +223,7 @@ const rich=plan([
   const notFound=setup({role:'front_desk'}).show([check({response_snapshot:{elig:[{error:[{error_code:'75',error_message:'Subscriber/Insured Not Found'}]}]}})]);
   assert.match(notFound,/<span class="eligibility-pill unknown">Could not confirm<\/span>/);assert.match(notFound,/The insurer could not find this member\. Check the member ID, name and date of birth on the coverage\./);assert.match(notFound,/data-edit-coverage="coverage-1"/);assert.doesNotMatch(notFound,/What the patient pays/);assert.doesNotMatch(text(notFound),technical);
   const busy=setup().show([check({response_snapshot:{elig:[{error:{error_code:'42',error_message:'Unable to Respond at Current Time'}}]}})]);assert.match(busy,/could not answer right now\. Try again in a few minutes/);assert.match(busy,/data-claimmd-eligibility="coverage-1">Try again/);
-  const unknownProvider=setup().show([check({response_snapshot:{elig:[{error:[{error_code:'51',error_message:'Provider Not on File'}]}]}})]);assert.match(unknownProvider,/The insurer does not recognise Dr\. Synthetic Provider for eligibility checks yet\./);assert.match(unknownProvider,/Set up eligibility with Claim\.MD/);
+  const unknownProvider=setup().show([check({response_snapshot:{elig:[{error:[{error_code:'51',error_message:'Provider Not on File'}]}]}})]);assert.match(unknownProvider,/The insurer does not recognise Dr\. Synthetic Provider for eligibility checks yet\./);assert.match(unknownProvider,/Set up eligibility with the clearinghouse/);
   const worded=setup().show([check({response_snapshot:{elig:[{error:[{error_code:'33',error_message:'Input <Errors>'}]}]}})]);assert.match(worded,/The insurer did not confirm coverage: “Input &lt;Errors&gt;”/);
   const silent=setup().show([check({response_snapshot:{elig:[{ins_name_l:'PATIENT'}]}})]);assert.match(silent,/Could not confirm/);assert.match(silent,/did not say whether the plan is active/);
   const mismatch=html=>/<p class="eligibility-caution">([^<]*)<\/p>/.exec(html)?.[1];
@@ -217,14 +247,14 @@ const rich=plan([
  {
   const view=(failure,role='owner',over)=>setup({role}).show([failed(failure,over)]);
   const enroll=view({kind:'provider_rejected',http_status:200,provider_codes:[],provider_hints:['eligibility','provider']});
-  assert.match(enroll,/Claim\.MD has not turned on eligibility checks for Dr\. Synthetic Provider with Synthetic Health yet\./);assert.match(enroll,/data-eligibility-enroll="5b1f0c1e-7c1d-4b1a-9d43-0a1b2c3d4e5f" data-coverage="coverage-1">Set up eligibility with Claim\.MD</);assert.match(enroll,/This does not mean the patient is uninsured/);assert.match(enroll,/Tried at 2026-11-13T15:00:02Z by Synthetic Owner/);
+  assert.match(enroll,/Review eligibility enrollment for Dr\. Synthetic Provider with Synthetic Health\./);assert.match(enroll,/data-eligibility-enroll="5b1f0c1e-7c1d-4b1a-9d43-0a1b2c3d4e5f" data-coverage="coverage-1">Set up eligibility with the clearinghouse</);assert.match(enroll,/Check failed.*Eligibility remains unconfirmed for this check\./);assert.match(enroll,/Tried at 2026-11-13T15:00:02Z by Synthetic Owner/);
   const staffEnroll=view({kind:'provider_rejected',http_status:200,provider_hints:['eligibility','provider']},'front_desk');
   assert.match(staffEnroll,/Ask the practice owner to set this up under Claim connections\./);assert.doesNotMatch(staffEnroll,/data-eligibility-enroll|Technical details/);
-  for(const hints of [['member'],['subscriber','not found'],['name','invalid'],['birth','date']]){const html=view({kind:'provider_rejected',http_status:200,provider_hints:hints},'front_desk');assert.match(html,/The insurer could not find this member\. Check the member ID, name and date of birth on the coverage\./,hints.join());assert.match(html,/data-edit-coverage="coverage-1">Edit insurance</);}
-  const payer=view({kind:'provider_rejected',http_status:200,provider_hints:['payer','invalid']});assert.match(payer,/did not recognise the payer ID for Synthetic Health/);assert.match(payer,/data-eligibility-payer="payer-1">Add the payer ID</);assert.match(view({kind:'provider_rejected',http_status:200,provider_hints:['payer']},'front_desk'),/Ask the practice owner to add it in the payer directory/);
-  for(const failure of [{kind:'transport_unavailable',http_status:null},{kind:'http_rejected',http_status:503},{kind:'http_rejected',http_status:429},{kind:'response_invalid',http_status:200},{kind:'provider_rejected',http_status:200,provider_hints:['timeout']}]){const html=view(failure,'front_desk');assert.match(html,/The insurer's system did not answer\. Try again in a few minutes\./,JSON.stringify(failure));assert.match(html,/data-claimmd-eligibility="coverage-1">Try again</);}
-  for(const failure of [{kind:'configuration_unavailable',http_status:null},{kind:'http_rejected',http_status:401},{kind:'provider_rejected',http_status:200,provider_hints:['account','key']}]){assert.match(view(failure),/Claim\.MD is not connected\..*data-eligibility-connections>Open Claim connections</,JSON.stringify(failure));assert.match(view(failure,'front_desk'),/Claim\.MD is not connected\..*Ask the practice owner to check Claim connections\./);}
-  for(const failure of [{kind:'provider_rejected',http_status:200,provider_codes:['42']},{kind:'provider_rejected',http_status:200,provider_hints:['required','missing']},undefined]){const html=view(failure,'front_desk');assert.match(html,/Claim\.MD refused the request and gave no reason we can show\. Send this to support\./);assert.match(html,/data-eligibility-support="5b1f0c1e-7c1d-4b1a-9d43-0a1b2c3d4e5f" data-coverage="coverage-1">Send this to support</);}
+  for(const hints of [['member'],['subscriber','not found'],['name','invalid'],['birth','date']]){const html=view({kind:'provider_rejected',http_status:200,provider_hints:hints},'front_desk');assert.match(html,/Review the recorded member ID, name and date of birth against the insurance card\./,hints.join());assert.match(html,/data-edit-coverage="coverage-1">Edit insurance</);}
+  const payer=view({kind:'provider_rejected',http_status:200,provider_hints:['payer','invalid']});assert.match(payer,/Review the payer ID recorded for Synthetic Health\./);assert.match(payer,/data-eligibility-payer="payer-1">Review payer ID</);assert.match(view({kind:'provider_rejected',http_status:200,provider_hints:['payer']},'front_desk'),/Ask the practice owner to review it in the payer directory/);
+  for(const failure of [{kind:'transport_unavailable',http_status:null},{kind:'http_rejected',http_status:503},{kind:'http_rejected',http_status:429},{kind:'response_invalid',http_status:200},{kind:'provider_rejected',http_status:200,provider_hints:['timeout']}]){const html=view(failure,'front_desk');assert.match(html,/No usable eligibility answer was received\. Try again in a few minutes\./,JSON.stringify(failure));assert.match(html,/data-claimmd-eligibility="coverage-1">Try again</);}
+  for(const failure of [{kind:'configuration_unavailable',http_status:null},{kind:'http_rejected',http_status:401},{kind:'provider_rejected',http_status:200,provider_hints:['account','key']}]){assert.match(view(failure),/Check the practice’s clearinghouse connection before retrying\..*data-eligibility-connections>Open Claim connections</,JSON.stringify(failure));assert.match(view(failure,'front_desk'),/Check the practice’s clearinghouse connection before retrying\..*Ask the practice owner to check Claim connections\./);}
+  for(const failure of [{kind:'provider_rejected',http_status:200,provider_codes:['42']},{kind:'provider_rejected',http_status:200,provider_hints:['required','missing']},undefined]){const html=view(failure,'front_desk');assert.match(html,/No specific reason is available for this failure\./);assert.match(html,/data-eligibility-support="5b1f0c1e-7c1d-4b1a-9d43-0a1b2c3d4e5f" data-coverage="coverage-1">Send this to support</);}
   for(const role of ['owner','front_desk'])for(const failure of [{kind:'provider_rejected',http_status:200,provider_codes:['42','<x>'],provider_hints:['eligibility','provider','<unsafe>']},{kind:'http_rejected',http_status:500},{kind:'provider_rejected',http_status:200},undefined]){
    const html=view(failure,role),normal=text(html.replace(/<details class="eligibility-technical">.*?<\/details>/gs,''));
    assert.doesNotMatch(normal,technical,`${role} ${JSON.stringify(failure)}`);assert.doesNotMatch(normal,/HTTP|code 42|unsafe/i);assert.doesNotMatch(html,/<unsafe>|<x>/);
@@ -243,11 +273,11 @@ const rich=plan([
   assert.deepEqual(JSON.parse(JSON.stringify(started.posts()[0])),{url:`/api/v1/patients/patient-1/coverages/${ids.coverage}/claimmd-eligibility/enrollment`,method:'POST',body:{check_id:ids.check}},'the browser names the check; the server supplies the tax ID, NPI and payer');
   assert.deepEqual(started.opened,[['https://www.claim.md/enroll/synthetic/','_blank','noopener,noreferrer']]);assert.match(started.card(),/setup form opened in a new tab\..*<a href="https:\/\/www\.claim\.md\/enroll\/synthetic\/" target="_blank" rel="noopener noreferrer">Open the form again<\/a>/);
   const elsewhere=await start({status:'started',external_url:'https://example.test/enroll'});assert.equal(elsewhere.opened.length,0,'only a Claim.MD address is opened');
-  const already=await start({status:'refused',failure:{kind:'provider_rejected',provider_hints:['already','enroll']}});assert.equal(already.opened.length,0);assert.match(already.card(),/Claim\.MD says this is already set up or already requested\./);
-  for(const reply of [{status:'no_link'},{status:'refused',failure:{kind:'provider_rejected',provider_hints:['invalid']}}]){const t=await start(reply);assert.match(t.card(),/Claim\.MD did not open a setup form for this insurer\. Sign in to Claim\.MD and open Provider Enrollment, or send this to support\./);assert.match(t.card(),/data-eligibility-support/);assert.doesNotMatch(text(t.card().replace(/<details class="eligibility-technical">.*?<\/details>/gs,'')),technical);}
+  const already=await start({status:'refused',failure:{kind:'provider_rejected',provider_hints:['already','enroll']}});assert.equal(already.opened.length,0);assert.match(already.card(),/The clearinghouse says this is already set up or already requested\./);
+  for(const reply of [{status:'no_link'},{status:'refused',failure:{kind:'provider_rejected',provider_hints:['invalid']}}]){const t=await start(reply);assert.match(t.card(),/The clearinghouse did not open a setup form for this insurer\. Sign in to the clearinghouse and open Provider Enrollment, or send this to support\./);assert.match(t.card(),/data-eligibility-support/);assert.doesNotMatch(text(t.card().replace(/<details class="eligibility-technical">.*?<\/details>/gs,'')),technical);}
   const help=setup({role:'front_desk'}),unexplained=failed({kind:'provider_rejected',http_status:200,provider_codes:['42'],provider_hints:['required']});help.histories.set(ids.coverage,[unexplained]);help.c.eligibilityState=()=>({items:new Map([[ids.coverage,{history:{items:[unexplained]}}]])});
   await help.click({eligibilitySupport:ids.check,coverage:ids.coverage});
-  const draft=help.support.get('new');assert.equal(draft.subject,'Eligibility check was refused');for(const line of ['Checked: 2026-11-13T15:00:00.000Z','Claim.MD code: 42','Words in Claim.MD\'s reply: required',`Check reference: ${ids.check}`,'Synthetic Health'])assert.ok(draft.message.includes(line),line);
+  const draft=help.support.get('new');assert.equal(draft.subject,'Eligibility check was refused');for(const line of ['Checked: 2026-11-13T15:00:00.000Z','Clearinghouse code: 42','Words in the clearinghouse\'s reply: required',`Check reference: ${ids.check}`,'Synthetic Health'])assert.ok(draft.message.includes(line),line);
   assert.doesNotMatch(draft.message,/Synthetic Patient|SYN-MEMBER|1980/,'the ticket text carries no patient details; the chart is attached by the support form');assert.equal(help.calls.at(-1).url,'support');
   const connections=setup();await connections.click({},['data-eligibility-connections']);assert.equal(connections.calls.at(-1).url,'connections');
   console.log('PASS Claim.MD eligibility setup opens its form, explains refusals, and support requests carry the check time and codes');
@@ -261,9 +291,10 @@ const rich=plan([
   const html=setup().show([oldFailure,newest,older]);
   assert.ok(html.indexOf('eligibility-pill active')<html.indexOf('Past checks (2)'),'the newest answer is the summary');
   assert.match(html,/<details class="eligibility-past"><summary>at 2026-10-01T15:00:01Z · Not active · Synthetic Biller · for /);
-  assert.match(html,/<details class="eligibility-attempts"><summary>Earlier attempts \(1\)<\/summary><details class="eligibility-past"><summary>at 2026-09-01T15:00:01Z · Could not confirm · Synthetic Owner/);
+  assert.match(html,/<details class="eligibility-attempts"><summary>Earlier attempts \(1\)<\/summary><details class="eligibility-past"><summary>at 2026-09-01T15:00:01Z · Check failed · Synthetic Owner/);
   const failedNow=setup().show([failed({kind:'transport_unavailable'},{id:'latest-failure',created_at:'2026-11-14T15:00:00Z',completed_at:'2026-11-14T15:00:01Z'}),newest]);
-  assert.ok(failedNow.indexOf('did not answer')<failedNow.indexOf('Last answer from the insurer'),'a failed latest attempt is explained above the last answer');assert.match(failedNow,/Last answer from the insurer<\/p><div class="eligibility-result"><p class="eligibility-status"><span class="eligibility-pill active">/);assert.doesNotMatch(failedNow,/Past checks/);
+  const failureIndex=failedNow.indexOf('No usable eligibility answer was received');
+  assert.ok(failureIndex>=0&&failureIndex<failedNow.indexOf('Last answer from the insurer'),'a failed latest attempt is explained above the last answer');assert.match(failedNow,/Last answer from the insurer<\/p><div class="eligibility-result"><p class="eligibility-status"><span class="eligibility-pill active">/);assert.doesNotMatch(failedNow,/Past checks/);
   assert.match(setup().c.claimmdEligibilityRows(newest),/eligibility-pill active/);assert.doesNotMatch(setup().c.claimmdEligibilityRows(newest),/<button/,'the encounter summary is read-only');assert.equal(setup().c.claimmdEligibilityRows(oldFailure),'');
   console.log('PASS history: newest first, one line per check, earlier failed attempts folded away');
  }

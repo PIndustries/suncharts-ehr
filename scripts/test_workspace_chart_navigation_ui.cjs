@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 'use strict';
+require('./chart_test_context.cjs');
 const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
 const app=fs.readFileSync('web/app.js','utf8'),specialty=fs.readFileSync('web/specialty-workspace.js','utf8');
-const ids=['chart-overview','patient-next-action','patient-identity-panel','patient-demographics','patient-intake-panel','clinical-lists','functional-status-panel','specialty-care-panel','encounter-progress','practice-admin-panel','patient-record-navigation','record-context','appointments-panel','visits-panel','visit-editor','encounter-intake','encounter-documentation','encounter-revenue','encounter-orders-actions','documents-panel','lab-workspace','insurance-workspace','billing-workspace','visit-checkout'];
+const ids=['patient-vitals-history','patient-banner-claim','chart-overview','patient-next-action','patient-identity-panel','patient-demographics','patient-intake-panel','clinical-lists','functional-status-panel','specialty-care-panel','encounter-progress','practice-admin-panel','patient-record-navigation','record-context','appointments-panel','visits-panel','visit-editor','encounter-intake','encounter-documentation','encounter-revenue','encounter-orders-actions','documents-panel','lab-workspace','insurance-workspace','billing-workspace','visit-checkout'];
 const nodes=Object.fromEntries(ids.map(id=>[id,{id,hidden:true,innerHTML:'',open:false,classList:{toggle(){}}}])),notices=[],calls=[];
 let captured=0;
 const context=vm.createContext({console,Map,Set,Array,Object,Number,Date,
@@ -18,7 +19,8 @@ const context=vm.createContext({console,Map,Set,Array,Object,Number,Date,
 vm.runInContext(specialty,context,{filename:'specialty-workspace.js'});
 const extract=(startText,endText)=>{const start=app.indexOf(startText),end=app.indexOf(endText,start);assert.ok(start>=0&&end>start);return app.slice(start,end);};
 vm.runInContext(extract('function encounterWorkflow(){','function openEncounterStep('),context,{filename:'encounter-navigation.js'});
-vm.runInContext(extract('function chartAreaEnabled(key){','\nconst formData='),context,{filename:'chart-navigation.js'});
+vm.runInContext(extract('function chartListHeader(', 'function chartRecordTemplate('),context);
+vm.runInContext(extract('let patientVitalsReadings;','\nconst formData='),context,{filename:'chart-navigation.js'});
 vm.runInContext(extract('function encounterShows(part){','function patientSectionVisible(key)'),context,{filename:'encounter-shows.js'});
 vm.runInContext(extract('const noteSectionKeys=','const visitAmendmentDrafts='),context,{filename:'note-sections.js'});
 vm.runInContext(extract('const VISIT_VITAL_LABELS=','function canRecordVisitVitals('),context,{filename:'encounter-vitals.js'});
@@ -36,44 +38,53 @@ async function main(){
  evaluate(`workspace.appointments[0].status='checked_in'`);actions=evaluate('patientWorkflowActions()');
  assert.match(actions,/data-start="appt-1">Start encounter/);
 
- // Primary tasks remain visible; supporting longitudinal areas share one record menu.
+ // Chart sections now share one grouped left panel. Configured visibility is retained.
  let tabs=plain(evaluate('configuredChartTabs(Object.entries(chartTabLabels))'));tabs.splice(tabs.findIndex(([key])=>key==='billing'),0,['insurance','Insurance']);context.tabs=tabs;
- const html=evaluate('chartNavigation(tabs)'),primaryHtml=html.split('<details')[0];
- assert.deepEqual([...primaryHtml.matchAll(/data-chart-section="([^"]+)"/g)].map(match=>match[1]),['overview','visits','insurance','billing','documents']);
- assert.match(primaryHtml,/data-chart-section="documents"[^>]*>Files/);assert.equal([...html.matchAll(/data-chart-section="documents"/g)].length,1,'Files has one primary destination, not a duplicate buried menu action');
- assert.match(html,/<summary>Patient record<\/summary>/);assert.match(primaryHtml,/data-chart-section="billing"[^>]*>Billing/);assert.equal([...html.matchAll(/data-chart-section="billing"/g)].length,1);assert.doesNotMatch(html,/Shared documents/);
- assert.match(html,/data-chart-section="profile"[^>]*>Contact &amp; demographics/);
- assert.match(html,/data-chart-section="clinical"[^>]*>Problems, allergies &amp; medications/);
+ const html=evaluate('chartNavigation(tabs)');
+ assert.deepEqual([...html.matchAll(/data-chart-section="([^"]+)"/g)].map(match=>match[1]),['orders','overview','profile','vitals','insurance','billing','visits','documents','history','functional_status','specialty_care']);
+ assert.match(html,/frame-chart-select/);assert.match(html,/data-sidebar-collapsed="true"/);
+ for(const group of ['Care tools','Patient chart','Billing','History &amp; records'])assert.match(html,new RegExp(`data-chart-sidebar-group="${group}"`));
+ assert.match(html,/aria-label="Profile"/);assert.deepEqual([...html.matchAll(/data-clinical-focus="([^"]+)"/g)].map(m=>m[1]),['problem','allergy','medication']);
  assert.doesNotMatch(html,/data-chart-section="checkout"/,'checkout belongs to the selected encounter');
- assert.doesNotMatch(html,/chart-workflow-tabs/,'the old second row no longer duplicates encounter work');
- context.renderEncounterFiles=()=>calls.push({render:'patient-files'});
- const beforeFiles=captured;evaluate("showChartSection('documents')");assert.equal(evaluate('activeVisit'),null);assert.equal(nodes['documents-panel'].hidden,false);assert.equal(nodes['patient-intake-panel'].hidden,false);assert.equal(nodes['appointments-panel'].hidden,true);assert.equal(nodes['record-context'].hidden,true);assert.equal(nodes['patient-record-navigation'].open,false);assert.ok(captured>beforeFiles,'Files navigation still captures existing drafts');assert.equal(calls.at(-1).render,'patient-files');
+ context.renderDocuments=()=>calls.push({render:'patient-files'});
+ const beforeFiles=captured;evaluate("showChartSection('documents')");assert.equal(evaluate('activeVisit'),null);assert.equal(nodes['documents-panel'].hidden,false);assert.equal(nodes['patient-intake-panel'].hidden,false,'patient Files also shows intake forms');assert.equal(nodes['appointments-panel'].hidden,true);assert.equal(nodes['record-context'].hidden,true);assert.equal(nodes['patient-record-navigation'].open,false);assert.ok(captured>beforeFiles,'Files navigation still captures existing drafts');assert.equal(calls.at(-1).render,'patient-files');
 
- assert.match(html,/aria-label="Contact &amp; demographics" data-chart-section="profile" aria-pressed="false"/);
+ assert.match(html,/aria-label="Profile"[^>]+data-chart-section="profile" aria-pressed="false"/);
  nodes['patient-record-navigation'].open=true;evaluate("showChartSection('profile')");assert.equal(nodes['patient-record-navigation'].open,false,'direct contact navigation dismisses the menu too');assert.equal(evaluate('chartSection'),'profile');
 
  // Refreshes on Insurance must retain the tab; it inherits Billing configuration and access.
  evaluate("chartSection='insurance';configuredChartTabs(Object.entries(chartTabLabels))");
  assert.equal(evaluate('chartSection'),'insurance');
- evaluate("showChartSection('insurance')");assert.equal(nodes['insurance-workspace'].hidden,false);assert.equal(nodes['billing-workspace'].hidden,true);
+ evaluate("applyChartSection()");assert.equal(nodes['insurance-workspace'].hidden,false);assert.equal(nodes['billing-workspace'].hidden,true);
 
  evaluate(`activeVisit={id:'visit-1',appointment_id:'appt-1',clinician_id:'clinician-1',status:'in_progress',version:1,note:{subjective:'Retained note'},vitals:{}};workspace.visits=[activeVisit];chartSection='visits';encounterSection='documentation'`);
  const encounter=evaluate('encounterWorkflow()');
- assert.match(encounter,/data-encounter-switch aria-haspopup="dialog"><span aria-hidden="true">⇄<\/span> Switch encounter</);assert.doesNotMatch(encounter,/<select id="encounter-picker"/);assert.doesNotMatch(encounter,/data-encounter-history/,'encounter history is reached from the Switch encounter sheet');assert.match(encounter,/Switch encounter/);assert.doesNotMatch(encounter,/encounter-step-tabs|Notes &amp; diagnoses|Charges &amp; billing/,'the numbered step bar is gone: the encounter is one page');assert.match(encounter,/data-encounter-step="new-order">\+ Order/);assert.match(encounter,/data-encounter-section="files">\+ Attach file/);
+ const encounterNav=evaluate('chartNavigation(tabs)');
+ assert.match(encounterNav,/data-encounter-navigation/);
+ assert.match(encounterNav,/title="Current encounter" aria-label="Current encounter" data-chart-section="visits" aria-pressed="true"/);
+ assert.match(encounterNav,/title="Encounter history"[^>]*data-chart-section="encounters"/);
+ assert.doesNotMatch(encounter,/data-encounter-switch|Switch encounter|data-start-encounter-flow|Get help with this encounter/);assert.match(encounter,/<summary>Add ▾<\/summary>/);assert.doesNotMatch(encounter,/encounter-step-tabs|Notes &amp; diagnoses|Charges &amp; billing/,'the numbered step bar is gone: the encounter is one page');assert.match(encounter,/data-encounter-step="new-order">\+ Order/);assert.match(encounter,/data-encounter-section="files">\+ Attach file/);
  assert.doesNotMatch(encounter,/Open encounter|Continue encounter/,'selected encounter renders its local steps directly');
- evaluate('renderVisit(false)');assert.match(nodes['visit-editor'].innerHTML,/SOAP note/);assert.match(nodes['visit-editor'].innerHTML,/Retained note/);
- assert.equal(nodes['visit-editor'].hidden,false);assert.equal(nodes['encounter-documentation'].hidden,false);assert.equal(nodes['encounter-intake'].hidden,false,'the encounter page shows vitals and note together');assert.equal(nodes['encounter-revenue'].hidden,false,'codes & charges sit on the same page');assert.equal(nodes['visit-checkout'].hidden,false,'checkout finishes the same page');assert.equal(nodes['appointments-panel'].hidden,false,'unified history stays reachable while an encounter is selected');
+ evaluate('renderVisit(false)');assert.match(nodes['visit-editor'].innerHTML,/<h3[^>]*>Note<\/h3>/);assert.match(nodes['visit-editor'].innerHTML,/Retained note/);
+ assert.equal(nodes['visit-editor'].hidden,false);assert.equal(nodes['encounter-documentation'].hidden,false);assert.equal(nodes['encounter-intake'].hidden,false,'the encounter page shows vitals and note together');assert.equal(nodes['encounter-revenue'].hidden,false,'codes & charges sit on the same page');assert.equal(nodes['visit-checkout'].hidden,false,'checkout finishes the same page');assert.equal(nodes['appointments-panel'].hidden,true,'encounter history has its own patient view');
  const before=captured;evaluate("setEncounterSection('intake')");assert.ok(nodes['encounter-revenue'].hidden===false,'rooming shows with the charges block on one page');assert.ok(captured>before,'an old step key still captures drafts');assert.equal(evaluate('encounterSection'),'intake','the old key stays addressable while the whole page shows');assert.ok(nodes['encounter-intake'].scrolled||true);assert.equal(nodes['encounter-intake'].hidden,false);assert.equal(nodes['encounter-documentation'].hidden,false);
  evaluate("setEncounterSection('charges')");assert.equal(evaluate('encounterSection'),'charges','the old key stays addressable');assert.equal(nodes['encounter-revenue'].hidden,false);assert.equal(nodes['visit-editor'].hidden,false);
  // The Orders area is opened from the page and holds the whole screen until Back to encounter.
  evaluate("setEncounterSection('orders')");assert.equal(nodes['encounter-orders-actions'].hidden,false,"the orders action panel opens");assert.equal(nodes['encounter-revenue'].hidden,true);assert.equal(nodes['visit-editor'].hidden,true);assert.equal(nodes['visit-checkout'].hidden,true,'checkout stays away while another area is open');
  evaluate("setEncounterSection('visit')");assert.equal(nodes['visit-checkout'].hidden,false,'Back to encounter brings the whole page back');assert.equal(nodes['encounter-revenue'].hidden,false);assert.equal(nodes['lab-workspace'].hidden,true,'back to the encounter page leaves the orders workspace');
- evaluate("setEncounterSection('files')");assert.equal(nodes['documents-panel'].hidden,false);assert.equal(nodes['patient-intake-panel'].hidden,false);assert.equal(nodes['visit-checkout'].hidden,true);
+ evaluate("setEncounterSection('files')");assert.equal(nodes['documents-panel'].hidden,false);assert.equal(nodes['patient-intake-panel'].hidden,true);assert.equal(nodes['visit-checkout'].hidden,true);
  evaluate("setEncounterSection('visit')");assert.equal(nodes['encounter-revenue'].hidden,false);assert.equal(nodes['visit-checkout'].hidden,false);
  evaluate("setEncounterSection('files');showChartSection('clinical');showChartSection('visits')");assert.equal(evaluate('encounterSection'),'files','an open record area returns to itself, not to the encounter page');
 
+ // Patient navigation remains separate from the encounter, and aliases survive configured refreshes.
+ evaluate("showChartSection('orders')");assert.equal(evaluate('chartSection'),'orders');assert.equal(nodes['lab-workspace'].hidden,false);assert.equal(nodes['visit-editor'].hidden,true);
+ for(const key of ['vitals','encounters']){evaluate(`showChartSection('${key}');configuredChartTabs(Object.entries(chartTabLabels))`);assert.equal(evaluate('chartSection'),key);assert.equal(nodes['appointments-panel'].hidden,key!=='encounters');assert.equal(nodes['patient-banner-claim'].hidden,true);assert.equal(nodes['patient-vitals-history'].hidden,key!=='vitals');}
+ evaluate("showChartSection('visits')");
+
+ evaluate("activeVisit.vitals={systolic_mm_hg:120,diastolic_mm_hg:80,heart_rate_bpm:72};showChartSection('vitals')");assert.match(nodes['patient-vitals-history'].outerHTML,/Vitals/);assert.match(nodes['patient-vitals-history'].outerHTML,/120\/80/);assert.match(nodes['patient-vitals-history'].outerHTML,/<th scope="col">Pulse<\/th>/);assert.match(nodes['patient-vitals-history'].outerHTML,/<td>72 bpm<\/td>/);evaluate("showChartSection('visits')");assert.equal(nodes['patient-banner-claim'].hidden,false);
+
  // Completed encounter navigation keeps signed clinical records immutable.
- evaluate("activeVisit.status='signed';encounterSection='documentation';renderVisit(false)");assert.match(nodes['visit-editor'].innerHTML,/readonly/);assert.doesNotMatch(nodes['visit-editor'].innerHTML,/data-action="sign"|>Save note</);assert.equal(nodes['appointments-panel'].hidden,false);
+ evaluate("activeVisit.status='signed';encounterSection='documentation';renderVisit(false)");assert.match(nodes['visit-editor'].innerHTML,/readonly/);assert.doesNotMatch(nodes['visit-editor'].innerHTML,/data-action="sign"|>Save note</);assert.equal(nodes['appointments-panel'].hidden,true);
  evaluate("activeVisit.status='in_progress'");
 
  // Hidden current steps cannot leave a blank encounter workspace.

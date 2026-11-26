@@ -7,7 +7,7 @@ const source=fs.readFileSync('web/navigation-history.js','utf8');
 const landing=fs.readFileSync('web/app.js','utf8').match(/function patientDirectoryLanding\(\)\{\n return '([^']*)'/)[1];
 const patient='22222222-2222-4222-8222-222222222222',other='55555555-5555-4555-8555-555555555555',visit='33333333-3333-4333-8333-333333333333';
 const clone=value=>value==null?value:JSON.parse(JSON.stringify(value));
-function fixture({hash='',visits=[visit],enterLandsOnHome=false}={}){
+function fixture({hash='',visits=[visit]}={}){
  const handlers={},events={},calls=[],drafts=new Map();
  const nodes={'clinical-workspace':{hidden:true},'workspace-back':{hidden:true,disabled:false},chart:{innerHTML:''},tools:{innerHTML:''}};
  let activeNav=null,entries=[{value:null,url:'/'}],index=0;
@@ -25,22 +25,20 @@ function fixture({hash='',visits=[visit],enterLandsOnHome=false}={}){
  ctx.showBillingQueue=async()=>{ctx.showTool('Billing');await ctx.api('/billing');};
  // The reload case: the patient and encounter the address names are opened again,
  // exactly as app.js does it after a fetch round trip.
- ctx.showClinical=async()=>{ctx.captureVisitDrafts();ctx.showTool('Patients & encounters');ctx.selected=null;ctx.activeVisit=null;ctx.workspace=null;ctx.chartSection='overview';await ctx.api('/patients');nodes['clinical-workspace'].hidden=false;};
+ ctx.showClinical=async()=>{ctx.captureVisitDrafts();ctx.showTool('Patients & encounters');ctx.selected=undefined;ctx.activeVisit=undefined;ctx.workspace=undefined;ctx.chartSection='overview';await ctx.api('/patients');nodes.chart.innerHTML=ctx.patientDirectoryLanding();nodes['clinical-workspace'].hidden=false;};
  ctx.selectPatient=async(id,keepVisit)=>{
   ctx.captureVisitDrafts();await ctx.api(`/patients/${id}`);
   ctx.selected=id;ctx.workspace={patient:{id},appointments:[],visits:visits.map(vid=>({id:vid,status:'in_progress'})),billing:{accounts:[]},labs:{orders:[]}};
   ctx.activeVisit=keepVisit?(ctx.workspace.visits.some(v=>v.id===keepVisit)?{id:keepVisit,status:'in_progress'}:null):null;
-  ctx.chartSection=keepVisit?'visits':'overview';
+  ctx.chartSection=keepVisit?'visits':'overview';ctx.page='Patients & encounters';nodes['clinical-workspace'].hidden=false;
  };
  ctx.showChartSection=section=>{ctx.captureVisitDrafts();ctx.chartSection=section;};
  ctx.setEncounterSection=step=>{ctx.captureVisitDrafts();ctx.encounterSection=step;ctx.showChartSection('visits');};
  ctx.renderVisit=()=>{ctx.chartSection='visits';};ctx.showBillingAccount=id=>{ctx.billingSelected=id;};ctx.showOrder=id=>{ctx.labSelected=id;};
  ctx.signInScreen=()=>{ctx.me=null;ctx.selected=null;ctx.activeVisit=null;ctx.workspace=null;ctx.formText='';drafts.clear();nodes['clinical-workspace'].hidden=true;activeNav=null;ctx.page='Sign in';};
  ctx.encounterClaimRoute=()=>null;ctx.encounterFileRoute=()=>null;
-  ctx.enter=async()=>ctx.showPracticeWorkspace();
+  ctx.enter=async()=>{if(!await ctx.restoreInitialWorkspaceRoute())await ctx.showPracticeWorkspace();ctx.restoreInitialWorkspaceScroll();};
   vm.createContext(ctx);vm.runInContext(source,ctx);
-  // The real reload: whatever enter() leaves in the address bar says #/home.
-  if(enterLandsOnHome){const real=ctx.history.replaceState.bind(ctx.history);let armed=true;ctx.history.replaceState=(value,_,url)=>{if(armed&&url!=='/'){armed=false;return real(value,_,'/#/home');}return real(value,_,url);};}
  const settle=async()=>{for(let i=0;i<40;i++)await new Promise(r=>setImmediate(r));};
  return {ctx,history,nodes,calls,drafts,settle,entries:()=>clone(entries),directoryShown:()=>/Open a patient chart|Patient directory/.test(nodes.chart.innerHTML)};
 }
@@ -56,21 +54,20 @@ test('reload reopens the same patient, encounter and step of that encounter',asy
  assert.equal(c.location.hash,`#/patients/${patient}/encounter/${visit}/charges`,'the address still names the reopened encounter');
 });
 
-// The browser bug: the address the page was loaded with is read before enter() runs, because
-// enter() shows Home and its remember() overwrites the address with #/home first.
-test('a real reload where enter() leaves #/home in the address still reopens the loaded chart',async()=>{
- const f=fixture({hash:`#/patients/${patient}/encounter/${visit}/documentation`,enterLandsOnHome:true}),c=f.ctx;
+test('a chart reload reads only the requested chart and opens its selected step',async()=>{
+ const f=fixture({hash:`#/patients/${patient}/encounter/${visit}/documentation`}),c=f.ctx;
  await c.enter();await f.settle();
  assert.equal(c.selected,patient,'the loaded patient is opened');
  assert.equal(c.activeVisit?.id,visit,'the loaded visit is opened');
  assert.equal(c.chartSection,'visits');assert.equal(c.encounterSection,'documentation','the loaded step is shown');
+ assert.deepEqual(f.calls,[['GET',`/patients/${patient}`]]);
  assert.equal(c.location.hash,`#/patients/${patient}/encounter/${visit}/documentation`,'the final address is the loaded one, not #/home');
  assert.equal(c.page,'Patients & encounters');assert.equal(c.mutations,0,'the reopen only reads the record back');
 });
 
 test('a reload loaded on #/home or no address behaves as before',async()=>{
  for(const hash of ['#/home','']){
-  const f=fixture({hash,enterLandsOnHome:true}),c=f.ctx;
+  const f=fixture({hash}),c=f.ctx;
   await c.enter();await f.settle();
   assert.equal(c.page,'Practice home',`loaded address ${hash||'(none)'} stays on Home`);
   assert.equal(c.selected,null);assert.equal(c.activeVisit,null);
@@ -97,7 +94,7 @@ test('a pasted address for a chart this person cannot open also falls back to th
  const f=fixture({hash:`#/patients/${other}/encounter/${visit}/charges`}),c=f.ctx;
  // The record read fails, exactly as it does for a chart outside this person’s access.
  const workspaceReads=()=>f.calls.filter(call=>call[0]==='GET'&&call[1].startsWith('/patients/')).length;
- c.selectPatient=async id=>{await c.api(`/patients/${id}`);throw new Error('Not found');};
+ c.selectPatient=async id=>{await c.api(`/patients/${id}`);throw Object.assign(new Error('Not found'),{status:404});};
  await c.enter();await f.settle();
  assert.equal(f.directoryShown(),true);assert.equal(c.selected,undefined);assert.equal(c.activeVisit,undefined);assert.equal(c.workspace,undefined);assert.equal(c.chartSection,'overview');
  assert.ok(workspaceReads()>0,'the fallback follows an access check rather than a guess');
@@ -109,7 +106,7 @@ test('a reload whose patient is gone leaves the patient list ready to use',async
  const f=fixture({hash:`#/patients/${patient}/encounter/${visit}/charges`}),c=f.ctx;
  // The patient was deleted: that record will not load, while other charts still do.
  const openChart=c.selectPatient;
- c.selectPatient=async(id,keepVisit)=>{if(id===patient)throw new Error('Not found');return openChart(id,keepVisit);};
+ c.selectPatient=async(id,keepVisit)=>{if(id===patient)throw Object.assign(new Error('Not found'),{status:404});return openChart(id,keepVisit);};
  await c.enter();await f.settle();
  assert.equal(f.directoryShown(),true);assert.equal(c.selected,undefined);
  // Staff are not stranded: opening any listed patient still works from here.
@@ -136,9 +133,9 @@ test('the address carries only identifiers and never a patient name',async()=>{
   assert.equal(JSON.stringify(gone.entries()).includes('Doe'),false,'its saved history names no patient');
   // A reload whose patient cannot be opened leaves the chart pane on its prompt.
   const missing=fixture({hash:c.location.hash});
-  missing.ctx.selectPatient=async()=>{throw new Error('Not found');};
+  missing.ctx.selectPatient=async()=>{throw Object.assign(new Error('Not found'),{status:404});};
   await missing.ctx.enter();await missing.settle();
-  assert.match(missing.nodes.chart.innerHTML,/Open a patient chart/,'an unavailable chart invites staff to choose a patient');
+  assert.match(missing.nodes.chart.innerHTML,/Patient directory/,'an unavailable chart invites staff to choose a patient');
   assert.equal(missing.nodes.chart.innerHTML.includes('Doe'),false,'that screen names no patient');
   assert.equal(JSON.stringify(missing.entries()).includes('Doe'),false,'its saved history names no patient');
 });
