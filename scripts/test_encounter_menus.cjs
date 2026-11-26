@@ -16,7 +16,7 @@ const settle=()=>new Promise(resolve=>setImmediate(resolve));
  const source=app.slice(app.indexOf('function encounterWorkflow(){'),app.indexOf('function encounterVisitActions(){'));
  const header=vm.runInNewContext(source+'\nencounterWorkflow()',{
   workspace:{appointments:[]},activeVisit:{id:'visit',status:'in_progress'},esc:String,
-  inRecordArea:()=>false,visitBillingAreaVisible:()=>true,encounterAddMenu:()=>'',encounterDateLabel:()=> 'Synthetic day',
+  inRecordArea:()=>false,encounterUsesPatientBanner:()=>false,visitBillingAreaVisible:()=>true,encounterAddMenu:()=>'',encounterDateLabel:()=> 'Synthetic day',
  });
  {
   const f=fixture('<section data-encounter-section=rooming>Rooming</section>'+header+'<section data-step-claim>Claim</section><section data-encounter-step-number=2>Payment</section>'),menu=f.page.querySelector('details'),summary=menu.querySelector('summary');

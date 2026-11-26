@@ -2370,6 +2370,24 @@ async fn review_packet(
     ))
 }
 
+async fn review_queue(
+    actor: Actor,
+    ExtractState(state): ExtractState<State>,
+) -> Result<Json<Value>> {
+    actor.staff()?;
+    let mut tx = db(&state)?.begin().await?;
+    let rows:Vec<Value>=sqlx::query_scalar("SELECT jsonb_build_object('packet_id',f.id,'patient_id',p.id,'patient_name',p.family_name||', '||p.given_name,'mrn',p.mrn,'status',f.status,'submitted_at',f.submitted_at) FROM previsit_intake_packets f JOIN patients p ON p.tenant_id=f.tenant_id AND p.id=f.patient_id WHERE f.tenant_id=$1 AND f.status='submitted' ORDER BY f.submitted_at,f.id LIMIT 201").bind(actor.tenant_id).fetch_all(&mut *tx).await?;
+    crate::postgres::audit(
+        &mut tx,
+        &actor,
+        "previsit.review_queue_read",
+        actor.tenant_id,
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(Json(json!({"items":rows})))
+}
+
 #[cfg(test)]
 mod standard_form_tests {
     use super::*;
@@ -2416,22 +2434,4 @@ mod standard_form_tests {
         let draft = json!({"first_name":"Synthetic","zip":"7"});
         assert_eq!(validate_response(&form, &draft, false).unwrap(), draft);
     }
-}
-
-async fn review_queue(
-    actor: Actor,
-    ExtractState(state): ExtractState<State>,
-) -> Result<Json<Value>> {
-    actor.staff()?;
-    let mut tx = db(&state)?.begin().await?;
-    let rows:Vec<Value>=sqlx::query_scalar("SELECT jsonb_build_object('packet_id',f.id,'patient_id',p.id,'patient_name',p.family_name||', '||p.given_name,'mrn',p.mrn,'status',f.status,'submitted_at',f.submitted_at) FROM previsit_intake_packets f JOIN patients p ON p.tenant_id=f.tenant_id AND p.id=f.patient_id WHERE f.tenant_id=$1 AND f.status='submitted' ORDER BY f.submitted_at,f.id LIMIT 201").bind(actor.tenant_id).fetch_all(&mut *tx).await?;
-    crate::postgres::audit(
-        &mut tx,
-        &actor,
-        "previsit.review_queue_read",
-        actor.tenant_id,
-    )
-    .await?;
-    tx.commit().await?;
-    Ok(Json(json!({"items":rows})))
 }

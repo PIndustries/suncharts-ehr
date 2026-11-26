@@ -40,7 +40,7 @@ function fixture(){
    }
    if(path.endsWith('/actions')&&body.action==='post')return {...ctx.workspace.billing.accounts[0],status:'posted',version:2};
    if(path.endsWith('/claims/prepare'))return ctx.selfPay?{outcome:'not_needed'}:{outcome:'prepared',claim_id:'claim'};
-   if(path.endsWith('/claims/claim'))return {claim:{id:'claim',status:'draft',version:3},preflight_issues:ctx.preflight||[],transport:{routes:[{provider:'claim_md',route_key:'synthetic'}]}};
+   if(path.endsWith('/claims/claim'))return {claim:{id:'claim',patient_id:'patient',account_id:'account',status:'draft',version:3},preflight_issues:ctx.preflight||[],transport:{routes:[{provider:'claim_md',route_key:'synthetic'}]}};
    if(path.endsWith('/actions')&&body.action==='ready')return {version:4};
    if(path.endsWith('/837p'))return {id:'submission',version:1};
    if(path.endsWith('/delivery'))return {submission:{id:'submission'}};
@@ -65,10 +65,11 @@ function fixture(){
  loadClaimMdConnection=async()=>{};claimMdConnectionState={connected:true};
  encounterRevenueVisitUnsigned=()=>false;
  visitBillingInsurer=()=> 'Synthetic insurer';
+ openEncounterClaimMdSubmit=async(id,account)=>{nativeReview={id,account};return true;};
  loadEncounterRevenueStatus=async()=>{encounterRevenueState.data={summary:{insurance:{insured:!selfPay},patient:{owes_now_cents:2500},claim:selfPay?null:{id:'claim',status:'draft'}}};};
  visitNoteBillPayment=async()=>{paymentOffered=true;};visitNoteOpenPayment=async()=>{paymentOpened=true;};
  `,ctx);
- Object.assign(ctx,{encounterRevenueState:{data:{summary:{}},review:null},selfPay:false,issues:[],paymentOpened:false,openedProblems:false,claimMdConnectionState:{connected:true},flushVisitNoteCharges:async()=>{}});
+ Object.assign(ctx,{encounterRevenueState:{data:{summary:{}},review:null},selfPay:false,issues:[],paymentOpened:false,openedProblems:false,nativeReview:null,claimMdConnectionState:{connected:true},flushVisitNoteCharges:async()=>{}});
  return {ctx,note,node,nodes,handlers,requests,timers,run:code=>vm.runInContext(code,ctx),settle:async()=>{for(let i=0;i<20;i++)await new Promise(resolve=>setImmediate(resolve));}};
 }
 async function main(){
@@ -274,7 +275,7 @@ async function main(){
   await assert.rejects(changed.click(),/changed during review/);assert.equal(changed.writes.length,0);
   console.log('PASS explicit sign and resumable Claim.MD handoff, existing delivery evidence, holds, scoped versions, synthetic and legal confirmations, lost response');
  }
- // Continuous encounter: signing prepares and sending delivers without navigating.
+ // Continuous encounter: signing prepares and the next step opens native review without transmitting.
  {
   const g=insured();g.node('visit-page-host').dataset.encounterSteps='';
   let paints=0;g.ctx.visitReviewRestore=()=>{paints++;};g.ctx.encounterStepsSchedule=()=>{};
@@ -284,17 +285,18 @@ async function main(){
   assert(!g.requests.some(row=>row.path.endsWith('/837p')));
   assert.equal(g.ctx.paymentOpened,false);
   assert.equal(await g.ctx.visitReviewRun('claim',{needPost:false,needPrepare:false,quietRefresh:true}),true);
-  assert.equal(g.requests.filter(row=>row.path.endsWith('/837p')).length,1);
+  assert.equal(g.requests.filter(row=>row.path.endsWith('/837p')||row.path.endsWith('/delivery')).length,0);
+  assert.equal(g.ctx.nativeReview?.id,'claim');assert.equal(g.ctx.nativeReview?.account,'account');
   assert.equal(g.ctx.paymentOpened,false);
   const self=insured();self.node('visit-page-host').dataset.encounterSteps='';self.ctx.selfPay=true;self.ctx.visitReviewRestore=()=>{};
   await self.ctx.signClick({dataset:{action:'sign-bill'}});
   assert.equal(self.ctx.paymentOpened,false);assert(!self.requests.some(row=>row.path.endsWith('/837p')));
-  console.log('PASS continuous encounter: sign prepares, send delivers in place; self-pay uses Take payment');
+  console.log('PASS continuous encounter: sign prepares, Claim.MD review opens in place; self-pay uses Take payment');
  }
  f=insured();await f.ctx.signClick({dataset:{action:'sign-bill'}});
  const steps=f.requests.filter(row=>row.path.endsWith('/sign')||row.body?.action==='post'||row.path.endsWith('/claims/prepare')||row.path.endsWith('/837p')||row.path.endsWith('/delivery')).map(row=>row.body?.action==='post'?'post':row.path.split('/').at(-1));
- assert.deepEqual(steps,['sign','post','prepare','837p','delivery']);assert.equal(f.ctx.confirmations,0);assert(f.ctx.paymentOffered);
- console.log('PASS clean insured encounter signs → posts → prepares → sends through the existing chain');
+ assert.deepEqual(steps,['sign','post','prepare']);assert.equal(f.ctx.confirmations,0);assert.equal(f.ctx.nativeReview?.id,'claim');assert(!f.ctx.paymentOffered);
+ console.log('PASS clean insured encounter signs → posts → prepares → opens native review');
 
  f=insured();let priceFocused=false;
  f.ctx.flushVisitNoteCharges=async options=>{assert.equal(f.ctx.activeVisit.status,'signed');assert.equal(options.allowUnpriced,true);return true;};

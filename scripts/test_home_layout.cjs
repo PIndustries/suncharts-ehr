@@ -30,7 +30,7 @@ const counts=c.practiceDashboardMarkup(fixture);
 assert.equal((counts.match(/data-practice-action=/g)||[]).length,5);
 assert.equal((counts.match(/<a href=/g)||[]).length,5);
 assert.match(home,/data-practice-action="claims-wait"/);
-assert.match(home,/data-practice-action="patients-address"/);assert.match(home,/data-practice-action="patients-phone"/);
+assert.match(home,/data-practice-action="missing-address"/);assert.match(home,/data-practice-action="missing-phone"/);
 assert.match(css,/practice-tile:focus-visible/);
 assert.doesNotMatch(c.practiceDashboardMarkup({...fixture,unfinished:{total:0}}),/is-attention/);
 assert.match(table,/<th scope="col">Stage<\/th>/);

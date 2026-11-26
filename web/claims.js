@@ -60,7 +60,11 @@ function selectClaimStatusFilter(status){
  if(typeof frameBillingMonitorNavigation==='function')frameBillingMonitorNavigation(true);
 }
 document.addEventListener('change',e=>{if(e.target.id==='billing-all-claims')selectClaimStatusFilter(e.target.value);});
-function billingPageTotals(){return `<button type="button" class="text-button" data-billing-claim-queue="send">Claims to send ${claimStatusCount('send')}</button> · <button type="button" class="text-button" data-billing-claim-queue="fix">Needs fixing ${claimStatusCount('fix')}</button>`;}
+function billingClaimShortcuts(){
+ if(typeof workspaceResourceAllowed==='function'&&!workspaceResourceAllowed('claims'))return '';
+ if(typeof workspaceModuleAllowed==='function'&&!workspaceModuleAllowed('claims'))return '';
+ return '<p class="muted"><button type="button" class="text-button" data-billing-claim-queue="send">Claims to send</button> · <button type="button" class="text-button" data-billing-claim-queue="fix">Needs fixing</button></p>';
+}
 function billingPageMore(){return `<div class="actions"><button type="button" data-billing-connect>Claim connections</button><button type="button" data-billing-tools>Practice billing tools</button>${me.role==='owner'?'<button type="button" data-payment-settings>Practice payment settings</button>':''}</div>`;}
 document.addEventListener('click',e=>{const queue=e.target.closest?.('[data-billing-claim-queue]');if(queue){run(async()=>{await showClaimsWorkspace({filter:queue.dataset.billingClaimQueue});});return;}if(e.target.closest?.('[data-billing-connect]'))run(()=>showEdiWorkspace());if(e.target.closest?.('[data-billing-tools]'))run(()=>showBillingQueue('',undefined,true));});
 function claimFinalStatus(claim,detail={}){return ['void','rejected'].includes(claim?.status)||detail?.tracking?.remittance_posted===true;}

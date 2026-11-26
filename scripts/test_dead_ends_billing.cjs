@@ -20,7 +20,7 @@ async function main(){
  assert.equal(run('copayUnapplied({amount_cents:1000,cash_refunded_cents:2000})'),0);
  ctx.source={now:'2026-11-25T12:00:00Z',accounts:{items:[{id:'account',patient_id:'p',patient_name:'Synthetic',patient_owes_now_cents:4200}]},intake:{items:[{packet_id:'packet',status:'submitted',patient_name:'Synthetic'},{packet_id:'reviewed',status:'reviewed'}]},remittances:{items:[{id:'era',status:'staged'},{id:'posted',status:'posted'}]},referrals:{items:[{id:'referral',patient_id:'p',patient_label:'Synthetic'}]},schedule:{appointments:[{id:'upcoming',patient_id:'p',starts_at:'2026-11-26T12:00:00Z'},{id:'past',starts_at:'2026-11-24T12:00:00Z'},{id:'late',starts_at:'2026-12-04T12:00:00Z'}]},markers:{items:[{appointment_id:'upcoming',insurance:{status:'not_checked'}},{appointment_id:'past',insurance:{status:'not_checked'}},{appointment_id:'late',insurance:{status:'not_checked'}}]}};
  const rows=run('workQueueItems(source)');
- for(const kind of ['intake','insurance','insurer_payments','balances'])assert.equal(rows.filter(r=>r.kind===kind).length,1,kind);
+ for(const kind of ['intake','insurance','remittances','balances'])assert.equal(rows.filter(r=>r.kind===kind).length,1,kind);
  const referral=rows.find(r=>r.kind==='referrals');assert.match(referral.attrs,/data-referral-id="referral"/);assert.match(referral.attrs,/data-referral-open-patient="p"/);
  run(`api=async()=>({portal:false,items:[]});currentVisitStatement={invoice:{id:'invoice'},patient:selected,identity:me,request:'request'};`);
  await run('loadStatementDeliveries(currentVisitStatement)');

@@ -29,10 +29,13 @@ async function main(){
  f=fixture();await f.ctx.openReceiptAction(f.box,receipt,'refund',()=>false);assert.equal(f.slot.innerHTML,'');
  f=fixture();f.ctx.api=async()=>({patient:{id:'other-patient'},accounts:{items:[]}});await assert.rejects(()=>f.ctx.openReceiptAction(f.box,receipt,'apply',()=>true),/do not belong/);
  f=fixture();f.ctx.billingCan=()=>false;assert.equal(f.ctx.receiptActionsMarkup(receipt),'');
- // Tenant-wide counts do not depend on the page of claims currently loaded.
- const claims=fs.readFileSync('web/claims.js','utf8').split('function claimStatusChipsHtml')[0];vm.runInContext(claims,f.ctx);
- vm.runInContext("claimRows=[{status:'draft'}];claimStatusCounts={draft:80,ready:20,rejected:12,submitted:30,accepted:7,adjudicated:6,void:2}",f.ctx);
- assert.equal(f.ctx.claimStatusCount('send'),100);assert.equal(f.ctx.claimStatusCount('fix'),12);assert.equal(f.ctx.claimStatusCount('wait'),37);assert.equal(f.ctx.claimStatusCount('all'),157);
- console.log('PASS refund and credit forms, original-card routing, reasons, exact retries, reopened pending requests, patient isolation and server claim counts');
+
+ // The billing landing offers shortcuts without relying on another workspace's cached claim rows.
+ vm.runInContext(fs.readFileSync('web/claims.js','utf8'),f.ctx);
+ assert.match(f.ctx.billingClaimShortcuts(),/data-billing-claim-queue="send">Claims to send<\/button>/);
+ assert.match(f.ctx.billingClaimShortcuts(),/data-billing-claim-queue="fix">Needs fixing<\/button>/);
+ f.ctx.workspaceResourceAllowed=resource=>resource!=='claims';
+ assert.equal(f.ctx.billingClaimShortcuts(),'');
+ console.log('PASS refund and credit forms, original-card routing, reasons, exact retries, reopened pending requests, patient isolation and scoped claim shortcuts');
 }
 main().catch(e=>{console.error(e);process.exitCode=1;});

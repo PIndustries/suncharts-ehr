@@ -11,9 +11,10 @@ function remittancePatientResponsibility(row){
  return explicit?`Payer-reported patient responsibility ${money(row.patient_responsibility_cents||0)}`:'Patient responsibility not specified in PR evidence; review the response';
 }
 function revenueAppointment(){
- const selectedAppointment=typeof chartSection!=='undefined'&&chartSection==='insurance'?insuranceAppointmentSelection.get(selected):null;
+ const currentVisit=typeof activeVisit!=='undefined'?activeVisit:null;
+ const selectedAppointment=!currentVisit||typeof chartSection!=='undefined'&&chartSection==='insurance'?insuranceAppointmentSelection.get(selected):null;
  if(selectedAppointment){const appointment=(workspace.appointments||[]).find(a=>a.id===selectedAppointment);if(appointment)return appointment;}
- if(typeof activeVisit!=='undefined'&&activeVisit)return activeVisit.appointment_id?(workspace.appointments||[]).find(a=>a.id===activeVisit.appointment_id):undefined;
+ if(currentVisit)return currentVisit.appointment_id?(workspace.appointments||[]).find(a=>a.id===currentVisit.appointment_id):undefined;
  const open=(workspace.appointments||[]).filter(a=>['checked_in','in_progress','booked'].includes(a.status)),asked=copayAppointmentSelection.get(selected);
  return open.find(a=>a.id===asked)||open[0];
 }

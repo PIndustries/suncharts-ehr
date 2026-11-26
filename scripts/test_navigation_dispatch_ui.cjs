@@ -45,7 +45,7 @@ async function main(){
   history:{replaceState(_state,_title,url){const parsed=new URL(url,'https://ehr.invalid');location.pathname=parsed.pathname;location.search=parsed.search;location.hash=parsed.hash;}},
   URL,URLSearchParams,Promise,Map,Set,Date,crypto:{randomUUID:()=> 'request-id'},
   esc:value=>String(value??''),
-  busy:false,me:{role:'owner'},selected:null,activeVisit:null,cursor:null,patients:[],studioView:'overview',
+  busy:false,patientWorkspaceGeneration:0,me:{role:'owner'},selected:null,activeVisit:null,cursor:null,patients:[],studioView:'overview',
   $:id=>nodes[id]||(nodes[id]={hidden:false,classList:{add(){},remove(){},toggle(){return false},contains(){return false}},setAttribute(){},focus(){},replaceChildren(){}}),
   notice(){},closeNavigation(){},setPage(value){pageTitle=value;},captureSupportDrafts(){},showChartSection(){},openEncounterStep(){},canRegisterPatient:()=>true,
   showSchedule:()=>{scheduleCalls++;return new Promise(resolve=>{releaseSchedule=resolve;});},showWorkflowStudio:async()=>{},showAutomationCenter:async()=>{},showIntegrationInbox:async()=>{},
