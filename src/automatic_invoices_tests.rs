@@ -233,9 +233,10 @@ async fn revision(db: &PgPool, a: &Actor, patient: Uuid, account: Uuid) {
         .execute(&mut *tx)
         .await
         .unwrap();
-    billing::account_revision(&mut tx, a, patient, account, "Synthetic change")
+    let row = billing::account_revision(&mut tx, a, patient, account, "Synthetic change")
         .await
         .unwrap();
+    enqueue_if_enabled(&mut tx, a, &row, true).await.unwrap();
     tx.commit().await.unwrap();
 }
 
@@ -311,6 +312,42 @@ async fn summary(db: &PgPool, actor: &Actor, patient: Uuid, account: Uuid) -> Va
     .unwrap();
     tx.commit().await.unwrap();
     summary
+}
+
+#[test]
+fn automatic_invoices_require_explicit_opt_in() {
+    assert!(!configured(None));
+    for value in ["", "false", "enabled", "TRUE"] {
+        assert!(!configured(Some(value)));
+    }
+    assert!(configured(Some("true")));
+}
+
+#[tokio::test]
+async fn disabled_automatic_invoices_do_not_enqueue_new_balances() {
+    let (db, a) = fixture(Uuid::new_v4()).await;
+    let patient = Uuid::new_v4();
+    let account = account(&db, &a, patient, 12000, false).await;
+    let mut tx = db.begin().await.unwrap();
+    let row = billing::account_row(&mut tx, &a, patient, account)
+        .await
+        .unwrap();
+    enqueue_if_enabled(&mut tx, &a, &row, false).await.unwrap();
+    tx.commit().await.unwrap();
+
+    let (jobs, operations): (i64, i64) = sqlx::query_as(
+        "SELECT (SELECT count(*) FROM automatic_patient_invoice_jobs WHERE tenant_id=$1),
+         (SELECT count(*) FROM automatic_patient_invoice_operations WHERE tenant_id=$1)",
+    )
+    .bind(a.tenant_id)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!((jobs, operations), (0, 0));
+    assert_eq!(
+        summary(&db, &a, patient, account).await["patient"]["owes_now_cents"],
+        12000
+    );
 }
 
 #[tokio::test]

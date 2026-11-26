@@ -15,13 +15,31 @@ use std::time::Duration;
 use uuid::Uuid;
 
 const REVIEW_AFTER_FAILURES: i32 = 3;
+const ENABLED_ENV: &str = "ENGINE_AUTOMATIC_PATIENT_INVOICES_ENABLED";
+
+fn enabled() -> bool {
+    configured(std::env::var(ENABLED_ENV).ok().as_deref())
+}
+
+fn configured(value: Option<&str>) -> bool {
+    value == Some("true")
+}
 
 pub(crate) async fn enqueue(
     tx: &mut Transaction<'_, Postgres>,
     a: &Actor,
     account: &Account,
 ) -> Result<()> {
-    if account.status != "posted" || account.source_history_id.is_some() {
+    enqueue_if_enabled(tx, a, account, enabled()).await
+}
+
+async fn enqueue_if_enabled(
+    tx: &mut Transaction<'_, Postgres>,
+    a: &Actor,
+    account: &Account,
+    enabled: bool,
+) -> Result<()> {
+    if !enabled || account.status != "posted" || account.source_history_id.is_some() {
         return Ok(());
     }
     sqlx::query(
@@ -603,6 +621,9 @@ async fn poll(pool: &PgPool, broker: &dyn Broker, policy: Policy) -> Result<()> 
 }
 
 pub async fn run(pool: PgPool) {
+    if !enabled() {
+        return;
+    }
     let mut interval = tokio::time::interval(Duration::from_secs(15));
     loop {
         interval.tick().await;

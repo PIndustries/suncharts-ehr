@@ -861,6 +861,15 @@ policy; a denied or unavailable claims service does not hide billing records.
 Claim submission, acceptance and crossover tracking are workflow evidence and do
 not establish payment or a settled patient balance.
 
+### Automatic patient invoice drafts
+
+Automatic invoice drafts require `ENGINE_AUTOMATIC_PATIENT_INVOICES_ENABLED=true`
+on the EHR server. Leave it unset until the connected SunCharts Connect broker
+supports native patient invoice create, read and close operations and the
+integration is approved for this installation. With the setting off, the EHR
+does not queue or process automatic invoice jobs. Existing manual statements and
+payment methods do not depend on this setting.
+
 ### Native Stripe account summary
 
 Payment settings includes a read-only account summary for owners and existing authorized delegated administrators. It shows available and pending Stripe balances, payout/card readiness, and the latest ten payments and payouts. Live and test accounts are labeled separately. Account capability readiness does not enable live collection; the existing operator gates still apply.
