@@ -9,7 +9,7 @@ const decode=value=>String(value||'').replace(/&(amp|lt|gt|quot|#39);/g,(_,key)=
 const people={assigned:'Dr. Avery Assigned',covering:'Dr. Casey Covering',owner:'Dr. Olive Owner',assistant:'Morgan Assistant',nurse:'Nico Nurse',desk:'Frankie Desk'};
 const soap={subjective:'S',objective:'O',assessment:'A',plan:'P'};
 const savedBy=(id,name=people[id],extra={})=>({id,name,at:'2026-11-10T15:05:00Z',...extra});
-function fixture({user='covering',role='clinician',delegated=false,assigned='assigned',note=null,status='in_progress',signedBy=null,amendments=[],policy=null,display=people[user]}={}){
+function fixture({user='covering',role='clinician',delegated=false,assigned='assigned',note=null,vitals=null,status='in_progress',signedBy=null,amendments=[],policy=null,display=people[user]}={}){
  const nodes=new Map(),listeners=new Map(),requests=[],asked=[];let answers=[];
  function node(id){
   if(nodes.has(id))return nodes.get(id);
@@ -23,7 +23,9 @@ function fixture({user='covering',role='clinician',delegated=false,assigned='ass
  function parseEditor(html){
   for(const [id,old] of [...nodes])if(id!=='visit-editor'&&editorOwned(id)){old.isConnected=false;nodes.delete(id);}
   for(const [,attributes,id,text] of html.matchAll(/<(?:div|p|button|span)\b([^>]*\bid="([^"]+)"[^>]*)>([^<]*)/g)){const n=node(id);n.hidden=/\shidden(?=[\s>]|$)/.test(attributes);n.textContent=decode(text);}
-  for(const match of html.matchAll(/<form id="([^"]+)"([^>]*)>([\s\S]*?)<\/form>/g)){
+  // A browser keeps template contents outside document.getElementById.
+  const mounted=html.replace(/<template\b[^>]*>[\s\S]*?<\/template>/g,'');
+  for(const match of mounted.matchAll(/<form id="([^"]+)"([^>]*)>([\s\S]*?)<\/form>/g)){
    const [,id,attributes,body]=match,form=node(id);form.values={};form.elements={};
    for(const [,key,value]of attributes.matchAll(/data-([a-z-]+)="([^"]*)"/g))form.dataset[key.replace(/-([a-z])/g,(_,c)=>c.toUpperCase())]=decode(value);
    for(const input of body.matchAll(/<(input|textarea)\b([^>]*\bname="([^"]+)"[^>]*)>([^<]*)/g)){
@@ -55,7 +57,7 @@ function fixture({user='covering',role='clinician',delegated=false,assigned='ass
  if(testPolicy)workspaceResourceAllowed=(resource,action='view')=>testPolicy[resource]?.[action]===true;
  me={tenant_id:'tenant-1',user_id:${JSON.stringify(user)},role:${JSON.stringify(role)},display_name:${JSON.stringify(display)},delegated:${JSON.stringify(delegated)}};selected='patient-1';
  workspace={appointments:[{id:'appointment-1',title:'Synthetic visit',starts_at:'2026-11-10T15:00:00Z'}],visits:[],amendments:${JSON.stringify(amendments)},clinical:{items:[],reviews:[]},labs:{orders:[],reports:[],acknowledgments:[]},billing:{accounts:[]}};
- activeVisit={id:'visit-1',patient_id:selected,appointment_id:'appointment-1',clinician_id:${JSON.stringify(assigned)},status:${JSON.stringify(status)},version:4,note:${JSON.stringify(note)},vitals:null,signed_by:${JSON.stringify(signedBy)},signed_at:${JSON.stringify(signedBy?'2026-11-10T17:00:00Z':null)}};
+ activeVisit={id:'visit-1',patient_id:selected,appointment_id:'appointment-1',clinician_id:${JSON.stringify(assigned)},status:${JSON.stringify(status)},version:4,note:${JSON.stringify(note)},vitals:${JSON.stringify(vitals)},signed_by:${JSON.stringify(signedBy)},signed_at:${JSON.stringify(signedBy?'2026-11-10T17:00:00Z':null)}};
  workspace.visits=[activeVisit];renderVisit(false);`);
  const settle=async()=>{for(let i=0;i<12;i++)await new Promise(done=>setImmediate(done));};
  const form=()=>nodes.get('note-form');
@@ -134,6 +136,30 @@ async function main(){
  assert.equal(f.asked[0].options.title,'Sign note?');assert.equal(count(f,'POST','/sign'),1);
  f=fixture({user:'assigned',role:'clinician',note:null});await f.settle();assert.equal(f.line('note-authorship'),'','a note nobody has saved names nobody');
  console.log('PASS the assigned clinician’s own visit keeps its usual editor and signature question');
+
+ // Saved vitals render as a summary. Clicking Sign must still require the clinician's confirmation.
+ f=fixture({user:'assigned',role:'clinician',note:soap,vitals:{heart_rate_bpm:72}});await f.settle();
+ assert.match(f.editor(),/id="visit-vitals-summary"/);
+ assert.equal(f.nodes.has('vitals-form'),false);
+ await f.click({action:'sign'},[true]);
+ assert.equal(count(f,'POST','/sign'),1);
+ assert.equal(f.requests.find(r=>r.path.endsWith('/sign')).version,4);
+ // An editable form with a changed measurement must block signing until staff save or restore it.
+ f=fixture({user:'assigned',role:'clinician',note:soap,vitals:{heart_rate_bpm:72,weight_kg:null}});await f.settle();
+ f.run("visitDrafts.set(activeVisit.id,{patientId:selected,vitals:{values:{heart_rate_bpm:'73'},version:activeVisit.version}})");
+ await f.click({action:'sign'});
+ assert.equal(f.notice(),'Save your current vitals before signing.','a retained draft stays protected while the editor is unmounted');
+ f.run('renderVisit(false)');
+ assert.equal(f.nodes.get('vitals-form').values.heart_rate_bpm,'73');
+ for(const value of ['73','']){
+  f.nodes.get('vitals-form').values.heart_rate_bpm=value;
+  await f.click({action:'sign'});
+  assert.equal(f.notice(),'Save your current vitals before signing.');
+  assert.equal(f.asked.length,0);assert.equal(count(f,'POST','/sign'),0);
+ }
+ f.nodes.get('vitals-form').values.heart_rate_bpm='72';
+ await f.click({action:'sign'},[true]);assert.equal(count(f,'POST','/sign'),1);
+ console.log('PASS saved vitals in a closed template allow signing; unsaved vitals in the open form block it');
 
  // Covering signature: one clear question, then the signature is the covering clinician's own.
  f=fixture({user:'covering',role:'clinician',note:draft});await f.settle();

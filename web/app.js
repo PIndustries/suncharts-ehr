@@ -1262,8 +1262,11 @@ document.addEventListener('click',e=>{
       if(typeof visitDiagnosisDrafts!=='undefined'&&visitDiagnosisDrafts.get(activeVisit.id)?.patientId===selected)throw new Error('Save or discard your diagnosis edits before signing.');
       const visible=formData(noteForm);
       if(!noteMatchesSaved(visible,activeVisit.note))throw new Error('Save your current note before signing.');
-      const entered=formData($('vitals-form')),enteredVitals=Object.fromEntries(Object.entries(entered).filter(([,x])=>x!=='').map(([k,x])=>[k,Number(x)])),savedVitals=vitalsToForm(activeVisit.vitals);
-      if(Object.keys(enteredVitals).length!==Object.keys(savedVitals).length || Object.entries(enteredVitals).some(([k,x])=>savedVitals[k]!==x))throw new Error('Save your current vitals before signing.');
+      const vitalsForm=$('vitals-form'),savedVitals=vitalsToForm(activeVisit.vitals),draft=visitDrafts.get(activeVisit.id);
+      const unsavedVitals=vitalsForm
+        ?Object.entries(formData(vitalsForm)).some(([key,value])=>(value===''?null:Number(value))!==(savedVitals[key]??null))
+        :draft?.patientId===selected&&draft.vitals;
+      if(unsavedVitals)throw new Error('Save your current vitals before signing.');
       const signing=activeVisit,signer=me;
       if(signing.clinician_id!==me.user_id){
         // Covering a colleague's visit: one clear question. The encounter itself is not reassigned.
