@@ -69,7 +69,7 @@ function fixture(vitals){
  vm.runInContext(`captureVisitAmendmentDraft=()=>{};currentAmendmentDraft=()=>null;updateVisitAmendmentStatus=()=>{};visitNoteAuthorshipLine=()=>'';visitNoteSignedLine=()=>'Signed';visitNoteAmendmentAuthor=()=>'';visitNoteSaved=()=>{};renderVisitNoteSource=()=>{};renderRooming=()=>{};renderVisitDiagnoses=()=>{};renderVisitCheckout=()=>{};refreshEncounterProgress=()=>{};setEncounterSection=()=>{};encounterSections=()=>['vitals'];renderPatients=()=>{};renderChart=()=>{};renderEncounterOrderActions=()=>{};revenueServiceDate=()=>null;applyChartSection=()=>{};encounterSection='documentation';chartSection='visits';visitNoteOwnsDiagnoses=()=>true;chartAreaEnabled=()=>true;encounterShows=()=>true;noteSavedText=n=>n||{};noteSaverName=()=>null;showVisitNoteAuthorship=()=>{};patientBannerChanged=()=>{};`,context);
 const noteMarkup=fs.readFileSync('web/visit-note.js','utf8');
 vm.runInContext(noteMarkup.slice(noteMarkup.indexOf('let visitNoteSaveQueue='),noteMarkup.indexOf('const visitNoteSearches=')),context);
- vm.runInContext('hasVisitNoteText=()=>false;',context);
+ vm.runInContext('hasVisitNoteText=()=>false;visitBillingAreaVisible=()=>false;',context);
  const run=code=>vm.runInContext(code,context);
  for(const id of ['visit-editor','visit-draft-status','note-conflict','note-saved-copy','note-message','notice','shell-loading','login-error'])node(id);
  run(`me={tenant_id:'tenant-1',user_id:'nurse-1',role:'nurse'};selected='patient-1';busy=false;
@@ -124,13 +124,12 @@ async function main(){
  for(const [key,value] of Object.entries(typed))assert.equal(f.vitalsForm().values[key],String(value),`${key} comes back as it was typed`);
  console.log('PASS all seven measurements still save and read back identically');
 
- // Half a blood pressure is refused by the server and keeps the typed value on screen.
+ // Half a blood pressure is flagged before sending and keeps the typed value on screen.
  f=fixture({});
  f.type({systolic_mm_hg:'120'});
  await f.submit();
- assert.equal(f.requests.length,1,'the save was attempted once');
- assert.deepEqual(f.requests[0].body,{systolic_mm_hg:120},'half a blood pressure is sent as typed, without invented zeros');
- assert.equal(f.notices.at(-1).message,'Enter both blood pressure numbers, or neither.','staff see the plain reason');
+ assert.equal(f.requests.length,0,'an incomplete blood pressure sends no write');
+ assert.equal(f.notices.at(-1).message,'Enter diastolic blood pressure.','staff see which number is missing');
  assert.equal(JSON.parse(f.run('JSON.stringify(activeVisit.vitals)')||'{}').heart_rate_bpm,undefined,'nothing was stored');
  assert.equal(f.vitalsForm().values.systolic_mm_hg,'120','the typed number stays for correction');
  console.log('PASS blood pressure with one number is refused with plain wording');

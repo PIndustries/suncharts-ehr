@@ -52,6 +52,7 @@ function fixture({user='covering',role='clinician',delegated=false,assigned='ass
   if(method==='GET'&&path==='/api/v1/visits/visit-1')return testServer.current;
   if(path.endsWith('/note')){const stored=testServer.current||activeVisit;if(version!==stored.version)throw conflict();
    testServer.current={...stored,version:stored.version+1,note:{...body,saved_by:{id:me.user_id,name:me.display_name,at:'2026-11-10T16:00:00Z'}}};return testServer.current;}
+  if(method==='PUT'&&path.endsWith('/vitals')){if(version!==activeVisit.version)throw conflict();return {...activeVisit,vitals:body,version:version+1};}
   if(path.endsWith('/sign'))return {...activeVisit,status:'signed',signed_by:me.user_id,signed_at:'2026-11-10T17:00:00Z',version:activeVisit.version+1};throw new Error('Unexpected request '+path);};
  selectPatient=async()=>{};setEncounterSection=()=>{};chartAreaEnabled=()=>false;
  if(testPolicy)workspaceResourceAllowed=(resource,action='view')=>testPolicy[resource]?.[action]===true;
@@ -75,7 +76,7 @@ async function main(){
  const draft={...soap,saved_by:savedBy('assistant')};
  for(const [user,role] of [['covering','clinician'],['owner','owner']]){
   const f=fixture({user,role,note:draft});await f.settle();
-  assert.match(f.editor(),/<button type="submit" class="quiet">Save note<\/button><button class="primary" type="button" data-action="sign-bill">.*?<\/button><button type="button" data-action="sign">Sign only<\/button>/,role);
+  assert.match(f.editor(),/<button type="submit" class="quiet">Save note<\/button><button type="button" class="primary" data-action="sign">Sign note<\/button>/,role);
   assert.doesNotMatch(f.editor(),/ readonly|You can read this note|You can draft this note/,role);
   assert.match(f.line('note-authorship'),/^Drafting for Dr\. Avery Assigned · Last saved by Morgan Assistant, [^·]*2026/,role);
   assert.equal(count(f,'GET','/previous-note'),1,role+' is offered the earlier note');
@@ -137,29 +138,36 @@ async function main(){
  f=fixture({user:'assigned',role:'clinician',note:null});await f.settle();assert.equal(f.line('note-authorship'),'','a note nobody has saved names nobody');
  console.log('PASS the assigned clinician’s own explicit signature submits in one action');
 
- // Saved vitals render as a summary. Clicking Sign must still require the clinician's confirmation.
+ // Saved vitals in a template allow the assigned clinician to sign in one action.
  f=fixture({user:'assigned',role:'clinician',note:soap,vitals:{heart_rate_bpm:72}});await f.settle();
  assert.match(f.editor(),/id="visit-vitals-summary"/);
  assert.equal(f.nodes.has('vitals-form'),false);
- await f.click({action:'sign'},[true]);
- assert.equal(count(f,'POST','/sign'),1);
- assert.equal(f.requests.find(r=>r.path.endsWith('/sign')).version,4);
- // An editable form with a changed measurement must block signing until staff save or restore it.
- f=fixture({user:'assigned',role:'clinician',note:soap,vitals:{heart_rate_bpm:72,weight_kg:null}});await f.settle();
+ await f.click({action:'sign'});
+ assert.equal(f.asked.length,0);
+ assert.equal(f.requests.find(r=>r.path.endsWith('/sign'))?.version,4);
+
+ // Unmounted edits stay protected. A valid edit autosaves before the signature uses its new version.
+ f=fixture({user:'assigned',role:'clinician',note:soap,vitals:{heart_rate_bpm:72}});await f.settle();
  f.run("visitDrafts.set(activeVisit.id,{patientId:selected,vitals:{values:{heart_rate_bpm:'73'},version:activeVisit.version}})");
  await f.click({action:'sign'});
- assert.equal(f.notice(),'Save your current vitals before signing.','a retained draft stays protected while the editor is unmounted');
+ assert.equal(f.notice(),'Open vitals to review your unsaved measurements before signing.');
+ assert.equal(count(f,'POST','/sign'),0);
  f.run('renderVisit(false)');
  assert.equal(f.nodes.get('vitals-form').values.heart_rate_bpm,'73');
- for(const value of ['73','']){
-  f.nodes.get('vitals-form').values.heart_rate_bpm=value;
-  await f.click({action:'sign'});
-  assert.equal(f.notice(),'Save your current vitals before signing.');
-  assert.equal(f.asked.length,0);assert.equal(count(f,'POST','/sign'),0);
- }
- f.nodes.get('vitals-form').values.heart_rate_bpm='72';
- await f.click({action:'sign'},[true]);assert.equal(count(f,'POST','/sign'),1);
- console.log('PASS saved vitals in a closed template allow signing; unsaved vitals in the open form block it');
+ await f.click({action:'sign'});
+ assert.equal(count(f,'PUT','/vitals'),1);
+ assert.deepEqual(JSON.parse(JSON.stringify(f.requests.find(r=>r.path.endsWith('/vitals')).body)),{heart_rate_bpm:73});
+ assert.equal(f.requests.find(r=>r.path.endsWith('/sign'))?.version,5);
+ assert.equal(f.asked.length,0);
+
+ f=fixture({user:'assigned',role:'clinician',note:soap,vitals:{heart_rate_bpm:72}});await f.settle();
+ f.run("visitDrafts.set(activeVisit.id,{patientId:selected,vitals:{values:{heart_rate_bpm:'',systolic_mm_hg:'120'},version:activeVisit.version}});renderVisit(false)");
+ await f.click({action:'sign'});
+ assert.equal(f.notice(),'Enter diastolic blood pressure.');
+ assert.equal(count(f,'PUT','/vitals'),0);
+ assert.equal(count(f,'POST','/sign'),0);
+ assert.equal(f.nodes.get('vitals-form').values.systolic_mm_hg,'120');
+ console.log('PASS signing flushes valid vitals and protects invalid or unmounted edits');
 
  // Covering signature: one clear question, then the signature is the covering clinician's own.
  f=fixture({user:'covering',role:'clinician',note:draft});await f.settle();

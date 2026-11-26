@@ -114,7 +114,8 @@ async function main(){
  await g.run(`(async()=>{${headerStart}})()`);assert(g.calls.some(x=>x[0]==='tab'&&x[1]==='note'));
  assert.match(read('web/encounter-start.js'),/setEncounterSection\('visit'\)/);
  const revenue=read('web/patient-revenue.js');
- assert.match(revenue,/const encounterStepChips=\[\[1,'Visit'\],\['claim','Claim'\],\[2,'Payment'\]\]/);
+ assert.match(revenue,/const encounterStepChips=\[\[1,'Visit'\],\[2,'Payment'\]\]/);
+ assert.match(revenue,/data-encounter-claim-status[^\n]*data-open-signed-claim-details/,'claim details remain available inside Visit');
  assert.doesNotMatch(revenue,/data-step-continue|Continue to note|Review rooming, vitals, insurance and copay/);
  assert.match(revenue,/key==='note'\?1:key==='payments'\?2:'claim'/);
  // The floating editor stays below the top bar and patient header on short screens.

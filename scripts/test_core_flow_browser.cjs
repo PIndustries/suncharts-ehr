@@ -32,7 +32,7 @@ async function main(){
    for(const name of ['captureVisitDrafts','updateDraftStatus','refreshEncounterProgress','visitNoteBar','showVisitNoteAuthorship','showVisitDiagnoses','visitNoteSaved','visitReviewRestore','renderChargeEncounterDiagnoses','closeChargeRemovals','chargeSavedFollowUp','showChartSection','chartOpenEditor'])window[name]=()=>{};
    window.run=work=>{window.pending=Promise.resolve().then(work).catch(e=>{window.failure=e.message;throw e;});return pending;};window.notice=message=>window.message=message;
    window.localTime=value=>{const d=new Date(value),pad=n=>String(n).padStart(2,'0');return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;};window.date=String;window.human=String;window.sourceNotice=()=>'';window.canDraftNote=()=>true;window.canSignNote=()=>true;window.canRecordVisitVitals=()=>false;window.visitBillingAreaVisible=()=>true;
-   window.noteRequestBody=v=>v;window.formData=f=>Object.fromEntries(new FormData(f));window.noteMatchesSaved=(v,s)=>s&&noteSectionKeys.every(k=>v[k]===s[k]);
+   window.visitDrafts=new Map();window.noteRequestBody=v=>v;window.formData=f=>Object.fromEntries(new FormData(f));window.noteMatchesSaved=(v,s)=>s&&noteSectionKeys.every(k=>v[k]===s[k]);
    window.confirmAction=async()=>{confirmations++;return true;};window.signNextPlan=()=>({done:'Signed'});
    window.rememberVisit=v=>{activeVisit=v;$('note-form').dataset.version=v.version;};window.selectPatient=async()=>{activeVisit=window.signedVisit||activeVisit;};
    window.encounterChargeAccount=()=>workspace.billing.accounts[0]||null;

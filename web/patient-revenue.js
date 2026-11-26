@@ -619,11 +619,11 @@ function renderEncounterRevenue(){
  const host=$('encounter-revenue');if(!host)return;
  const visit=typeof activeVisit!=='undefined'?activeVisit:null,account=encounterChargeAccount(),appointment=(workspace.appointments||[]).find(a=>a.id===visit?.appointment_id),serviceDate=revenueServiceDate(appointment),coverage=revenueCoverage(serviceDate);
  if(!visit){host.innerHTML='<p>Select an encounter to record its procedures and charges.</p>';return;}
- const key=JSON.stringify([selected,visit.id,visit.version,appointment?.id,account?.id,account?.version,(workspace.billing?.coverages||[]).map(c=>[c.id,c.version]),workspace.billing?.copays]);if(host.dataset.revenueKey===key&&$('encounter-billing-editor')){if(account&&chartSection==='visits'&&!$('encounter-billing-detail')?.innerHTML)showBillingAccount(account.id,false);loadEncounterRevenueStatus(account);if(appointment&&billingCan('create'))void loadHostedCopays(appointment.id);if(typeof resumeEncounterChargeDraft==='function')resumeEncounterChargeDraft();return;}if(typeof captureBillingChargeDraft==='function')captureBillingChargeDraft();host.dataset.revenueKey=key;
+ const codesVisible=typeof visitBillingAreaVisible!=='function'||visitBillingAreaVisible();
+ const key=JSON.stringify([selected,visit.id,visit.version,appointment?.id,account?.id,account?.version,(workspace.billing?.coverages||[]).map(c=>[c.id,c.version]),workspace.billing?.copays,codesVisible]);if(host.dataset.revenueKey===key&&$('encounter-billing-editor')){if(account&&chartSection==='visits'&&!$('encounter-billing-detail')?.innerHTML)showBillingAccount(account.id,false);loadEncounterRevenueStatus(account);if(appointment&&billingCan('create'))void loadHostedCopays(appointment.id);if(typeof resumeEncounterChargeDraft==='function')resumeEncounterChargeDraft();return;}if(typeof captureBillingChargeDraft==='function')captureBillingChargeDraft();host.dataset.revenueKey=key;
  const owner=typeof me!=='undefined'&&me?.role==='owner';
   // Whether this role sees codes & charges at all. A person without billing keeps the note's own
   // diagnoses editor, so the codes block draws none of its own (visitNoteOwnsDiagnoses).
-  const codesVisible=typeof visitBillingAreaVisible!=='function'||visitBillingAreaVisible();
   // The diagnoses host is the block's first child and this rewrite never parses over it: the editor
   // keeps the nodes it already has, so a diagnosis being typed into it is not rebuilt from markup by
   // an unrelated recalculation. The rest of the block is built as markup as before, into a detached
@@ -645,10 +645,10 @@ function renderEncounterRevenue(){
   // The body is written as before; the host, held outside that markup, is then moved to the top of
   // the block above the charge lines — moved, never re-created, so what it holds comes with it.
   const codeDialog=$('visit-page-host')?.querySelector?.('[data-encounter-codes-dialog]');
-  const keepDiagnoses=codeDialog&&encounterCodesDialogCurrent(codeDialog)&&codeDialog.contains(diagnosesHost);
+  const keepDiagnoses=codesVisible&&codeDialog&&encounterCodesDialogCurrent(codeDialog)&&codeDialog.contains(diagnosesHost);
   const existingEditor=codeDialog?.querySelector?.('#encounter-billing-editor');
   const liveForm=existingEditor?.querySelector('#billing-account-form');
-  const compatible=liveForm&&encounterCodesDialogCurrent(codeDialog)&&liveForm.dataset.patient===selected&&
+  const compatible=codesVisible&&liveForm&&encounterCodesDialogCurrent(codeDialog)&&liveForm.dataset.patient===selected&&
     (liveForm.elements.visit_id?.value===visit.id)&&((liveForm.dataset.id||'')===(account?.id||''))&&
     (!account||Number(liveForm.dataset.version)===account.version)&&((liveForm.dataset.mode==='correction')===(account?.status==='posted'));
   if(compatible)holder?.querySelector?.('#encounter-billing-editor')?.remove();
@@ -696,7 +696,10 @@ function renderEncounterRevenue(){
 let visitChargePostResult=null;
 async function postVisitChargesFromCard(options={}){
  visitChargePostResult={posted:false,cancelled:false};
- const account=encounterChargeAccount(),state=encounterRevenueState;if(!account||account.status!=='draft')return false;
+ let account=encounterChargeAccount();
+ const state=encounterRevenueState;if(!account||account.status!=='draft')return false;
+ const patient=selected,identity=me,visit=typeof activeVisit==='undefined'?null:activeVisit?.id,accountId=account.id;
+ const current=()=>selected===patient&&me===identity&&(typeof activeVisit==='undefined'?null:activeVisit?.id)===visit&&encounterChargeAccount()?.id===accountId;
  if(typeof encounterRevenueVisitUnsigned==='function'&&encounterRevenueVisitUnsigned(account))return false;
  if(account.content.coverage_id){
   const coverage=(workspace.billing?.coverages||[]).find(c=>c.id===account.content.coverage_id);
@@ -707,11 +710,11 @@ async function postVisitChargesFromCard(options={}){
    return false;
   }
  }
-const insured=state.data?.summary?.insurance?.insured===true&&account.content.coverage_id!=null;
- const message=options.send&&insured?`Charges of ${money(account.total_cents)} become final. Review and submit the claim on the Claim.MD form.`:insured?`Charges of ${money(account.total_cents)} become final and the insurance claim is prepared.`:`Charges of ${money(account.total_cents)} become final.`;
  // Codes are checked on every post, as approving an encounter does elsewhere: what must be fixed
  // stops the post and is shown on the table; what should be checked is asked about once.
- const form=$('billing-account-form'),findings=form&&typeof encounterCodeFindings==='function'?encounterCodeFindings(form):[];
+ const editor=$('billing-account-form');
+ const form=editor?.dataset.id===accountId&&editor.dataset.patient===patient&&editor.elements.visit_id?.value===account.content.visit_id?editor:null;
+ const findings=form&&typeof encounterCodeFindings==='function'?encounterCodeFindings(form):[];
  const fixes=findings.filter(f=>f.level==='fix'),reviews=findings.filter(f=>f.level==='review');
  if(fixes.length){
   // What has to be fixed is listed beside the codes, so the codes open over the page to show it.
@@ -725,13 +728,19 @@ const insured=state.data?.summary?.insurance?.insured===true&&account.content.co
   notice(`${fixes.length===1?'1 thing needs':fixes.length+' things need'} fixing before these charges can be posted.`,true);
   visitChargePostResult.cancelled=true;return false;
  }
+ if(form&&typeof flushEncounterProcedures==='function')await flushEncounterProcedures(form,current);
+ if(!current())return false;
+ account=encounterChargeAccount();if(account.status!=='draft')return false;
+ const insured=state.data?.summary?.insurance?.insured===true&&account.content.coverage_id!=null;
+ const message=options.send&&insured?`Charges of ${money(account.total_cents)} become final. Review and submit the claim on the Claim.MD form.`:insured?`Charges of ${money(account.total_cents)} become final and the insurance claim is prepared.`:`Charges of ${money(account.total_cents)} become final.`;
  const held=account.content.claim_details?.review_requested===true;
  const checks=reviews.length?`\n\nCheck before posting:\n${reviews.map(f=>'• '+(f.code?f.code+' · ':'')+f.text).join('\n')}`:'';
  if(!await confirmAction(message+(held?' These charges were held for review; posting approves them.':'')+checks,{title:held?'Approve and post these charges?':'Post these charges?',confirmLabel:held?'Approve and post':'Post charges'})){visitChargePostResult.cancelled=true;return false;}
- visitChargePostResult.posted=true;
- const patient=selected,identity=me;
+ if(!current())return false;
+ if(encounterChargeAccount()?.version!==account.version)throw new Error('The charges changed. Review the saved amount before posting.');
  await api(`${billingBase()}/${account.id}/actions`,'POST',{action:'post',reason:held?'Charges reviewed and posted':'Charges posted',local_only:false,...(held?{review_approved:true}:{})},account.version);
- if(selected!==patient||me!==identity)return;
+ visitChargePostResult.posted=true;
+ if(!current())return;
  // The same refresh the lower form does: this encounter reopened on its billing step. Then the
  // card's own state is dropped so it reads what the server now says. A chart opened on
  // another page stays on that page.
@@ -2336,7 +2345,7 @@ function encounterStepsSync(){
   const billingAllowed=typeof visitBillingAreaVisible!=='function'||visitBillingAreaVisible();
   const clinicalOnly=documentation.querySelector('[data-encounter-diagnoses-only]')||page.querySelector('[data-encounter-codes-dialog] [data-encounter-diagnoses-only]');
   const diagnoses=billingAllowed?(revenue.querySelector(':scope > #encounter-diagnoses')||$('encounter-diagnoses')):clinicalOnly;
-  const editor=revenue.querySelector(':scope > #encounter-billing-editor')||$('encounter-billing-editor');
+  const editor=billingAllowed?(revenue.querySelector(':scope > #encounter-billing-editor')||$('encounter-billing-editor')):null;
   // Claim previews include a placeholder row for typing. Only saved evidence can fold the code editor.
   const account=typeof encounterChargeAccount==='function'?encounterChargeAccount()||raw.account:raw.account;
   const focusedCode=document.activeElement;
@@ -2346,7 +2355,12 @@ function encounterStepsSync(){
   if(clinicalOnly&&diagnoses===clinicalOnly){
    const previous=codeParent.querySelector('[data-encounter-diagnoses-only]');if(previous&&previous!==clinicalOnly)previous.remove();
   }
-  encounterStepMove(diagnoses,codeParent);if(billingAllowed)encounterStepMove(editor,codeParent);
+  if(billingAllowed&&clinicalOnly){
+   if(typeof captureVisitDiagnosisDraft==='function')captureVisitDiagnosisDraft();
+   clinicalOnly.remove();
+   if(diagnoses&&!diagnoses.querySelector('#visit-diagnoses-form'))renderEncounterDiagnoses();
+  }
+  encounterStepMove(diagnoses,codeParent);encounterStepMove(editor,codeParent);
   if(restoreCodeFocus&&focusedCode.isConnected&&document.activeElement!==focusedCode)focusedCode.focus({preventScroll:true});
   const status=revenue.querySelector(':scope > #encounter-revenue-status')||$('encounter-revenue-status');
   const billingData=scoped?encounterRevenueState.data:null;

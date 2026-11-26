@@ -23,7 +23,7 @@ const api=async(path,method='GET',body)=>{
  if(path==='/api/v1/ai/drafts/sun-draft-1')return {draft:{id:'sun-draft-1',integration_id:'erebine-1',provider:'erebine',model:'clinic-erebine-model',purpose:'structured_extraction',status:'draft',version:1,content:'Synthetic linked Sun draft.'}};
  return {items:[]};
 };
-const context=vm.createContext({console,Map,Set,URL,URLSearchParams,Object,Number,Date,JSON,crypto:{randomUUID:()=> 'request-1'},location:{origin:'https://clinic.example',assign:()=>{}},document:{addEventListener:(name,fn)=>(handlers[name]??=[]).push(fn)},$:id=>id==='tools'?host:null,me:{role:'owner',delegated_role:'partner_admin'},esc:value=>String(value??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;'),human:value=>String(value??'').replaceAll('_',' '),date:value=>String(value),scopeNames:{},api,showTool:()=>{},notice:()=>{},run:fn=>Promise.resolve().then(fn),showPrevisit:async()=>{},showApps:async()=>{}});
+const context=vm.createContext({console,Map,Set,URL,URLSearchParams,Object,Number,Date,JSON,crypto:{randomUUID:()=> 'request-1'},location:{origin:'https://clinic.example',assign:()=>{}},document:{addEventListener:(name,fn)=>(handlers[name]??=[]).push(fn)},$:id=>id==='tools'?host:null,me:{role:'owner',delegated_role:'partner_admin'},esc:value=>String(value??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;'),human:value=>String(value??'').replaceAll('_',' '),date:value=>String(value),scopeNames:{},canRegisterPatient:()=>true,api,showTool:()=>{},notice:()=>{},run:fn=>Promise.resolve().then(fn),showPrevisit:async()=>{},showApps:async()=>{}});
 context.registerSunRefreshHook=(name,hook)=>{refreshHooks[name]=hook;};
 const sunShared=fs.readFileSync('web/sun.js','utf8');vm.runInContext(sunShared.slice(sunShared.indexOf('function sunPrivacyPipeline('),sunShared.indexOf('function sunInvalidatePrivacyReview(')),context);
 vm.runInContext(source,context);
@@ -34,9 +34,10 @@ context.run=fn=>{const task=Promise.resolve().then(fn);pending.push(task);return
  await vm.runInContext("showIntegrationInbox('communications')",context);
  assert.match(host.innerHTML,/Inbox/);assert.match(host.innerHTML,/Patient messages/);assert.match(host.innerHTML,/Calls, texts &amp; faxes/);assert.match(host.innerHTML,/Call, text or fax/);assert.match(host.innerHTML,/Connection settings/);assert.match(host.innerHTML,/Referral email/);assert.match(host.innerHTML,/telephony\/sessions/);
  vm.runInContext("integrationInboxState.detail={type:'communications',integration:'ring-1',event:{id:'event-1',event_kind:'call',status:'pending_review'},payload:{body:{direction:'Inbound'}}};renderIntegrationInbox()",context);
- assert.match(host.innerHTML,/Review communication/i);assert.match(host.innerHTML,/Link to patient/);assert.match(host.innerHTML,/Jamie, Sample|Sample, Jamie/);
+ assert.match(host.innerHTML,/Review communication/i);assert.match(host.innerHTML,/<label>Link to chart<select name="patient_id">/);assert.match(host.innerHTML,/data-communication-link>Link to chart/);assert.match(host.innerHTML,/Jamie, Sample|Sample, Jamie/);
  vm.runInContext("integrationInboxState.tab='referrals';integrationInboxState.detail={type:'referrals',integration:'gmail-1',id:'referral-1',status:'new',sender:'referrer@example.test',subject:'New referral',body_text:'Synthetic referral details',attachments:[{filename:'referral.pdf',mime_type:'application\/pdf',size_bytes:1200}]};renderIntegrationInbox()",context);
- assert.match(host.innerHTML,/referral\.pdf/);assert.match(host.innerHTML,/Link referral/);assert.match(host.innerHTML,/Dismiss/);
+ assert.match(host.innerHTML,/referral\.pdf/);assert.match(host.innerHTML,/Link referral/);assert.match(host.innerHTML,/Dismiss/);assert.match(host.innerHTML,/data-referral-register/);
+ context.canRegisterPatient=()=>false;vm.runInContext('renderIntegrationInbox()',context);assert.doesNotMatch(host.innerHTML,/data-referral-register/);
  const beforeReview=calls.length;context.me={role:'clinician'};
  await vm.runInContext('showAiReviewWorkspace()',context);
  assert.deepEqual(calls.slice(beforeReview).map(call=>call.path).sort(),['/api/v1/ai/connections','/api/v1/ai/drafts']);

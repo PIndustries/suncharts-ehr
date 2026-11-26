@@ -89,7 +89,7 @@ function fixture({signed=false,allowBillingWrites=false}={}){
   }
   assert.fail(message+' '+errors.join(' / ')+' '+(find('#notice')?.textContent||''));
  };
- const ready=()=>wait(()=>find('#visit-page-host[data-encounter-one-page][data-steps-visible="true"]'),'the real chart has opened its encounter');
+ const ready=()=>wait(()=>find('#visit-page-host[data-encounter-steps][data-steps-visible="true"]'),'the real chart has opened its encounter');
  return {w,dom,document,run,find,wait,ready,calls,errors};
 }
 async function close(fixture){
@@ -99,26 +99,29 @@ async function close(fixture){
 }
 
 (async()=>{
- const f=fixture();
+ const f=fixture({allowBillingWrites:true});
  try{
   const host=await f.ready(),find=f.find;
-  const sections=()=>[...host.querySelectorAll('.encounter-step:not([hidden])')].map(node=>node.dataset.encounterSection);
-  assert.equal(host.dataset.stepViewed,'2');
-  await f.wait(()=>find('[data-encounter-step-open="3"]')?.hidden,'self-pay has no Claim step');
-  assert.deepEqual(sections(),['note','coding','payment','wrap-up']);
-  assert.equal(find('#encounter-step-payment .visit-billing-more [data-encounter-charges]'),null);
-  assert.ok(find('#encounter-step-payment [data-add-insurance-sheet]'));
-  assert.equal(find('[data-step-primary]'),null);
+  assert.equal(host.dataset.stepsVisit,encounter.id);
+  assert.equal(f.run('chartSection'),'visits');
+  assert.equal(host.dataset.stepViewed,'1');
+  assert.deepEqual([...host.querySelectorAll('[data-encounter-step-open]')].map(node=>node.textContent.trim()),['Visit','Payment']);
+  await f.wait(()=>find('[data-encounter-claim-status]')?.hidden,'self-pay has no claim action');
+  assert.ok(find('#encounter-rooming-vitals'));
+  assert.ok(find('[data-open-visit-followup]'));
+
   const note=find('#note-form'),plan=note.elements.plan;
   assert.equal(plan.value,'Original plan');
-  assert.equal(note.querySelector('[data-action="sign-bill"]').textContent,'Sign & bill');
-  assert.equal(find('[data-encounter-section="note"]').querySelector('[data-open-encounter-coding]'),null,'the note starts with documentation and the progress rail provides Coding');
-  assert.ok(find('[data-encounter-section="coding"]'),'Coding stays available on this visit');
-  const rooming=find('[data-encounter-rooming]');
+  assert.equal(note.querySelector('[data-action="sign"]').textContent,'Sign only');
+  const codeSummary=find('[data-encounter-codes-summary]');
+  assert.ok(codeSummary.compareDocumentPosition(note.querySelector('[data-action="sign-bill"]'))&f.w.Node.DOCUMENT_POSITION_FOLLOWING,'signing follows the code summary');
+  assert.match(codeSummary.textContent,/Z00\.00/);
+  assert.match(codeSummary.textContent,/99213/);
+  const rooming=find('#encounter-rooming-vitals details');
   assert.equal(rooming.open,false);
   rooming.querySelector('summary').click();
   assert.equal(rooming.open,true);
-  assert.equal(find('dialog[open]'),null,'Rooming opens in the encounter');
+  assert.equal(find('dialog[open]'),null,'vitals open within this encounter');
   assert.match(find('#visit-vitals-summary').textContent,/120\/80/);
   find('[data-action="edit-vitals"]').click();
   assert.equal(find('#vitals-form').elements.systolic_mm_hg.value,'120');
@@ -126,70 +129,74 @@ async function close(fixture){
 
   plan.value='Unsaved treatment plan';
   f.run('captureVisitDrafts()');
-  find('[data-encounter-step-open="6"]').click();
-  await f.wait(()=>find('#encounter-step-coding #visit-diagnoses-form'),'combined coding loads real diagnoses');
-  assert.ok(find('#encounter-step-coding [data-encounter-coding] #billing-charge-lines'));
+  find('[data-open-encounter-codes]').click();
+  const dialog=await f.wait(()=>find('dialog[data-encounter-codes-dialog][open]'),'codes open from the note');
+  await f.wait(()=>dialog.querySelector('#visit-diagnoses-form'),'combined coding loads real diagnoses');
+  assert.ok(dialog.querySelector('#billing-charge-lines'));
   assert.equal(f.document.querySelectorAll('#visit-diagnoses').length,1);
   assert.equal(f.document.querySelectorAll('#billing-account-form').length,1);
-  const coding=find('#billing-account-form'),chip=find('[data-encounter-step-open="6"]');
+  const coding=dialog.querySelector('#billing-account-form');
   assert.equal(coding.querySelector('[data-add-charge]').textContent,'+ Add procedure');
   assert.equal(coding.querySelector('[data-charge-copay]').textContent,'Self-pay');
-  assert.match(coding.querySelector('[data-charge-pays]').textContent,/Payment shows the remaining balance/);
-  find('[data-encounter-step-open="4"]').click();
-  f.run("setEncounterSection('charges');encounterStepsSync();");
-  assert.equal(host.dataset.stepViewed,'6');
-  assert.equal(find('#billing-account-form'),coding);
-  assert.equal(find('[data-encounter-step-open="6"]'),chip);
+  assert.doesNotMatch(coding.querySelector('[data-charge-pays]').textContent,/insurer|copay/i);
+  const amount=coding.querySelector('[name="amount"]');
+  amount.value='115.00';
+  amount.dispatchEvent(new f.w.Event('input',{bubbles:true}));
+  dialog.querySelector('[data-save-encounter-codes]').click();
+  await f.wait(()=>!dialog.open,'Done flushes the pending procedure edit, then closes the dialog');
+  assert.deepEqual(f.calls.filter(call=>call.method!=='GET').map(call=>[call.method,call.route.split('/').pop()]),[['PUT',account.id]]);
+  find('[data-encounter-step-open="2"]').click();
   assert.equal(find('#note-form'),note);
   assert.equal(plan.value,'Unsaved treatment plan');
-  assert.equal(find('[data-step-payment] [data-visit-collect]'),null);
-  f.run("setEncounterSection('files');encounterStepsSync();setEncounterSection('coding');");
-  assert.equal(host.dataset.stepViewed,'6','the signed-note reminder can return from another record area');
+  assert.equal(find('[data-visit-collect]'),null);
 
   f.run("workspaceChartTabEnabled=key=>key!=='billing';renderVisit(false);encounterStepsSync();");
-  assert.deepEqual(sections(),['note','wrap-up']);
-  assert.ok(find('#encounter-step-note #visit-diagnoses'));
+  assert.equal(host.querySelector('[data-encounter-step-open="2"]'),null);
+  find('[data-open-encounter-codes]').click();
+  assert.ok(find('dialog[open] #visit-diagnoses'));
   assert.equal(f.document.querySelectorAll('#visit-diagnoses').length,1,'coding access changes leave one diagnoses editor');
   assert.equal(find('#note-form [data-action="sign"]').textContent,'Sign note');
-  assert.equal(find('[data-action="sign-bill"]'),null);
+  assert.equal(find('#note-form [data-action="sign-bill"]'),null);
   assert.equal(find('#note-form').elements.plan.value,'Unsaved treatment plan');
+  find('dialog[open] [data-close-encounter-codes]').click();
   for(const area of ['files','orders']){
    f.run(`setEncounterSection('${area}');encounterStepsSync();`);
-   assert.deepEqual(sections(),[],area+' opens its existing record area');
-   assert.equal(find('#encounter-stepper').hidden,true);
+   assert.equal(find('#encounter-stepper').hidden,true,area+' opens separately');
    f.run("setEncounterSection('visit');encounterStepsSync();");
-   assert.deepEqual(sections(),['note','wrap-up']);
+   assert.equal(find('#encounter-stepper').hidden,false);
+   assert.equal(f.run('activeVisit.id'),encounter.id);
+   assert.equal(find('#note-form').elements.plan.value,'Unsaved treatment plan');
   }
-  assert.deepEqual(f.calls.filter(call=>call.method!=='GET'),[]);
+  assert.deepEqual(f.calls.filter(call=>call.method!=='GET').map(call=>[call.method,call.route.split('/').pop()]),[['PUT',account.id]]);
   assert.deepEqual(f.errors,[]);
  }finally{await close(f);}
+
  const signed=fixture({signed:true,allowBillingWrites:true});
  try{
-  const host=await signed.ready();
-  assert.equal(host.dataset.stepViewed,'2');
-  await signed.wait(()=>signed.find('#encounter-step-coding [data-step-self-pay-post] [data-visit-post-charges]'),'a signed self-pay draft posts from Coding');
-  signed.run("setEncounterSection('claim');encounterStepsSync();");
-  assert.equal(host.dataset.stepViewed,'6');
-  assert.match(signed.find('#encounter-step-note .note-read').textContent,/Synthetic clinical history/);
-  assert.equal(signed.find('#note-form [data-action^="sign"]'),null);
-  assert.ok(signed.find('#encounter-step-wrap-up #visit-checkout'));
+  const host=await signed.ready(),find=signed.find;
+  assert.equal(host.dataset.stepsVisit,encounter.id);
+  assert.match(find('#visit-editor').textContent,/Synthetic clinical history/);
+  assert.equal(find('#note-form [data-action^="sign"]'),null);
+  assert.ok(find('[data-open-visit-followup]'));
   assert.deepEqual(signed.calls.filter(call=>call.method!=='GET'),[]);
+
   signed.run("confirmAction=async()=>true;");
-  const draftAmount=signed.find('#encounter-step-coding [name="amount"]');
+  find('[data-open-encounter-codes]').click();
+  const draft=await signed.wait(()=>find('dialog[open] #billing-account-form[data-mode="draft"]'),'signed draft codes open');
+  const draftAmount=draft.querySelector('[name="amount"]');
   draftAmount.value='120.00';
   draftAmount.dispatchEvent(new signed.w.Event('input',{bubbles:true}));
-  signed.find('[data-step-self-pay-post] [data-visit-post-charges]').click();
-  await signed.wait(()=>signed.find('#visit-page-host').dataset.stepViewed==='4'&&signed.find('[data-step-payment] [data-visit-collect]'),'posting opens Payment with the updated balance');
-  assert.match(signed.find('#encounter-step-payment .visit-billing-totals').textContent,/Patient owes now\$120.00/);
+  draft.querySelector('[data-visit-post-charges]').click();
+  await signed.wait(()=>find('[data-encounter-step-number="2"] [data-visit-collect]'),'posting enables payment for the updated balance');
+  assert.match(find('[data-encounter-step-number="2"]').textContent,/Amount due\s*\$120\.00/);
   assert.deepEqual(signed.calls.filter(call=>call.method!=='GET').map(call=>[call.method,call.route.split('/').pop()]),[['PUT',account.id],['POST','actions']]);
-  assert.ok(signed.find('#encounter-step-payment [data-visit-statement]'));
-  assert.ok(signed.find('#encounter-step-payment [data-new-ledger]'));
-  assert.ok(signed.find('#encounter-step-payment [data-visit-history="payments"]'));
-  signed.find('[data-encounter-step-open="6"]').click();
-  const correction=await signed.wait(()=>signed.find('#encounter-step-coding #billing-account-form[data-mode="correction"]'),'posted charges open as a correction');
-  const save=correction.querySelector('[data-save-encounter-coding]');
+
+  if(find('dialog[data-encounter-codes-dialog][open]'))find('[data-close-encounter-codes]').click();
+  find('[data-open-encounter-codes]').click();
+  const correction=await signed.wait(()=>find('dialog[open] #billing-account-form[data-mode="correction"]'),'posted charges open as a correction');
+  const save=find('dialog[open] [data-save-encounter-codes]');
   assert.equal(correction.dataset.autosave,'off');
-  assert.equal(save.textContent,'Save charge correction');
+  assert.equal(save.textContent,'Save correction and close');
   assert.equal(correction.querySelector('[data-charge-copay]').textContent,'Self-pay');
   assert.doesNotMatch(correction.querySelector('[data-charge-pays]').textContent,/insurer|copay/i);
   const amount=correction.querySelector('[name="amount"]');
@@ -197,9 +204,9 @@ async function close(fixture){
   amount.dispatchEvent(new signed.w.Event('input',{bubbles:true}));
   assert.equal(correction.chargeSaveTimer,undefined);
   save.click();
-  await signed.wait(()=>correction.dataset.version==='4','explicit save uses the charge correction endpoint');
+  await signed.wait(()=>signed.calls.some(call=>call.method==='POST'&&call.route.endsWith('/corrections')),'explicit save uses the charge correction endpoint');
   assert.deepEqual(signed.calls.filter(call=>call.method!=='GET').map(call=>[call.method,call.route.split('/').pop()]),[['PUT',account.id],['POST','actions'],['POST','corrections']]);
   assert.deepEqual(signed.errors,[]);
  }finally{await close(signed);}
- console.log('PASS the mounted self-pay page keeps one Coding form and opens legacy Charges and Claim links there');
+ console.log('PASS the mounted self-pay encounter preserves drafts, opens a single coding dialog, and posts or corrects charges through the right endpoints');
 })().catch(error=>{console.error(error);process.exitCode=1;});

@@ -26,7 +26,7 @@ function fixture({search = '', practice = false} = {}) {
         getAttribute(name) { return attributes.get(name); },
         classList: {contains: name => classes.has(name), remove: name => classes.delete(name), add: name => classes.add(name),toggle:(name,force)=>{const enabled=force??!classes.has(name);if(enabled)classes.add(name);else classes.delete(name);return enabled;}},
         replaceChildren() { this.innerHTML = ''; }, reset() {}, focus() {}, scrollIntoView() {},
-        querySelector() { return null; }, addEventListener() {}
+        querySelector() { return null; }, contains() { return false; }, addEventListener() {}
       });
     }
     return nodes.get(id);
@@ -51,12 +51,14 @@ function fixture({search = '', practice = false} = {}) {
   evaluate(fs.readFileSync(path.join(root, 'web/app.js'), 'utf8'));
 const noteMarkup=fs.readFileSync('web/visit-note.js','utf8');
 vm.runInContext(noteMarkup.slice(noteMarkup.indexOf('function visitNoteInlineDiagnosesMarkup('),noteMarkup.indexOf('const visitNoteSearches=')),context);
+  const appClickCount=(listeners.get('click')||[]).length;
   if (practice) evaluate(fs.readFileSync(path.join(root, 'web/practice.js'), 'utf8'));
+  const practiceClick=(listeners.get('click')||[]).slice(appClickCount).find(item=>item.options===true)?.callback;
   // Home reads the same chart-area setting the patient chart uses. The settings arrive as a
   // loaded workspace object, so Home only needs the reader; the browser's copy of it lives
   // in specialty-workspace.js and is reproduced here rather than loading that whole module.
   evaluate('practiceWorkspaceSettings=undefined;workspaceChartTabEnabled=key=>{const tabs=practiceWorkspaceSettings?.content?.chart_tabs;return !Array.isArray(tabs)||tabs.includes(key);}');
-  return {context, evaluate, node, listeners};
+  return {context, evaluate, node, listeners, practiceClick};
 }
 
 function clinicalFixture() {
@@ -128,7 +130,7 @@ async function testDelegatedRoomingControls(){
   f.evaluate(`me.role=${JSON.stringify(role)};activeVisit.clinician_id='another-clinician';activeVisit.status='in_progress';renderVisit(false)`);
   assert.match(f.node('visit-editor').innerHTML,/>Save vitals</,role);
   // Rooming staff may draft the note for the clinician but are never offered the signature.
-  assert.match(f.node('visit-editor').innerHTML,/>Save note<\/button><\/div><\/details><span id="note-sign-help" class="muted">You can draft this note\. A clinician signs it\.<\/span>/,role);
+  assert.match(f.node('visit-editor').innerHTML,/>Save note<\/button><span id="note-sign-help" class="muted">You can draft this note\. A clinician signs it\.<\/span>/,role);
   assert.doesNotMatch(f.node('visit-editor').innerHTML,/data-action="sign"|id="amendment-form"/,role);
   assert.match(f.node('encounter-progress').innerHTML,/encounter-visit-actions/,role+' action row');
   f.evaluate(`activeVisit.status='signed';renderVisit(false)`);
@@ -190,7 +192,7 @@ async function testEncounterSelectionRefresh(){
  const f=clinicalFixture();f.context.pending=[];
  f.evaluate(`workspace.visits=[{...activeVisit,id:'signed-visit',patient_id:selected,status:'signed'}];api=async()=>workspace.visits[0];run=action=>pending.push(Promise.resolve().then(action));renderChart=()=>calls.push(['chart',activeVisit.id]);renderVisit=()=>calls.push(['editor-only']);`);
  const button={id:'',type:'button',dataset:{visit:'signed-visit'},closest(){return null;},hasAttribute(name){return name==='data-visit';}};
- f.listeners.get('click')[1].callback({target:{closest:selector=>selector==='button'?button:null}});
+ for(const {callback} of f.listeners.get('click'))callback({target:{closest:selector=>selector==='button'?button:null},preventDefault(){}});
  await Promise.all(f.context.pending);
  assert.deepEqual(JSON.parse(JSON.stringify(f.context.calls)),[['chart','signed-visit']]);
 }
@@ -251,7 +253,7 @@ async function testPracticeQueues() {
   // Exercise the actual event route, verifying the selected patient and encounter.
   f.evaluate(`showClinical=async()=>calls.push(['directory']);frameSelectPatient=async(patient,position)=>calls.push(['chart',patient,position]);`);
   const previousCalls=f.context.calls.length;
-  const click = f.listeners.get('click').find(item => item.options === true).callback;
+  const click = f.practiceClick;
   let prevented = false, stopped = false;
   await click({target:{closest:()=>({id:'',dataset:{practiceVisit:'visit-1',practiceVisitPatient:'patient-1'},hasAttribute:n=>n==='data-practice-visit'})},preventDefault(){prevented=true;},stopImmediatePropagation(){stopped=true;}});
   // run() starts the asynchronous action; drain its chained continuations.
@@ -288,7 +290,7 @@ async function testPracticeFilters() {
   const f=practiceFixture(values);
   await f.evaluate('showPracticeWorkspace()');
   assert.match(f.node('practice-worklist').innerHTML,/data-practice-visit="v2" data-practice-visit-patient="p2"/);
-  const click=f.listeners.get('click').find(item=>item.options===true).callback;
+  const click=f.practiceClick;
   function dispatch(dataset,attribute){return click({target:{closest:()=>({id:'',dataset,hasAttribute:name=>name===attribute})},preventDefault(){},stopImmediatePropagation(){}});}
   await dispatch({practiceFlow:'arrivals'},'data-practice-flow');
   assert.match(f.node('practice-worklist').innerHTML,/First Patient/);

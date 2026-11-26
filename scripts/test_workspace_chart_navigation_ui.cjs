@@ -41,9 +41,10 @@ async function main(){
  // Chart sections now share one grouped left panel. Configured visibility is retained.
  let tabs=plain(evaluate('configuredChartTabs(Object.entries(chartTabLabels))'));tabs.splice(tabs.findIndex(([key])=>key==='billing'),0,['insurance','Insurance']);context.tabs=tabs;
  const html=evaluate('chartNavigation(tabs)');
- assert.deepEqual([...html.matchAll(/data-chart-section="([^"]+)"/g)].map(match=>match[1]),['overview','profile','vitals','visits','orders','history','insurance','billing','documents','functional_status','specialty_care']);
- assert.match(html,/frame-chart-select/);assert.match(html,/CLINICAL/);assert.match(html,/BILLING/);assert.match(html,/OTHER/);
- assert.match(html,/Contact &amp; demographics/);assert.deepEqual([...html.matchAll(/data-clinical-focus="([^"]+)"/g)].map(m=>m[1]),['problem','allergy','medication']);
+ assert.deepEqual([...html.matchAll(/data-chart-section="([^"]+)"/g)].map(match=>match[1]),['orders','overview','profile','vitals','insurance','billing','visits','documents','history','functional_status','specialty_care']);
+ assert.match(html,/frame-chart-select/);assert.match(html,/data-sidebar-collapsed="true"/);
+ for(const group of ['Care tools','Patient chart','Billing','History &amp; records'])assert.match(html,new RegExp(`data-chart-sidebar-group="${group}"`));
+ assert.match(html,/aria-label="Profile"/);assert.deepEqual([...html.matchAll(/data-clinical-focus="([^"]+)"/g)].map(m=>m[1]),['problem','allergy','medication']);
  assert.doesNotMatch(html,/data-chart-section="checkout"/,'checkout belongs to the selected encounter');
  context.renderDocuments=()=>calls.push({render:'patient-files'});
  const beforeFiles=captured;evaluate("showChartSection('documents')");assert.equal(evaluate('activeVisit'),null);assert.equal(nodes['documents-panel'].hidden,false);assert.equal(nodes['patient-intake-panel'].hidden,false,'patient Files also shows intake forms');assert.equal(nodes['appointments-panel'].hidden,true);assert.equal(nodes['record-context'].hidden,true);assert.equal(nodes['patient-record-navigation'].open,false);assert.ok(captured>beforeFiles,'Files navigation still captures existing drafts');assert.equal(calls.at(-1).render,'patient-files');
@@ -58,6 +59,10 @@ async function main(){
 
  evaluate(`activeVisit={id:'visit-1',appointment_id:'appt-1',clinician_id:'clinician-1',status:'in_progress',version:1,note:{subjective:'Retained note'},vitals:{}};workspace.visits=[activeVisit];chartSection='visits';encounterSection='documentation'`);
  const encounter=evaluate('encounterWorkflow()');
+ const encounterNav=evaluate('chartNavigation(tabs)');
+ assert.match(encounterNav,/data-encounter-navigation/);
+ assert.match(encounterNav,/title="Current encounter" aria-label="Current encounter" data-chart-section="visits" aria-pressed="true"/);
+ assert.match(encounterNav,/title="Encounter history"[^>]*data-chart-section="encounters"/);
  assert.doesNotMatch(encounter,/data-encounter-switch|Switch encounter|data-start-encounter-flow|Get help with this encounter/);assert.match(encounter,/<summary>Add ▾<\/summary>/);assert.doesNotMatch(encounter,/encounter-step-tabs|Notes &amp; diagnoses|Charges &amp; billing/,'the numbered step bar is gone: the encounter is one page');assert.match(encounter,/data-encounter-step="new-order">\+ Order/);assert.match(encounter,/data-encounter-section="files">\+ Attach file/);
  assert.doesNotMatch(encounter,/Open encounter|Continue encounter/,'selected encounter renders its local steps directly');
  evaluate('renderVisit(false)');assert.match(nodes['visit-editor'].innerHTML,/<h3[^>]*>Note<\/h3>/);assert.match(nodes['visit-editor'].innerHTML,/Retained note/);

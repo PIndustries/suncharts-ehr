@@ -37,7 +37,7 @@ function fixture(resource,kind='staff_task',options={}){
 async function main(){
  for(const [resource,section] of [['signed_visit','visits'],['functional_status','functional_status'],['neurotoxin','specialty_care'],['baclofen_pump_refill','specialty_care'],['stretching_program','specialty_care'],['care_coordination','specialty_care'],['eligibility','billing'],['order','orders'],['referral','referrals'],['follow_up','checkout']]){
   fixture(resource);await run("journeyOpenNative('run-1','step')");
-  const expected=[['clinical'],['patient','patient-1','visit-1'],['chart',section]];
+  const expected=[['patient','patient-1','visit-1'],['chart',section]];
   if(section==='specialty_care')expected.push(['specialty',{patient_id:'patient-1',visit_id:'visit-1',kind:resource,resource_id:`${resource}-1`}]);
   if(resource==='eligibility')expected.push(['eligibility','coverage-1','2026-11-07',['eligibility-1'],true]);
   assert.deepEqual(calls,expected,`${resource} opens the linked patient and encounter's native work`);
@@ -56,7 +56,7 @@ async function main(){
  fixture('intake_reviewed','patient_form');await run("journeyOpenNative('run-1','step')");assert.deepEqual(calls,[['packet','intake_reviewed-1']]);
  fixture('payment','payment_request');await run("journeyOpenNative('run-1','step')");assert.deepEqual(calls,[['payment','payment-1']],'a payment proof ID opens payment review, never an account with that ID');
  context.workspace.billing.accounts=[{id:'account-1',content:{visit_id:'visit-1'}}];
- fixture('payment','payment_request',{proof:{ready:false,status:'missing',resource_id:null,action:{module:'billing',patient_id:'patient-1',visit_id:'visit-1',chart_section:'billing'}}});await run("journeyOpenNative('run-1','step')");assert.deepEqual(calls,[['clinical'],['patient','patient-1','visit-1'],['chart','billing'],['account','account-1']],'a new payment opens the one account linked to this encounter');
+ fixture('payment','payment_request',{proof:{ready:false,status:'missing',resource_id:null,action:{module:'billing',patient_id:'patient-1',visit_id:'visit-1',chart_section:'billing'}}});await run("journeyOpenNative('run-1','step')");assert.deepEqual(calls,[['patient','patient-1','visit-1'],['chart','billing'],['account','account-1']],'a new payment opens the one account linked to this encounter');
  context.workspace.billing.accounts.push({id:'account-2',visit_id:'visit-1'});calls.length=0;await run("journeyOpenNative('run-1','step')");assert.ok(!calls.some(([name])=>name==='account'),'ambiguous accounts remain an explicit patient billing choice');
 
  const fields=[{key:'goal',label:'Patient goal',field_type:'long_text'}];
@@ -82,7 +82,7 @@ async function main(){
  context.workspaceResourceAllowed=()=>true;context.fixtureReadiness.steps[0].action.patient_id='another-patient';await assert.rejects(run("journeyOpenNative('run-1','step')"),/linked context changed/);assert.equal(calls.length,0);
  const missingEligibility={ready:false,status:'missing',resource_id:null,action:{module:'billing',patient_id:'patient-1',appointment_id:'appointment-1',visit_id:null,chart_section:'billing'}};
  fixture('eligibility','eligibility_query',{item:{visit_id:null},proof:missingEligibility});await run("journeyOpenNative('run-1','step')");
- assert.deepEqual(calls,[['clinical'],['patient','patient-1',null],['chart','billing'],['eligibility','coverage-1','2026-11-07',null,false]],'a pre-visit check has no unrelated active encounter and uses the appointment date in the clinic timezone');assert.equal(context.activeVisit,undefined);
+ assert.deepEqual(calls,[['patient','patient-1',null],['chart','billing'],['eligibility','coverage-1','2026-11-07',null,false]],'a pre-visit check has no unrelated active encounter and uses the appointment date in the clinic timezone');assert.equal(context.activeVisit,undefined);
  fixture('eligibility','eligibility_query',{proof:missingEligibility});context.workspace.billing.coverages=[coverage('expired',{end_date:'2026-11-06'}),coverage('future',{effective_date:'2026-11-08'}),coverage()];await run("journeyOpenNative('run-1','step')");assert.equal(calls.at(-1)[1],'coverage-1');
  fixture('eligibility','eligibility_query',{proof:missingEligibility});context.workspace.billing.coverages.push(coverage('coverage-2',{priority:'secondary'}));await run("journeyOpenNative('run-1','step')");
  assert.equal(calls.at(-1)[0],'billing-editor');assert.ok(!calls.some(call=>call[0]==='eligibility'),'multiple coverages require staff choice');
@@ -112,8 +112,9 @@ async function nativeDestinationChecks(){
  await vm.runInContext("openClaimmdEligibility(coverage,{serviceDate:'2026-11-07',history:{items:[]},readOnly:true})",eligibility);assert.doesNotMatch(editor.html,/claimmd-eligibility-form|data-claimmd-eligibility/,'review of existing evidence cannot submit a new request');assert.equal(sent.length,1,'reviewing never sends a check');
  let release;eligibility.api=async()=>new Promise(resolve=>{release=resolve;});editor.html='current';const late=vm.runInContext('openClaimmdEligibility(coverage)',eligibility);eligibility.selected='another-patient';release({items:[]});await late;assert.equal(editor.html,'current','native eligibility opener checks identity after its read');
 
- const app=fs.readFileSync('web/app.js','utf8'),selectSource=app.slice(app.indexOf('async function selectPatient('),app.indexOf('\nconst date =',app.indexOf('async function selectPatient(')));
- const chart=vm.createContext({patientWorkspaceGeneration:0,patientDirectoryPreference:true,setPatientDirectoryVisible(){},captureVisitDrafts(){},api:async path=>path.endsWith('/workspace')?{patient:{id:'patient-1'},visits:[{id:'unrelated',status:'in_progress',clinician_id:'clinician'}]}:{items:[]},workspaceResourceAllowed:()=>true,chartSection:'overview',selected:null,activeVisit:undefined,workspace:null,billingPayers:[],me:{user_id:'clinician'},renderPatients(){},renderChart(){}});vm.runInContext(selectSource,chart);
+ const app=fs.readFileSync('web/app.js','utf8'),selectSource=app.slice(app.indexOf('const patientChartCache='),app.indexOf('\nconst date =',app.indexOf('async function selectPatient(')));
+ const chartHost={hidden:false,childNodes:[],classList:{add(){}},replaceChildren(){}};
+ const chart=vm.createContext({$:()=>chartHost,setPage(){},window:{scrollTo(){}},framePatients:[],patientWorkspaceGeneration:0,patientDirectoryPreference:true,setPatientDirectoryVisible(){},captureVisitDrafts(){},api:async path=>path.endsWith('/workspace')?{patient:{id:'patient-1'},visits:[{id:'unrelated',status:'in_progress',clinician_id:'clinician'}]}:{items:[]},workspaceResourceAllowed:()=>true,chartSection:'overview',encounterSection:'visit',selected:null,activeVisit:undefined,workspace:null,billingPayers:[],me:{user_id:'clinician'},esc:String,renderPatients(){},renderChart(){}});vm.runInContext(selectSource,chart);
  await vm.runInContext("selectPatient('patient-1')",chart);assert.equal(chart.activeVisit.id,'unrelated','omitted visit retains the normal chart default');await vm.runInContext("selectPatient('patient-1',null)",chart);assert.equal(chart.activeVisit,undefined,'explicit no-encounter workflow context does not inherit a different encounter');
 }
 main().catch(error=>{console.error(error);process.exitCode=1;});

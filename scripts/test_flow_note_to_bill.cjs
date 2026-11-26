@@ -69,7 +69,7 @@ function fixture(){
  loadEncounterRevenueStatus=async()=>{encounterRevenueState.data={summary:{insurance:{insured:!selfPay},patient:{owes_now_cents:2500},claim:selfPay?null:{id:'claim',status:'draft'}}};};
  visitNoteBillPayment=async()=>{paymentOffered=true;};visitNoteOpenPayment=async()=>{paymentOpened=true;};
  `,ctx);
- Object.assign(ctx,{encounterRevenueState:{data:{summary:{}},review:null},selfPay:false,issues:[],paymentOpened:false,openedProblems:false,nativeReview:null,claimMdConnectionState:{connected:true},flushVisitNoteCharges:async()=>{}});
+ Object.assign(ctx,{visitDrafts:new Map(),encounterRevenueState:{data:{summary:{}},review:null},selfPay:false,issues:[],paymentOpened:false,openedProblems:false,nativeReview:null,claimMdConnectionState:{connected:true},flushVisitNoteCharges:async()=>{}});
  return {ctx,note,node,nodes,handlers,requests,timers,run:code=>vm.runInContext(code,ctx),settle:async()=>{for(let i=0;i<20;i++)await new Promise(resolve=>setImmediate(resolve));}};
 }
 async function main(){

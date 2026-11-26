@@ -205,7 +205,8 @@ function fixture(jobs){
  assert.deepEqual(f.calls.at(-1),['/api/v1/patients/p1/clinical-reconcile/problem','POST',{history_ids:['h1']}]);
  assert.equal(reloaded,'p1');assert.deepEqual(f.notices.at(-1),['1 problem added to the chart.',false]);
  f.c.me={role:'front_desk'};assert.equal(f.run('importedListBlock("problem")'),'');
- assert.match(clinical,/typeof importedListBlock==='function'\?importedListBlock\(k\):''/);
+ assert.match(clinical,/typeof importedListBlock==='function'\)\{\s*imported.innerHTML=importedListBlock\(k\);/);
+ assert.match(clinical,/panel.innerHTML=[^\n]*\+imported.innerHTML/,'each clinical list displays matching imported records');
  assert.match(clinical,/mapping\?'<input type="hidden" name="reason" value="Reconciled from previous system records">'/,'reconciling one imported entry asks for no reason or confirmation box');
  assert.doesNotMatch(clinical,/review-ack/);
  console.log('PASS a reviewed imported list is accepted in one action');
@@ -214,7 +215,7 @@ function fixture(jobs){
  const start=billing.indexOf('function importedCoverage(i){'),end=billing.indexOf('function chargeRow(');assert.ok(start>0&&end>start);
  let form='';
  const billingPayersList=[{id:'payer-1',content:{name:'Synthetic Payer',active:true}},{id:'payer-2',content:{name:'Other Payer',active:true}}];
- const b=vm.createContext({esc,crypto:{randomUUID:()=>'request-1'},me:{role:'front_desk'},workspace:{patient:{given_name:'Avery Q',family_name:'Synthetic',birth_date:'1990-01-01'}},
+ const b=vm.createContext({esc,crypto:{randomUUID:()=>'request-1'},me:{role:'front_desk'},selected:'patient-1',workspace:{patient:{id:'patient-1',given_name:'Avery Q',family_name:'Synthetic',birth_date:'1990-01-01'}},
   billingPayers:billingPayersList,
   showChartSection(){},openBillingEditor:html=>{form=html;},$:()=>null,addEventListener(){},coveragePayerSetup:()=>'',dollars:v=>v??'',sourceNotice:()=>'<div>SOURCE NOTICE</div>',
   coveragePayerOptions:id=>`<option value="${id}" selected>payer</option>`,patientSelfPolicyHolder(){},
@@ -228,7 +229,7 @@ function fixture(jobs){
  vm.runInContext(billing.slice(start,end),b);
  const record={source_history_id:'h9',policy:'p',source_data:{coverage:{payer_name:' synthetic payer ',member_id:'SYN-MEMBER-1',group_number:'SYN-GROUP',plan_name:'Synthetic PPO',relationship:'self',priority:'secondary',effective_date:'2023-01-01'}}};
  vm.runInContext('coverageEditor(null,record)',Object.assign(b,{record}));
- assert.match(form,/<h3>Add coverage from previous system<\/h3>/);assert.match(form,/data-source="h9"/);
+ assert.match(form,/<h3>Add coverage from previous system<\/h3>/);assert.match(form,/data-patient="patient-1"[^>]*data-source="h9"/);
  for(const [name,value] of [['member_id','SYN-MEMBER-1'],['group_number','SYN-GROUP'],['plan_name','Synthetic PPO'],['subscriber_name','Avery Q Synthetic'],['subscriber_birth_date','1990-01-01'],['effective_date','2023-01-01']])assert.match(form,new RegExp(`name="${name}" value="${value}"`));
  assert.match(form,/name="payer_name" value="Synthetic Payer"/);assert.match(form,/name="payer_id" value="payer-1"/);assert.match(form,/name="priority" data-value="secondary"/);assert.match(form,/name="relationship" data-value="self"/);
  assert.match(form,/<input type="hidden" name="reason" value="Added from previous system insurance record">/);
@@ -238,8 +239,9 @@ function fixture(jobs){
  vm.runInContext('coverageEditor(null,{source_history_id:"h8",policy:"p",source_data:{policy_number:"LEGACY-1"}})',b);
  assert.match(form,/Reconcile source coverage/);assert.match(form,/SOURCE NOTICE/);assert.match(form,/type="checkbox" required/,'records from other import formats keep their review step');
  assert.match(app,/r\.kind==='insurance'&&r\.source_data\?\.coverage\?'Add as coverage':/);
- assert.match(app,/typeof importedContactBlock==='function'\?importedContactBlock\(\):''/);
- const panel=app.slice(app.indexOf('function renderHistory() {'),app.indexOf('function encounterWorkflow(){'));assert.match(panel,/<h2>Records from previous system<\/h2>/);assert.doesNotMatch(panel.replace(/\$\{[^`]*?\}/g,' '),/Source record|native chart|source history/i);
+ assert.match(app,/data-chart-detail="source-contacts">Imported contacts/);
+ assert.match(app,/chartRecordTemplate\('source-contacts',importedContactBlock\(\)\)/,'previous contact details open from Imported records');
+ const panel=app.slice(app.indexOf('function renderHistory() {'),app.indexOf('function encounterWorkflow(){'));assert.match(panel,/chartListHeader\('Imported records'/);assert.doesNotMatch(panel.replace(/\$\{[^`]*?\}/g,' '),/Source record|native chart|source history/i);
   console.log('PASS an imported insurance record pre-fills the coverage form without saving it');
 
  // Opening a new insurance entry or switching the relationship to "self" copies the patient onto the policy holder fields.
@@ -263,7 +265,7 @@ function fixture(jobs){
  {
   let plain='';
   const pickerDirectory=[{id:'payer-1',content:{name:'Synthetic Payer',payer_code:'SYN',active:true}}];
-  const f=vm.createContext({esc,crypto:{randomUUID:()=>'request-2'},pickerDirectory,me:{role:'front_desk'},Date,workspace:{patient:{given_name:'Avery Q',family_name:'Synthetic',birth_date:'1990-01-01'}},
+  const f=vm.createContext({esc,crypto:{randomUUID:()=>'request-2'},pickerDirectory,me:{role:'front_desk'},Date,selected:'patient-1',workspace:{patient:{id:'patient-1',given_name:'Avery Q',family_name:'Synthetic',birth_date:'1990-01-01'}},
    billingPayers:[{id:'payer-1',content:{name:'Synthetic Payer',payer_code:'SYN',active:true}}],
    coveragePayerSetup:()=>'',dollars:v=>v??'',sourceNotice:()=>'',showChartSection(){},openBillingEditor:html=>{plain=html;},$:id=>id==='coverage-form'?{addEventListener(){},elements:{relationship:{value:'self'},subscriber_name:{value:''},subscriber_birth_date:{value:''}}}:null,
    patientSelfPolicyHolder(){},insuranceOptionLabels:values=>values.map(v=>({primary:'Primary',secondary:'Secondary',tertiary:'Tertiary',active:'Active',inactive:'Inactive',entered_in_error:'Entered by mistake',self:'Self',spouse:'Spouse',child:'Child',other:'Other',unverified:'Not yet',manually_verified:'Yes, checked by hand'})[v]),

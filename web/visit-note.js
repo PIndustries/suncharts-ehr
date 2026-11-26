@@ -227,6 +227,7 @@ async function visitNoteSaveInputs({signing=false,focusVitals=false}={}){
   }
   if(!current())return;
   const vitals=$('vitals-form');
+  if(signing&&vitals?.dataset.visitId!==visit&&visitDrafts.get(visit)?.vitals)throw new Error('Open vitals to review your unsaved measurements before signing.');
   if(vitals?.dataset.visitId===visit&&canRecordVisitVitals(activeVisit)){
    const values=formData(vitals),saved=vitalsToForm(activeVisit.vitals);
    const issue=typeof visitVitalsFeedback==='function'?visitVitalsFeedback(vitals,{validateValues:true}):null;

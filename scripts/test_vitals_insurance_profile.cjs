@@ -76,6 +76,7 @@ async function main(){
  evaluate('loadInsuranceEligibility=()=>{};insuranceAutoEligibility=()=>{};');
  evaluate('renderPatientInsurance()');await evaluate('loadInsuranceCardImages()');html=node('insurance-workspace').innerHTML;
  assert.match(html,/For the visit on Nov 24, 2026/);assert.match(html,/<select id="insurance-appointment">/);
+ assert.doesNotMatch(html,/Claim[. ]?MD/i,'the insurance chart is independent of the clearinghouse');
  assert.match(html,/<details class="insurance-supporting-records"><summary>Inactive &amp; prior \(1\)/);assert.match(html,/Current insurance/);assert.match(html,/\+ Add insurance/);
  assert.match(html,/id="insurance-page-copay"/);assert.match(html,/data-insurance-copay-status role="status">\$25\.00 copay due/);
  assert.equal((html.match(/data-insurance-copay-collect=/g)||[]).length,1);
@@ -108,9 +109,7 @@ main().catch(error=>{console.error(error);process.exitCode=1;});
 const renderChart=app.slice(app.indexOf("$('chart').innerHTML=`<section id=\"patient-banner\""),app.indexOf('// Keep the header and left panel mounted'));
 assert(renderChart.indexOf('id="record-context"')<renderChart.indexOf('${patientVitalsHistory()}'));
 assert(renderChart.indexOf('id="record-context"')<renderChart.indexOf('${chartOverview()}'));
-// Vendor names may remain in protocol comparisons and comments, never in display copy.
+// Keep the syntax check for all browser modules. Dedicated submission screens may name the clearinghouse.
 for(const file of fs.readdirSync(path.join(root,'web')).filter(name=>name.endsWith('.js'))){
  new vm.Script(source('web/'+file),{filename:file});
- const lines=source('web/'+file).split('\n').filter(line=>!line.trimStart().startsWith('//')&&!line.includes("guide_reference!==")&&!line.includes('enable and verify a Claim.MD connection/.test'));
- assert.doesNotMatch(lines.join('\n'),/Claim\.MD|ClaimMD|CLAIM\.MD/,file);
 }
