@@ -110,6 +110,7 @@ function fixture(){
  v.workspaceResourceAllowed=()=>true;v.chartAreaEnabled=()=>true;v.appointmentCopayCard=()=>'<section id="synthetic-copay">Copay</section>';
  v.syncPatientNextAction=()=>{};v.patientSectionVisible=()=>false;v.inRecordArea=()=>false;v.encounterSections=()=>[['visit','Overview']];v.encounterShows=()=>false;
  v.eval(app.slice(app.indexOf('function encounterWorkflow()'),app.indexOf('// The encounter is one scrolling page')));
+ v.eval(app.slice(app.indexOf('function chartNavigationEncounter()'),app.indexOf('function patientWorkflowActions()')));
  v.refreshEncounterProgress=()=>{v.$('encounter-progress').innerHTML=v.encounterWorkflow();};
  v.eval(app.slice(app.indexOf('function applyChartSection()'),app.indexOf('function applyChartSection()')+app.slice(app.indexOf('function applyChartSection()')).indexOf('\nfunction ')));
  for(const section of ['encounters','visits','overview']){

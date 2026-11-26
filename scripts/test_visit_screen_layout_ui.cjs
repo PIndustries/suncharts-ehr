@@ -7,18 +7,19 @@ const root=path.join(__dirname,'..'),app=fs.readFileSync(path.join(root,'web/app
 function extract(start,end){const a=app.indexOf(start),b=app.indexOf(end,a);assert(a>=0&&b>a,start);return app.slice(a,b);}
 function nodes(){
  const all=new Map();
- const node=id=>{if(!all.has(id)){const classes=new Set();all.set(id,{id,hidden:false,open:false,innerHTML:'',textContent:'',attributes:{},classList:{toggle(name,force){const on=force===undefined?!classes.has(name):Boolean(force);if(on)classes.add(name);else classes.delete(name);return on;},contains:name=>classes.has(name)},setAttribute(name,value){this.attributes[name]=value;},hasAttribute(name){return name in this.attributes;},querySelector(){return null;},querySelectorAll(){return [];},scrollIntoView(){this.scrolled=true;},focus(){this.focused=true;},replaceChildren(){this.innerHTML='';}});}return all.get(id);};
+ const node=id=>{if(!all.has(id)){const classes=new Set();all.set(id,{id,hidden:false,open:false,innerHTML:'',textContent:'',attributes:{},childNodes:[],classList:{add(name){classes.add(name);},toggle(name,force){const on=force===undefined?!classes.has(name):Boolean(force);if(on)classes.add(name);else classes.delete(name);return on;},contains:name=>classes.has(name)},setAttribute(name,value){this.attributes[name]=value;},hasAttribute(name){return name in this.attributes;},querySelector(){return null;},querySelectorAll(){return [];},scrollIntoView(){this.scrolled=true;},focus(){this.focused=true;},replaceChildren(){this.innerHTML='';}});}return all.get(id);};
  return {all,node};
 }
 function directory(storage){
  const {node}=nodes();
- const ctx={console,Map,Set,Promise,me:{tenant_id:'tenant',user_id:'staff',role:'clinician'},selected:undefined,activeVisit:undefined,workspace:undefined,patients:[],cursor:null,$:node,
+ const ctx={console,Map,Set,Promise,esc:value=>String(value??''),setPage:Object.assign(()=>{},{last:'Patients & encounters'}),billingPayers:[],window:{scrollX:0,scrollY:0},me:{tenant_id:'tenant',user_id:'staff',role:'clinician'},selected:undefined,activeVisit:undefined,workspace:undefined,patients:[],cursor:null,$:node,
   captureVisitDrafts(){},showTool(){node('clinical-workspace').hidden=true;},canRegisterPatient:()=>true,workspaceResourceAllowed:()=>true,isRoomingStaff:()=>false,renderPatients(){},renderChart(){},
   api:async path=>path.endsWith('/workspace')?{patient:{id:path.split('/')[4]},visits:[],appointments:[]}:{items:[],next_cursor:null}};
  if(storage)ctx.localStorage=storage;
  vm.createContext(ctx);
  vm.runInContext(extract("let chartSection='overview'",'// Unsaved clinical edits'),ctx);
- vm.runInContext(extract('async function selectPatient(','\nconst date ='),ctx);
+ vm.runInContext(extract('const patientChartCache=','\nconst date ='),ctx);
+ vm.runInContext(extract('let framePatients=[];','function framePage('),ctx);
  vm.runInContext(extract('async function showClinical(','\nconst scopeNames='),ctx);
  // The header button, exactly as the click handler runs it.
  const handler=/if\(button\.id==='toggle-directory'\)\{([^\n]*?)return;\}/.exec(app);assert(handler,'the patient list toggle handler exists');

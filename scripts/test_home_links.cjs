@@ -19,6 +19,11 @@ async function main(){
  patientBillingRoute:()=>patientBillingRoute,
  showPatientBillingWorkspace:async options=>{calls.push(['billing',options]);c.showTool('Billing');patientBillingRoute={patient:options.patientId,tab:options.tab,surface:'global'};},
  showClaimsWorkspace:async({filter}={})=>{calls.push(['claims-filter',filter]);c.showTool('Claims');},
+ selectPatient:async(patient,visit,_stillCurrent,destination)=>{
+  calls.push(['patient',patient,visit,destination.section,destination.step]);
+  c.selected=patient;c.chartSection=destination.section;c.activeVisit=visit?{id:visit}:null;c.workspace={patient:{id:patient}};
+  node('clinical-workspace').hidden=false;
+ },
  showClinical:async()=>{calls.push(vm.runInContext('patientDirectoryQuery()',c));node('clinical-workspace').hidden=false;},
  };
  c.window=c;
@@ -26,6 +31,7 @@ async function main(){
  vm.createContext(c);
  vm.runInContext(read('web/practice.js'),c);vm.runInContext(read('web/patient-lifecycle.js'),c);vm.runInContext(read('web/billing-overview.js'),c);
  const app=read('web/app.js');vm.runInContext(app.slice(app.indexOf('function renderPatients()'),app.indexOf('async function selectPatient(')),c);
+ vm.runInContext(app.slice(app.indexOf('async function frameSelectPatient('),app.indexOf('async function frameClosePatient(')),c);
  const home={start:new Date(),schedule:{},appointments:[],unfinished:{total:1,items:[{patient_id:'synthetic-patient',visit_id:'synthetic-visit',patient_name:'Synthetic Example',created_at:'2026-11-25T12:00:00Z'}]},overview:{money:{},patients:{}},inbox:{items:[]},followup:{items:[]},referrals:{items:[]}};
  c.fixture=home;vm.runInContext('practiceData=fixture',c);
  // The production history wrapper tracks the supported Billing entry point.
@@ -33,7 +39,8 @@ async function main(){
  vm.runInContext(read('web/navigation-history.js'),c);await c.showPracticeWorkspace();
  assert.equal(c.location.hash,'#/home');
  async function click(action){
-  const button={dataset:{practiceAction:action},hasAttribute:name=>name==='data-practice-action'};
+  const dataset=typeof action==='string'?{practiceAction:action}:action;
+  const button={dataset,hasAttribute:name=>Object.hasOwn(dataset,name.replace(/^data-/,'').replace(/-([a-z])/g,(_,letter)=>letter.toUpperCase()))};
   const event={target:{closest:selector=>selector==='button,a[data-practice-action]'?button:null},preventDefault(){this.prevented=true;},stopImmediatePropagation(){this.stopped=true;}};
   for(const fn of listeners.click)fn(event);
   await c.pending;assert(event.prevented&&event.stopped);
@@ -55,6 +62,18 @@ async function main(){
   c.renderPatients();assert.match(node('patients').innerHTML,new RegExp(`Showing: missing ${missing} ·`));assert.match(node('patients').innerHTML,/data-directory-missing-clear/);
  }
  await c.openMissingPatients('');c.renderPatients();assert.doesNotMatch(node('patients').innerHTML,/Showing: missing/);assert.equal(calls.at(-1),'/api/v1/patients?status=active');
+ await click({practicePatient:'synthetic-patient'});
+ assert.deepEqual(calls.at(-1),['patient','synthetic-patient',undefined,'overview',undefined]);
+ await click({practiceVisit:'synthetic-visit',practiceVisitPatient:'synthetic-patient'});
+ assert.deepEqual(calls.at(-1),['patient','synthetic-patient','synthetic-visit','visits','visit']);
+ await c.showPracticeWorkspace();
+ c.patientPickerMatches=()=>true;
+ vm.runInContext("practicePatients=[{id:'synthetic-keyboard-patient'}];practiceQuery='synthetic'",c);
+ const enter={key:'Enter',target:node('practice-search'),preventDefault(){this.prevented=true;},stopImmediatePropagation(){this.stopped=true;}};
+ for(const handler of listeners.keydown)handler(enter);
+ await c.pending;assert(enter.prevented&&enter.stopped);
+ assert.deepEqual(calls.at(-1),['patient','synthetic-keyboard-patient',undefined,'overview',undefined]);
+ c.selected=null;c.activeVisit=null;
  // The Home amount opens the server-paged collections screen and retains its route.
  c.api=async path=>{
   calls.push(path);

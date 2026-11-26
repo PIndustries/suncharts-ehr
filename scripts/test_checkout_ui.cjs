@@ -89,10 +89,13 @@ function fixture(){
   {
     const attr='data-checkout-rebase';
     const btn={hasAttribute:a=>a===attr,dataset:{},closest:sel=>sel==='button'?btn:null};
-    let ran=false;
-    f.run(`api=async(p,m,b,v)=>{calls.push({p,m,b,v});return {};};loadVisitCheckout=async()=>{throw new Error('rebase must not reload checkout');};notice=()=>{};captureCheckoutDraft=()=>{ran=true;};run=action=>pending.push(Promise.resolve().then(action));`);
-    f.context.run('ran=false;');
-    f.events.get('click').find(e=>e.options===true).callback({target:btn,preventDefault(){},stopImmediatePropagation(){}});
+    f.run(`ran=false;api=async(p,m,b,v)=>{calls.push({p,m,b,v});return {};};loadVisitCheckout=async()=>{throw new Error('rebase must not reload checkout');};notice=()=>{};captureCheckoutDraft=()=>{ran=true;};run=action=>pending.push(Promise.resolve().then(action));`);
+    let stopped=false;
+    const click={target:btn,preventDefault(){},stopImmediatePropagation(){stopped=true;}};
+    for(const listener of f.events.get('click').filter(e=>e.options===true)){
+      listener.callback(click);
+      if(stopped)break;
+    }
     await Promise.all(f.pending);
     assert.equal(f.context.ran,true,'captureCheckoutDraft (data-checkout-rebase handler) was not reached');
     assert.equal(f.context.calls.length,0,'rebase handler must not call the api or reload checkout');

@@ -70,12 +70,13 @@ assert.deepEqual(billingTiles.map(tile=>{
  ['Paid','$2.00','2 receipts · after refunds'],
  ['Credit','$0.00','Paid but not yet applied to an encounter']
 ]);
-assert(billing.querySelector('.patient-billing-header').hidden,'repeated patient identity stays hidden');assert.deepEqual([...billing.querySelectorAll('#patient-billing-mode option')].map(n=>n.textContent),['Live payments','Test payments']);
+assert.equal(billing.querySelector('.patient-billing-header'),null,'patient identity is already present in the chart header');assert.deepEqual([...billing.querySelectorAll('#patient-billing-mode option')].map(n=>n.textContent),['Live payments','Test payments']);
 // Nonempty native records must produce rows while keeping all existing rare actions in sheets.
 w.eval(`healthHistoryStates.get(selected).items=[{id:'history-1',version:1,content:{kind:'surgery',title:'Synthetic procedure',status:'completed'}}];immunizationStates.get(selected).items=[{id:'vaccine-1',version:1,content:{vaccine_name:'Synthetic vaccine',status:'completed',record_type:'historical'}}];referralStates.get(selected).items=[{id:'referral-1',status:'draft',content:{recipient:'Synthetic clinic',requested_service:'Consultation',document_ids:[]}}];prescribingStates.get(selected).items=[{id:'rx-1',status:'draft',content:{medication_name:'Synthetic medication'}}];`);
 for(const [call,id,title]of [['showHealthHistory()','health-history-panel','Surgical & dental history'],['showImmunizations()','immunizations-panel','Immunizations'],['showReferrals()','referrals-panel','Referrals'],['showPrescribing()','prescribing-panel','Prescribing']]){w.eval(call);check(id,title);assert.equal(w.document.querySelectorAll('#'+id+' tbody tr').length,1);assert(w.document.querySelector('#'+id+' template').content.querySelector('button'),'record actions retained');}
 // Use real click handlers and actual navigation code; modeled geometry makes offset errors deterministic.
 w.eval(extract('function chartAreaEnabled(','function syncPatientNextAction()').replace("let frameClinicalFocus='problem';",''));
+w.eval(extract('function chartNavigationEncounter()', 'function patientWorkflowActions()'));
 w.eval(extract('function showChartSection(','\nconst formData='));
 w.eval(`syncPatientNextAction=()=>{};const chartAreaEnabledOriginal=chartAreaEnabled;refreshPatientChartContext=()=>{};renderPatientBillingChart=()=>{};renderPatientInsurance=()=>{};const loadPatientVitalsReadings=()=>{};renderReferrals=()=>{};renderPrescribing=()=>{};renderImmunizations=()=>{};renderHealthHistory=()=>{};renderCarePathways=()=>{};renderDocuments=()=>{};applyLabEncounterScope=()=>{};documentFileNavigationChanged=()=>{};const encounterSection='visit';inRecordArea=()=>true;`);
 // frameClinicalFocus was already declared above; the extracted declaration is removed below.

@@ -75,7 +75,7 @@ async function action(value){const b={id:'',dataset:{practiceAction:value},hasAt
  const eventStart=app.lastIndexOf("if(typeof document!=='undefined'&&document.addEventListener){",app.indexOf("event.target.id==='frame-chart-select'"));
  vm.runInContext(app.slice(eventStart,app.indexOf('// Row clicks use the same chart opener')),c);
  node('frame-user-menu').contains=()=>false;c.frameUserMenuOpen=()=>{};
- c.selectPatient=async id=>calls.push(['chart',id]);
+ c.frameSelectPatient=async id=>calls.push(['chart',id]);
  const tab={dataset:{framePatient:'synthetic-patient'},closest:selector=>selector==='button'?tab:null};
  const start=calls.length;listeners.click.at(-1)({target:tab});
  assert.deepEqual(calls.slice(start),[['chart','synthetic-patient']],'a patient tab goes straight to its chart');

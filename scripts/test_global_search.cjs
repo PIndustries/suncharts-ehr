@@ -12,6 +12,7 @@ class Node {
  querySelectorAll(selector){return this.children.flatMap(c=>[...(c.matches(selector)?[c]:[]),...c.querySelectorAll(selector)]);}
  querySelector(selector){return this.querySelectorAll(selector)[0]||null;}
  closest(selector){return this.matches(selector)?this:null;}
+ hasAttribute(key){return Object.hasOwn(this.attrs,key);}
  setAttribute(k,v){this.attrs[k]=v;}
  removeAttribute(k){delete this.attrs[k];}
  replaceChildren(){this.children=[];this.html='';}
@@ -42,6 +43,14 @@ test('header click opens one focused search panel; focus and Enter use the same 
 });
 test('Command K and Control K open search and Escape closes',async()=>{
  for(const modifier of ['metaKey','ctrlKey']){const f=fixture(),event=f.document.emit('keydown',{key:'k',[modifier]:true});await f.settle();assert(event.prevented);assert(f.dialog.isConnected);f.dialog.emit('keydown',{key:'Escape'});assert(!f.dialog.isConnected);}
+});
+test('global search shortcut respects blocking dialogs',async()=>{
+ const f=fixture();
+ f.node('app').setAttribute('inert','');
+ const event=f.document.emit('keydown',{key:'k',metaKey:true});
+ await f.settle();
+ assert(!event.prevented);
+ assert(!f.dialog);
 });
 test('debounce and minimum length prevent stale choices; results are grouped',async()=>{
  const f=fixture();await f.open();await f.type('s');assert(!f.calls.some(c=>c[0]==='api'));

@@ -720,8 +720,26 @@ function renderPatients() {
   $('load-more').hidden=!cursor;
 }
 // Clinical content stays in memory, scoped to the current authenticated session.
-const patientChartCache=new Map();
+const patientChartCache=new Map(),patientChartAccessKeys=new WeakMap(),patientTabReads=new Map();
 let patientChartCacheOwner;
+function patientChartAccess(){
+ const allowed=resource=>typeof workspaceResourceAllowed!=='function'||workspaceResourceAllowed(resource);
+ const clinical=allowed('clinical'),billing=allowed('billing'),claims=allowed('claims'),migration=allowed('migration'),workflows=allowed('workflows');
+ return {billing,source:clinical&&billing&&claims&&migration,key:[clinical,billing,claims,migration,workflows].join(':')};
+}
+function patientChartAccessMatches(chart,identity,access){
+ const saved=patientChartAccessKeys.get(chart);
+ return saved?.identity===identity&&saved?.key===access;
+}
+function readPatientWorkspace(id,identity,access,share){
+ const path=`/api/v1/patients/${id}/workspace`;
+ if(!share)return api(path);
+ const previous=patientTabReads.get(id);
+ if(previous?.identity===identity&&previous.access===access)return previous.promise;
+ const entry={identity,access,promise:api(path).finally(()=>{if(patientTabReads.get(id)===entry)patientTabReads.delete(id);})};
+ patientTabReads.set(id,entry);
+ return entry.promise;
+}
 function rememberPatientChart(){
  if(patientChartCacheOwner!==me){patientChartCache.clear();patientChartCacheOwner=me;}
  if($('clinical-workspace').hidden||!selected||workspace?.patient?.id!==selected)return;
@@ -745,7 +763,11 @@ async function selectPatient(id, keepVisit, stillCurrent=()=>true, destination=n
   const openingGeneration=++patientWorkspaceGeneration;
   captureVisitDrafts();rememberPatientChart();
   const previousChartVisit=selected===id?activeVisit:null;
-  const cached=patientChartCache.get(id),switching=id!==selected||$('clinical-workspace').hidden;
+  const access=patientChartAccess(),cachedEntry=patientChartCache.get(id);
+  const cached=cachedEntry&&patientChartAccessMatches(cachedEntry.workspace,openingIdentity,access.key)?cachedEntry:null;
+  const accessChanged=Boolean(workspace&&patientChartAccessKeys.has(workspace)&&!patientChartAccessMatches(workspace,openingIdentity,access.key));
+  const switching=id!==selected||!workspace||$('clinical-workspace').hidden||accessChanged;
+  const current=()=>me===openingIdentity&&openingGeneration===patientWorkspaceGeneration&&stillCurrent()&&patientChartAccess().key===access.key;
   if(cached&&switching&&!destination?.deferPresentation){
    workspace=cached.workspace;billingPayers=cached.billingPayers;selected=id;
    chartSection=destination?.section||(keepVisit?'visits':cached.section);encounterSection=destination?.step||(keepVisit&&keepVisit!==cached.visit?'visit':cached.step);
@@ -760,19 +782,35 @@ async function selectPatient(id, keepVisit, stillCurrent=()=>true, destination=n
   }else if(!cached&&switching&&!destination?.deferPresentation){
    selected=id;workspace=undefined;activeVisit=undefined;chartSection=keepVisit?'visits':'overview';
    $('chart').innerHTML=patientChartSkeleton();revealPatientChart();
+   if(typeof frameRenderPatients==='function')frameRenderPatients();
   }
   // Publish one complete chart only after every patient-scoped read succeeds.
-  const next=await api(`/api/v1/patients/${id}/workspace`);
-  if(me!==openingIdentity||openingGeneration!==patientWorkspaceGeneration||!stillCurrent())return;
-  const allowed=resource=>typeof workspaceResourceAllowed!=='function'||workspaceResourceAllowed(resource);
-  const sourceAllowed=['clinical','billing','claims','migration'].every(allowed);
-  const [history,clinical,labs,billing,payers,demographics]=await Promise.all([
-    sourceAllowed?api(`/api/v1/patients/${id}/history`):Promise.resolve(null),api(`/api/v1/patients/${id}/clinical`),
-    api(`/api/v1/patients/${id}/orders`),allowed('billing')?api(`/api/v1/patients/${id}/billing`):Promise.resolve(null),allowed('billing')?api('/api/v1/billing/payers'):Promise.resolve({items:[]}),api(`/api/v1/patients/${id}/demographics`)
-  ]);
-  if(me!==openingIdentity||openingGeneration!==patientWorkspaceGeneration||!stillCurrent())return;
+  let next,payers;
+  try {
+   next=await readPatientWorkspace(id,openingIdentity,access.key,destination?.tabSelection);
+   if(!current())return;
+   const [history,clinical,labs,billing,loadedPayers,demographics]=await Promise.all([
+    access.source?api(`/api/v1/patients/${id}/history`):null,api(`/api/v1/patients/${id}/clinical`),
+    api(`/api/v1/patients/${id}/orders`),access.billing?api(`/api/v1/patients/${id}/billing`):null,
+    access.billing?api('/api/v1/billing/payers'):{items:[]},api(`/api/v1/patients/${id}/demographics`)
+   ]);
+   if(!current())return;
+   next.history=history?.items??null;next.clinical=clinical;next.labs=labs;next.billing=billing;next.demographics=demographics;
+   payers=loadedPayers;
+  }catch(error){
+   if(!current())return;
+   if(!destination?.deferPresentation&&selected===id&&!workspace){
+    const host=$('chart');
+    host.innerHTML=`<section class="panel" role="alert"><h2>Patient chart could not load</h2><button type="button" data-frame-retry="${esc(id)}">Retry</button></section>`;
+    host.querySelector?.('[data-frame-retry]')?.addEventListener('click',()=>{
+     if(!current())return;
+     void selectPatient(id,keepVisit,stillCurrent,destination).catch(error=>notice(error.message,true));
+    },{once:true});
+   }
+   throw error;
+  }
+  patientChartAccessKeys.set(next,{identity:openingIdentity,key:access.key});
   captureVisitDrafts(); // Include edits made while the chart reads were in flight.
-  next.history=history?.items??null;next.clinical=clinical;next.labs=labs;next.billing=billing;next.demographics=demographics;
   if(!cached&&switching){chartSection=destination?.section||(keepVisit?'visits':'overview');encounterSection=destination?.step||'visit';}
   if(keepVisit&&activeVisit?.id!==keepVisit){chartSection='visits';encounterSection='visit';}
   const previousVisit=selected===id?activeVisit:null;
@@ -1990,6 +2028,7 @@ if(typeof document!=='undefined'&&document.addEventListener){
 
 // Open charts are session-only presentation state; never persist patient names to storage.
 let framePatients=[];
+let frameRecentPatients=[];
 function frameRenderPatients(){
  const host=$('frame-patient-tabs');if(!host)return;
  const existing=host.querySelectorAll?.('[data-frame-patient]');
@@ -1998,17 +2037,31 @@ function frameRenderPatients(){
  }
  host.innerHTML=framePatients.map(p=>`<span class="frame-patient-tab${selected===p.id&&setPage.last==='Patients & encounters'&&!$('clinical-workspace').hidden?' active':''}"><button type="button" data-frame-patient="${esc(p.id)}" aria-current="${selected===p.id&&setPage.last==='Patients & encounters'&&!$('clinical-workspace').hidden?'page':'false'}" title="${esc(p.family_name)}, ${esc(p.given_name)}"><span class="avatar" aria-hidden="true">${esc((p.given_name||'')[0]||'')}${esc((p.family_name||'')[0]||'')}</span><span class="frame-patient-name">${esc(p.family_name)}, ${esc(p.given_name)}</span></button><button type="button" data-frame-close="${esc(p.id)}" aria-label="Close chart for ${esc(p.family_name)}, ${esc(p.given_name)}">×</button></span>`).join('');
 }
-function frameOpenPatient(patient){if(!patient?.id)return;const existing=framePatients.find(p=>p.id===patient.id);if(existing){Object.assign(existing,{given_name:patient.given_name,family_name:patient.family_name});frameRenderPatients();return;}framePatients.push({id:patient.id,given_name:patient.given_name,family_name:patient.family_name});framePatients=framePatients.slice(-5);frameRenderPatients();}
+function frameOpenPatient(patient){
+ if(!patient?.id)return;
+ const existing=framePatients.find(p=>p.id===patient.id);
+ const name={given_name:patient.given_name,family_name:patient.family_name};
+ if(existing)Object.assign(existing,name);
+ else framePatients=[...framePatients,{id:patient.id,...name}].slice(-5);
+ frameRecentPatients=frameRecentPatients.filter(id=>framePatients.some(p=>p.id===id));
+ if(selected===patient.id)frameRecentPatients=[...frameRecentPatients.filter(id=>id!==patient.id),patient.id];
+ frameRenderPatients();
+}
 function frameUserMenuOpen(open){
  const toggle=$('frame-user-toggle'),panel=$('frame-user-panel');
  if(toggle)toggle.setAttribute('aria-expanded',String(open));if(panel)panel.hidden=!open;
 }
-function clearFramePatients(){if(typeof patientChartCache!=='undefined'){patientChartCache.clear();patientWorkspaceGeneration++;}framePatients=[];frameRenderPatients();const menu=$('frame-user-menu');if(menu)frameUserMenuOpen(false);}
+function clearFramePatients(){if(typeof patientChartCache!=='undefined'){patientChartCache.clear();patientTabReads.clear();patientWorkspaceGeneration++;}framePatients=[];frameRecentPatients=[];frameRenderPatients();const menu=$('frame-user-menu');if(menu)frameUserMenuOpen(false);}
+async function frameSelectPatient(id,{section,visit,step}={}){
+ if(id===selected&&workspace?.patient?.id===id&&!$('clinical-workspace').hidden&&!section&&visit===undefined&&step===undefined&&patientChartAccessMatches(workspace,me,patientChartAccess().key))return;
+ return selectPatient(id,visit,undefined,{section,step,tabSelection:true});
+}
 async function frameClosePatient(id){
- if(typeof patientChartCache!=='undefined')patientChartCache.delete(id);
- framePatients=framePatients.filter(p=>p.id!==id);frameRenderPatients();
+ if(typeof patientChartCache!=='undefined'){patientChartCache.delete(id);patientTabReads.delete(id);}
+ framePatients=framePatients.filter(p=>p.id!==id);frameRecentPatients=frameRecentPatients.filter(patient=>patient!==id);frameRenderPatients();
  if(selected!==id||$('clinical-workspace').hidden)return;
- if(framePatients.length){const next=framePatients.at(-1);await selectPatient(next.id);}else await showClinical();
+ const next=frameRecentPatients.at(-1)||framePatients.at(-1)?.id;
+ if(next)await frameSelectPatient(next);else await showClinical();
 }
 function framePage(title){
  const help=$('frame-help');if(help)help.hidden=typeof supportHelpAvailable==='function'&&!supportHelpAvailable();
@@ -2030,7 +2083,7 @@ if(typeof document!=='undefined'&&document.addEventListener){
   if(b.id==='frame-support')run(()=>showSupportTickets());
   const add=b.closest?.('.frame-add-menu');if(add)add.open=false;
   if(b.id==='frame-billing'){const id=['nav-claims','nav-billing'].find(id=>!$(id)?.hidden);if(id)$(id).click();}
-  if(b.dataset.framePatient)void selectPatient(b.dataset.framePatient).catch(error=>notice(error.message,true));
+  if(b.dataset.framePatient)void frameSelectPatient(b.dataset.framePatient).catch(error=>notice(error.message,true));
   if(b.dataset.frameClose)run(()=>frameClosePatient(b.dataset.frameClose));
  });
  document.addEventListener('keydown',event=>{if(event.key==='Escape'&&$('frame-user-toggle')?.getAttribute('aria-expanded')==='true'){frameUserMenuOpen(false);$('frame-user-toggle').focus();}});
