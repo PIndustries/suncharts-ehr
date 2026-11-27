@@ -96,7 +96,7 @@ function restoreClaimDraft(form,account,record,parent,kind='packet',version){
 }
 document.addEventListener('input',event=>{const form=event.target.closest?.('#claim-editor-form,#claimmd-submit-form');if(form)captureClaimDraft(form);});
 document.addEventListener('change',event=>{const form=event.target.closest?.('#claim-editor-form,#claimmd-submit-form');if(form)captureClaimDraft(form);});
-function claimWorkspaceHost(context=claimViewContext){return context?.kind==='encounter'?$('encounter-claims-detail'):$('claims-detail');}
+function claimWorkspaceHost(context=claimViewContext){return context?.kind==='encounter'?(context.reviewSheet?context.host:$('encounter-claims-detail')):$('claims-detail');}
 function claimContextSnapshot(){
  if(!claimViewContext)claimViewContext={kind:'worklist',identity:typeof me==='undefined'?undefined:me,host:$('claims-detail')};
  return claimViewContext;
@@ -105,17 +105,25 @@ function encounterClaimRoute(){const context=claimViewContext;return context?.ki
 function claimContextCurrent(context){
  if(!context||context!==claimViewContext||context.identity!==(typeof me==='undefined'?undefined:me))return false;
  if(context.kind!=='encounter')return !context.host||context.host===$('claims-detail');
- return selected===context.patient&&activeVisit?.id===context.visit&&chartSection==='visits'&&encounterShows('charges')&&context.host===$('encounter-claims-detail')&&(workspace.billing?.accounts||[]).some(a=>a.id===context.account&&a.content.visit_id===context.visit);
+ const mounted=context.reviewSheet?context.reviewSheet.open&&context.host.isConnected&&
+  !context.reviewSheet.dataset.closing&&context.reviewSheet.contains(context.host):context.host===$('encounter-claims-detail');
+ return selected===context.patient&&activeVisit?.id===context.visit&&chartSection==='visits'&&encounterShows('charges')&&mounted&&(workspace.billing?.accounts||[]).some(a=>a.id===context.account&&a.content.visit_id===context.visit);
 }
 function requireClaimContext(context,claim){
  if(!claimContextCurrent(context))throw new Error('This page changed. Open the claim again from its visit.');
  if(context.kind==='encounter'&&claim&&(claim.patient_id!==context.patient||claim.account_id!==context.account))throw new Error('This claim does not belong to the selected visit.');
 }
-function mountEncounterClaims(accountId,{inPlace=false}={}){
+function mountEncounterClaims(accountId,{inPlace=false,reviewHost=null}={}){
  captureClaimDraft();
  const account=(workspace.billing?.accounts||[]).find(a=>a.id===accountId&&a.content.visit_id===activeVisit?.id);
  if(!account||!selected||!activeVisit)throw new Error('Open the encounter for these charges first.');
  if(typeof workspaceResourceAllowed==='function'&&!workspaceResourceAllowed('claims'))throw new Error('Claim review requires access to insurance claims.');
+ if(reviewHost){
+  const reviewSheet=reviewHost.closest('dialog[data-signed-claim-details][open]');
+  if(!reviewHost.isConnected||!reviewSheet||reviewSheet.dataset.closing)throw new Error('Reopen claim review before continuing.');
+  claimViewContext={kind:'encounter',identity:me,patient:selected,visit:activeVisit.id,account:accountId,host:reviewHost,reviewSheet,savedActivityOnly:true};
+  return claimViewContext;
+ }
  if(!inPlace)setEncounterSection('charges');
  const container=$('encounter-claims');if(!container)throw new Error('Open Billing & claim in this encounter.');
  container.innerHTML='<div id="encounter-claims-detail"></div>';container.hidden=false;
