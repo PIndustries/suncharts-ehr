@@ -45,6 +45,15 @@ ctx.workspace.billing.copays=[{...receipt,amount_cents:5000,allocated_cents:2500
  assert.match(node('insurance-eligibility-'+coverage.id).innerHTML,/:latest-check:/,'old in-flight history must not replace newly received response');
  let resolveForeign;ctx.api=()=>new Promise(resolve=>resolveForeign=resolve);const stale=ctx.loadInsuranceEligibility(coverage.id,true);ctx.selected='different-patient';node('insurance-eligibility-'+coverage.id).innerHTML='NEW PATIENT';resolveForeign({items:[latestCheck]});await stale;
  assert.equal(node('insurance-eligibility-'+coverage.id).innerHTML,'NEW PATIENT','late history must not render into a different chart');ctx.selected='patient';
+ const unsigned=visitSummary({state:'sign_visit',account}),afterSigning=visitSummary({state:'post_charges',account});
+ ctx.api=async()=>unsigned;await ctx.loadEncounterRevenueStatus(account);
+ assert.equal(vm.runInContext('encounterRevenueState.data.summary.state',ctx),'sign_visit');
+ let resolveUnsigned;ctx.api=()=>new Promise(resolve=>resolveUnsigned=resolve);
+ const oldBilling=ctx.loadEncounterRevenueStatus(account,true);
+ ctx.activeVisit={...ctx.activeVisit,status:'signed'};ctx.api=async()=>afterSigning;
+ await ctx.loadEncounterRevenueStatus(account);
+ resolveUnsigned(unsigned);await oldBilling;
+ assert.equal(vm.runInContext('encounterRevenueState.data.summary.state',ctx),'post_charges','signing refreshes billing with the same charge version and ignores an older response');
  const posted={...account,status:'posted',coverage_snapshot:{payer:{content:{payer_code:'SYNTHETIC'}}}};ctx.workspace.billing.accounts=[posted];ctx.activeVisit.status='signed';ctx.chartSection='visits';
  const claim={id:'claim-current',status:'submitted'};
  const waiting=visitSummary({state:'waiting_insurer',waiting_on:'insurer',visit:{appointment_id:'appointment'},account:{id:'account-current',version:4},insurance:{status:'waiting',sent_on:'2026-10-25'},claim:{id:'claim-current',status:'submitted',sent_on:'2026-10-25'}});

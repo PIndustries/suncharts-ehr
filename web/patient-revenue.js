@@ -372,9 +372,15 @@ state.reviewCard=state.data?.summary||null;node.innerHTML=encounterRevenueStatus
 }
 async function loadEncounterRevenueStatus(account,force=false){
  const visit=typeof activeVisit!=='undefined'?activeVisit:null;if(!visit)return;
+ const visitStatus=visit.status;
  let state=encounterRevenueState;
- if(state.patient!==selected||state.identity!==me||state.visit!==visit.id||state.account!==(account?.id||null)||state.version!==(account?.version||null)){if(typeof clearTimeout==='function')clearTimeout(state.timer);const sameVisit=state.patient===selected&&state.identity===me&&state.visit===visit.id;state={reviewOpen:sameVisit&&state.reviewOpen===true,patient:selected,identity:me,visit:visit.id,account:account?.id||null,version:account?.version||null,pending:null,data:null,loadedAt:0,filter:'all',prepared:false,review:null,reviewCard:null};encounterRevenueState=state;}
- const current=()=>encounterRevenueState===state&&selected===state.patient&&me===state.identity&&activeVisit?.id===state.visit&&(encounterChargeAccount()?.id||null)===state.account;
+ if(state.patient!==selected||state.identity!==me||state.visit!==visit.id||state.visitStatus!==visitStatus||state.account!==(account?.id||null)||state.version!==(account?.version||null)){
+  if(typeof clearTimeout==='function')clearTimeout(state.timer);
+  const sameVisit=state.patient===selected&&state.identity===me&&state.visit===visit.id;
+  state={reviewOpen:sameVisit&&state.reviewOpen===true,patient:selected,identity:me,visit:visit.id,visitStatus,account:account?.id||null,version:account?.version||null,pending:null,data:null,loadedAt:0,filter:'all',prepared:false,review:null,reviewCard:null};
+  encounterRevenueState=state;
+ }
+ const current=()=>encounterRevenueState===state&&selected===state.patient&&me===state.identity&&activeVisit?.id===state.visit&&activeVisit.status===visitStatus&&(encounterChargeAccount()?.id||null)===state.account;
  const render=()=>paintEncounterRevenue(state,current);
  if(state.pending){render();return state.pending;}
  // The claim is prepared only while the billing step itself is showing, never because the
