@@ -688,7 +688,8 @@ function chargeTableVisitSummary(visitId){
 function chargeTableNextMarkup(visitId,remember){
  if(typeof visitBillingChargeStepMarkup!=='function')return '';
  const summary=chargeTableVisitSummary(visitId);if(!summary)return '';
- const markup=visitBillingChargeStepMarkup(summary,typeof visitBillingStateContext==='function'?visitBillingStateContext():{});
+ const encounterSteps=$('visit-page-host')?.dataset?.encounterSteps!==undefined;
+ const markup=visitBillingChargeStepMarkup(summary,typeof visitBillingStateContext==='function'?visitBillingStateContext({encounterSteps}):{encounterSteps});
  // Where the line is being written into the table's own markup, the place it goes is not on screen
  // yet, so the answer is remembered by name and matched when the slot is found.
  if(remember&&markup)remember.set(`${visitId}`,markup);
@@ -1321,7 +1322,7 @@ function renderEncounterCodeChecks(form,findings){
 }
 // Modifiers are picked, not typed: the ones that fit the line's code first, in plain words, and
 // every other common modifier in one list. A line takes at most four.
-const modifierWords={'25':'Separate visit on the same day as a procedure','57':'Visit that decided on surgery','95':'Telehealth video visit','59':'Distinct procedure','XS':'Separate site or organ','XU':'Unusual, separate service','50':'Both sides','RT':'Right side','LT':'Left side','26':'Reading only (professional part)','TC':'Equipment only (technical part)','76':'Repeated by the same clinician','JZ':'No drug discarded','JW':'Drug amount discarded','KX':'Payer requirements met','GA':'Waiver (ABN) on file','GZ':'No waiver (ABN) on file','GY':'Not covered by Medicare'};
+const modifierWords={'25':'Separate visit on the same day as a procedure','57':'Visit that decided on surgery','95':'Telehealth video visit','59':'Distinct procedure','XE':'Separate encounter','XP':'Separate practitioner','XS':'Separate structure','XU':'Unusual, non-overlapping service','50':'Both sides','RT':'Right side','LT':'Left side','26':'Reading only (professional part)','TC':'Equipment only (technical part)','76':'Repeated by the same clinician','JZ':'No drug discarded','JW':'Drug amount discarded','KX':'Payer requirements met','GA':'Waiver (ABN) on file','GZ':'No waiver (ABN) on file','GY':'Not covered by Medicare'};
 function modifierChoicesFor(code){
  code=String(code||'').trim().toUpperCase();
  if(/^99(20[2-5]|21[1-5])$/.test(code))return ['25','95','57','GA'];
@@ -1340,24 +1341,31 @@ function chargeRowCodeNow(row){
 }
 function modifierOptionsRender(row){
  const host=row?.querySelector?.('[data-modifier-options]'),input=row?.querySelector?.('[name="modifiers"]');if(!host||!input)return;
- const code=chargeRowCodeNow(row),chosen=String(input.value||'').toUpperCase().split(/[,\s]+/).filter(Boolean);
- const fit=modifierChoicesFor(code),key=code+'|'+chosen.join(',');if(host.dataset.key===key)return;host.dataset.key=key;
+ const claimCode=row.getAttribute?.('data-claim-modifier-picker');
+ const code=claimCode||chargeRowCodeNow(row),chosen=String(input.value||'').toUpperCase().split(/[,\s]+/).filter(Boolean);
+ const fit=claimCode?['XS','XE','XP','XU','59',...modifierChoicesFor(code).filter(code=>!['59','XS'].includes(code))]:modifierChoicesFor(code);
+ const key=code+'|'+chosen.join(',');if(host.dataset.key===key)return;host.dataset.key=key;
  const selected=row.querySelector('[data-line-modifier-summary]');
  if(selected){selected.textContent=chosen.join(', ');selected.hidden=!chosen.length;}
- const chip=m=>`<button type="button" class="modifier-chip${chosen.includes(m)?' is-on':''}" data-modifier-toggle="${m}" aria-pressed="${chosen.includes(m)}" title="${esc(modifierWords[m]||m)}">${m}<small>${esc(modifierWords[m]||'')}</small></button>`;
+ const chip=m=>`<button type="button" class="modifier-chip${chosen.includes(m)?' is-on':''}" data-modifier-toggle="${esc(m)}" aria-pressed="${chosen.includes(m)}" title="${esc(modifierWords[m]||m)}">${esc(m)}<small>${esc(modifierWords[m]||'')}</small></button>`;
  const others=Object.keys(modifierWords).filter(m=>!fit.includes(m));
  host.innerHTML=`${code?fit.map(chip).join(''):'<small class="muted">Enter the code to see its modifiers</small>'}${chosen.filter(m=>!fit.includes(m)).map(chip).join('')}<select data-modifier-more aria-label="More modifiers"><option value="">More modifiers…</option>${others.filter(m=>!chosen.includes(m)).map(m=>`<option value="${m}">${m} · ${esc(modifierWords[m])}</option>`).join('')}</select>`;
 }
 function modifierToggle(row,m){
- const input=row.querySelector('[name="modifiers"]');if(!input)return;
+ const input=row?.querySelector('[name="modifiers"]');if(!input)return;
+ const target=document.activeElement,held=row.hasAttribute?.('data-claim-modifier-picker');
  let chosen=String(input.value||'').toUpperCase().split(/[,\s]+/).filter(Boolean);
  if(chosen.includes(m))chosen=chosen.filter(x=>x!==m);else{if(chosen.length>=4){notice('A claim line takes at most four modifiers.',true);return;}chosen.push(m);}
- input.value=chosen.join(',');input.dispatchEvent(new Event('input',{bubbles:true}));input.dispatchEvent(new Event('change',{bubbles:true}));
+ input.value=chosen.join(held?' ':',');input.dispatchEvent(new Event('input',{bubbles:true}));input.dispatchEvent(new Event('change',{bubbles:true}));
  modifierOptionsRender(row);
+ if(held&&row.contains(target)===false){
+  const focus=target?.matches('[data-modifier-toggle]')?[...row.querySelectorAll('[data-modifier-toggle]')].find(chip=>chip.dataset.modifierToggle===m):row.querySelector('[data-modifier-more]');
+  (focus||input).focus({preventScroll:true});
+ }
 }
 if(typeof document!=='undefined'){
- document.addEventListener('click',event=>{const b=event.target?.closest?.('[data-modifier-toggle]');if(!b)return;event.preventDefault();modifierToggle(b.closest('.billing-charge-row'),b.dataset.modifierToggle);});
- document.addEventListener('change',event=>{const sel=event.target?.closest?.('[data-modifier-more]');if(!sel||!sel.value)return;const value=sel.value;sel.value='';modifierToggle(sel.closest('.billing-charge-row'),value);});
+ document.addEventListener('click',event=>{const b=event.target?.closest?.('[data-modifier-toggle]');if(!b)return;event.preventDefault();modifierToggle(b.closest('.billing-charge-row,[data-claim-modifier-picker]'),b.dataset.modifierToggle);});
+ document.addEventListener('change',event=>{const sel=event.target?.closest?.('[data-modifier-more]');if(!sel||!sel.value)return;const value=sel.value;sel.value='';modifierToggle(sel.closest('.billing-charge-row,[data-claim-modifier-picker]'),value);});
  document.addEventListener('input',event=>{if(['code','procedure'].includes(event.target?.name)&&event.target.closest?.('.billing-charge-row'))modifierOptionsRender(event.target.closest('.billing-charge-row'));});
 }
 function chargeDraftBody(form){

@@ -357,17 +357,17 @@ const reset=()=>{vmAccount();sent.length=0;ctx.failed=null;ctx.noticed=null;ctx.
  // The panel is open on another visit's card: this card keeps its own button instead.
  setAccount(accountOf());
  let out=ctx.visitBillingCardMarkup(reviewSummary({visit:{id:'another-visit',appointment_id:'other',status:'signed'}}),all);
- assert.equal((out.match(/Review and send to the clearinghouse/g)||[]).length,0,'a card drawn away from the live visit keeps its own button');
- assert.match(out,/Review and send claim|Fix claim details|Post charges|Prepare claim/,'and it still offers the encounter its own next step');
+ assert.equal((out.match(/data-visit-review-open=/g)||[]).length,0,'a card drawn away from the live visit keeps its own button');
+ assert.match(out,/Review claim|Fix claim details|Post charges|Prepare claim/,'and it still offers the encounter its own next step');
  showOnScreen(reviewSummary());
  out=ctx.visitBillingCardMarkup(reviewSummary(),all);
- assert.match(out,/class="primary" data-visit-review-open="account">Review and send to the clearinghouse</);
+ assert.match(out,/class="primary" data-visit-review-open="account">Review claim</);
  assert.equal((out.split('<section id="visit-billing-review"')[0].match(/class="primary"/g)||[]).length,1,'one primary button on the encounter bar card');
   out=ctx.visitBillingCardMarkup(reviewSummary(),{...all,delegated:true});
-  assert.match(out,/Review and send to the clearinghouse/,'a support session gets the same review-and-send panel');
+  assert.match(out,/Review claim/,'a support session gets the same review-and-send panel');
  showOnScreen(reviewSummary({claim:{id:'claim',status:'submitted',version:3}}));
  out=ctx.visitBillingCardMarkup(reviewSummary({claim:{id:'claim',status:'submitted',version:3}}),all);
- assert.doesNotMatch(out,/Review and send to the clearinghouse/,'a claim already with the insurer is not offered again');
+ assert.doesNotMatch(out,/data-visit-review-open=/,'a claim already with the insurer is not offered again');
  assert.match(out,/data-visit-billing-sent/);assert.match(out,/Check status/,'the card says where the claim is and gives one way to look');
 
   // ---- No horizontal overflow is invited ----

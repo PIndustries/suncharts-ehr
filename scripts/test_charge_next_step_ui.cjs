@@ -382,27 +382,19 @@ const settle=async()=>{for(let step=0;step<40;step++)await new Promise(resolve=>
   const kept=nextLine();
   assert.ok(kept===null||kept.label==='Post charges','the footer either steps aside or asks for the post, never a send');
 
-  // ---- 3. the claim is ready, and one press sends it --------------------------------------
-  // An encounter whose charges are already posted has no live table to work in — the card's Charges
-  // disclosure holds them read-only — so its send is taken from the card's own button, and the
-  // footer's one send is checked on a draft the practice is still working.
+  // ---- 3. the claim is ready for review ----------------------------------------------------
   const ready=visitSummary({state:'send_claim',account:{id:'account',status:'posted',version:5},claim:claimReady()});
   ctx.activeVisit={id:'visit',appointment_id:'appointment',status:'signed',version:3};
   await openCharges(ready);
   assert.equal(nextLine(),null,'a visit whose charges are final has no live table, so no line under it');
-  assert.equal(stepAttributes(cardButton().attribute),'data-visit-claim-direct-send="claim"','the card itself offers the one send');
-  // The same visit with its charges still a draft does have a live table, and its line sends the
-  // claim the same one press the card does, with the small review link beside it — one send, not
-  // two buttons.
+  assert.equal(stepAttributes(cardButton().attribute),'data-visit-review-open="account"','the card opens the review');
   const draftReady=visitSummary({...ready,account:{id:'account',status:'draft',version:5}});
   await openCharges(draftReady);
   line1=nextLine();
-  assert.equal(line1.label,'Send claim to Synthetic Medicare PPO');assert.equal(line1.attribute,'data-visit-claim-direct-send="claim"','the footer sends the claim itself, as the card does');
-  assert.match(nodes['encounter-billing-editor'].innerHTML,/class="text-button" data-visit-review-open="account">Review claim</,'and the line keeps a small review link beside it');
-  // Pressing the small link opens the review panel; the line under the table is not asked to press
-  // the same thing twice while the panel is open.
+  assert.equal(line1.label,'Review claim');
+  assert.equal(line1.attribute,'data-visit-review-open="account"','the footer opens the same review');
   const reviewLink=openForm().querySelector('.charge-table-next [data-visit-review-open]');
-  assert.ok(reviewLink,'the footer offers its one small review link');
+  assert.ok(reviewLink,'the footer offers its one review button');
   ctx.sent.length=0;click(reviewLink);await settle();
   assert.equal($('visit-billing-review').hidden,false,'the review panel opens');
  const panel=vm.runInContext('visitReviewPanelMarkup(encounterRevenueState.data.summary,visitReviewContext())',ctx);
@@ -413,7 +405,7 @@ const settle=async()=>{for(let step=0;step<40;step++)await new Promise(resolve=>
  // one send handed to the review panel, offered once and not twice.
  const fix=visitSummary({...ready,state:'fix_claim',account:{id:'account',status:'draft',version:5},claim:claimReady({status:'draft',issues:[{code:'tax_id',missing:'billing organization tax ID'}]})});
  await openCharges(fix);
- assert.equal(nextLine().label,'Review and send claim');
+ assert.equal(nextLine().label,'Review claim');
  assert.equal((nodes['encounter-billing-editor'].innerHTML.match(/data-visit-review-open/g)||[]).length,1,'the table offers the send once');
 
  // ---- 4. a state that is not about charges says nothing ---------------------------------

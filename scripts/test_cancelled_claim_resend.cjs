@@ -67,7 +67,7 @@ function reset(summary){sent.length=0;log.length=0;ctx.noticed=undefined;ctx.api
  await ctx.pending;
  assert.equal(ctx.failed,undefined);
  assert.deepEqual(JSON.parse(JSON.stringify(sent)),[['/api/v1/patients/patient/billing/accounts/account/claims/prepare','POST',
-  {again:true,canceled_claim_id:'cancelled-original',canceled_claim_version:4}]]);
+  {again:true,canceled_claim_id:'cancelled-original',canceled_claim_version:4,canceled_account_version:2}]]);
  assert.deepEqual(log,[['reload','account',true,false],['review','replacement']]);
  assert.equal(button.disabled,false);
 
@@ -103,5 +103,26 @@ function reset(summary){sent.length=0;log.length=0;ctx.noticed=undefined;ctx.api
  finish();await ctx.pending;
  assert.equal(sent.length,1);assert.deepEqual(log,[],'do not refresh or open a draft after switching encounters');
  ctx.activeVisit=previousVisit;
+
+ reset();
+ const recovery={account_id:account.id,encounter_id:ctx.activeVisit.id,claim_id:dataset.visitClaimResend,version:4,account_version:account.version};
+ const mountedButton={dataset,disabled:false,isConnected:true,textContent:'Resubmit claim'};
+ node('visit-page-host').querySelector=()=>mountedButton;
+ ctx.encounterStepsSync=()=>log.push(['mount']);
+ ctx.setEncounterSection=step=>log.push([step]);
+ let scopedReadCount=0;
+ ctx.loadEncounterRevenueStatus=async(account,force,options)=>{log.push(['reload',account.id,force,options?.prepare]);show(scopedReadCount++?fresh:canceled);};
+ await assert.rejects(ctx.visitResubmitFromWorklist({...recovery,account_version:1}),/posted charges or claim changed/);
+ assert.deepEqual(log,[]);
+ assert.equal(sent.length,0);
+ await ctx.visitResubmitFromWorklist(recovery);
+ assert.deepEqual(log,[['reload','account',true,false],['charges'],['mount'],['reload','account',true,false],['review','replacement']]);
+ assert.equal(sent.length,1);
+ assert.equal(sent[0][2].canceled_account_version,2);
+
+ reset();
+ ctx.loadEncounterRevenueStatus=async()=>show(blocked);
+ await assert.rejects(ctx.visitResubmitFromWorklist(recovery),/Verify the clearinghouse cancellation first/);
+ assert.equal(sent.length,0,'a changed claim is never prepared by a stale worklist selection');
  console.log('cancelled claim resend checks ok');
 })().catch(e=>{console.error(e);process.exit(1);});

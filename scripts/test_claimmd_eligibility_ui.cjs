@@ -223,7 +223,7 @@ const rich=plan([
   const notFound=setup({role:'front_desk'}).show([check({response_snapshot:{elig:[{error:[{error_code:'75',error_message:'Subscriber/Insured Not Found'}]}]}})]);
   assert.match(notFound,/<span class="eligibility-pill unknown">Could not confirm<\/span>/);assert.match(notFound,/The insurer could not find this member\. Check the member ID, name and date of birth on the coverage\./);assert.match(notFound,/data-edit-coverage="coverage-1"/);assert.doesNotMatch(notFound,/What the patient pays/);assert.doesNotMatch(text(notFound),technical);
   const busy=setup().show([check({response_snapshot:{elig:[{error:{error_code:'42',error_message:'Unable to Respond at Current Time'}}]}})]);assert.match(busy,/could not answer right now\. Try again in a few minutes/);assert.match(busy,/data-claimmd-eligibility="coverage-1">Try again/);
-  const unknownProvider=setup().show([check({response_snapshot:{elig:[{error:[{error_code:'51',error_message:'Provider Not on File'}]}]}})]);assert.match(unknownProvider,/The insurer does not recognise Dr\. Synthetic Provider for eligibility checks yet\./);assert.match(unknownProvider,/Set up eligibility with the clearinghouse/);
+  const unknownProvider=setup().show([check({response_snapshot:{elig:[{error:[{error_code:'51',error_message:'Provider Not on File'}]}]}})]);assert.match(unknownProvider,/The insurer does not recognise Dr\. Synthetic Provider for eligibility checks yet\./);assert.match(unknownProvider,/Open Claim\.MD/);assert.doesNotMatch(unknownProvider,/data-eligibility-enroll/);
   const worded=setup().show([check({response_snapshot:{elig:[{error:[{error_code:'33',error_message:'Input <Errors>'}]}]}})]);assert.match(worded,/The insurer did not confirm coverage: “Input &lt;Errors&gt;”/);
   const silent=setup().show([check({response_snapshot:{elig:[{ins_name_l:'PATIENT'}]}})]);assert.match(silent,/Could not confirm/);assert.match(silent,/did not say whether the plan is active/);
   const mismatch=html=>/<p class="eligibility-caution">([^<]*)<\/p>/.exec(html)?.[1];
@@ -246,10 +246,20 @@ const rich=plan([
  // ---- Failures in plain words -----------------------------------------------------------------------------
  {
   const view=(failure,role='owner',over)=>setup({role}).show([failed(failure,over)]);
-  const enroll=view({kind:'provider_rejected',http_status:200,provider_codes:[],provider_hints:['eligibility','provider']});
-  assert.match(enroll,/Review eligibility enrollment for Dr\. Synthetic Provider with Synthetic Health\./);assert.match(enroll,/data-eligibility-enroll="5b1f0c1e-7c1d-4b1a-9d43-0a1b2c3d4e5f" data-coverage="coverage-1">Set up eligibility with the clearinghouse</);assert.match(enroll,/Check failed.*Eligibility remains unconfirmed for this check\./);assert.match(enroll,/Tried at 2026-11-13T15:00:02Z by Synthetic Owner/);
-  const staffEnroll=view({kind:'provider_rejected',http_status:200,provider_hints:['eligibility','provider']},'front_desk');
-  assert.match(staffEnroll,/Ask the practice owner to set this up under Claim connections\./);assert.doesNotMatch(staffEnroll,/data-eligibility-enroll|Technical details/);
+  const providerFailure={kind:'provider_rejected',http_status:200,provider_codes:[],provider_hints:['eligibility','provider']};
+  const provider=view(providerFailure);
+  assert.match(provider,/Check eligibility enrollment for Dr\. Synthetic Provider with Synthetic Health\./);
+  assert.match(provider,/href="https:\/\/www\.claim\.md\/".*Open Claim\.MD/);
+  assert.doesNotMatch(provider,/data-eligibility-enroll|data-eligibility-connections|Set up eligibility/);
+  assert.match(provider,/Check failed.*Eligibility remains unconfirmed for this check\./);
+  assert.match(provider,/Tried at 2026-11-13T15:00:02Z by Synthetic Owner/);
+  const staffProvider=view(providerFailure,'front_desk');
+  assert.match(staffProvider,/Ask the practice owner to check this provider’s eligibility enrollment with the insurer\./);
+  assert.doesNotMatch(staffProvider,/data-eligibility-enroll|Open Claim\.MD|Technical details/);
+  for(const hint of ['enroll','not enabled']){
+   const explicit=view({...providerFailure,provider_hints:['provider',hint]});
+   assert.match(explicit,/data-eligibility-enroll="5b1f0c1e-7c1d-4b1a-9d43-0a1b2c3d4e5f" data-coverage="coverage-1">Request eligibility enrollment link</);
+  }
   for(const hints of [['member'],['subscriber','not found'],['name','invalid'],['birth','date']]){const html=view({kind:'provider_rejected',http_status:200,provider_hints:hints},'front_desk');assert.match(html,/Review the recorded member ID, name and date of birth against the insurance card\./,hints.join());assert.match(html,/data-edit-coverage="coverage-1">Edit insurance</);}
   const payer=view({kind:'provider_rejected',http_status:200,provider_hints:['payer','invalid']});assert.match(payer,/Review the payer ID recorded for Synthetic Health\./);assert.match(payer,/data-eligibility-payer="payer-1">Review payer ID</);assert.match(view({kind:'provider_rejected',http_status:200,provider_hints:['payer']},'front_desk'),/Ask the practice owner to review it in the payer directory/);
   for(const failure of [{kind:'transport_unavailable',http_status:null},{kind:'http_rejected',http_status:503},{kind:'http_rejected',http_status:429},{kind:'response_invalid',http_status:200},{kind:'provider_rejected',http_status:200,provider_hints:['timeout']}]){const html=view(failure,'front_desk');assert.match(html,/No usable eligibility answer was received\. Try again in a few minutes\./,JSON.stringify(failure));assert.match(html,/data-claimmd-eligibility="coverage-1">Try again</);}
@@ -267,20 +277,33 @@ const rich=plan([
 
  // ---- Setting up eligibility with Claim.MD ------------------------------------------------------------------
  {
-  const refusal=failed({kind:'provider_rejected',http_status:200,provider_hints:['eligibility','provider']});
+  const refusal=failed({kind:'provider_rejected',http_status:200,provider_hints:['eligibility','provider','enroll']});
   const start=async reply=>{const t=setup();t.histories.set(ids.coverage,[refusal]);t.c.respond=(url,method)=>method==='GET'?{items:[refusal]}:reply;t.c.refreshInsuranceEligibility(ids.coverage);await t.click({eligibilityEnroll:ids.check,coverage:ids.coverage});return t;};
   const started=await start({status:'started',external_url:'https://www.claim.md/enroll/synthetic/'});
   assert.deepEqual(JSON.parse(JSON.stringify(started.posts()[0])),{url:`/api/v1/patients/patient-1/coverages/${ids.coverage}/claimmd-eligibility/enrollment`,method:'POST',body:{check_id:ids.check}},'the browser names the check; the server supplies the tax ID, NPI and payer');
-  assert.deepEqual(started.opened,[['https://www.claim.md/enroll/synthetic/','_blank','noopener,noreferrer']]);assert.match(started.card(),/setup form opened in a new tab\..*<a href="https:\/\/www\.claim\.md\/enroll\/synthetic\/" target="_blank" rel="noopener noreferrer">Open the form again<\/a>/);
-  const elsewhere=await start({status:'started',external_url:'https://example.test/enroll'});assert.equal(elsewhere.opened.length,0,'only a Claim.MD address is opened');
-  const already=await start({status:'refused',failure:{kind:'provider_rejected',provider_hints:['already','enroll']}});assert.equal(already.opened.length,0);assert.match(already.card(),/The clearinghouse says this is already set up or already requested\./);
-  for(const reply of [{status:'no_link'},{status:'refused',failure:{kind:'provider_rejected',provider_hints:['invalid']}}]){const t=await start(reply);assert.match(t.card(),/The clearinghouse did not open a setup form for this insurer\. Sign in to the clearinghouse and open Provider Enrollment, or send this to support\./);assert.match(t.card(),/data-eligibility-support/);assert.doesNotMatch(text(t.card().replace(/<details class="eligibility-technical">.*?<\/details>/gs,'')),technical);}
+  assert.deepEqual(started.opened,[],'an enrollment link waits for a deliberate click');
+  assert.match(started.card(),/<a class="button primary" href="https:\/\/www\.claim\.md\/enroll\/synthetic\/" target="_blank" rel="noopener noreferrer">Open enrollment in Claim\.MD<\/a>/);
+  assert.doesNotMatch(started.card(),/data-eligibility-enroll|opened in a new tab/);
+  await started.click({eligibilityEnroll:ids.check,coverage:ids.coverage});
+  assert.equal(started.posts().length,1,'rerendered or repeated clicks cannot start enrollment twice');
+  const already=await start({status:'refused',failure:{kind:'provider_rejected',provider_hints:['already','enroll']}});
+  assert.match(already.card(),/Claim\.MD reports that enrollment is already on file or has been requested/);
+  assert.match(already.card(),/Open Claim\.MD/);
+  assert.doesNotMatch(already.card(),/data-eligibility-enroll/);
+  for(const reply of [{status:'no_link'},{status:'refused',failure:{kind:'provider_rejected',provider_hints:['invalid']}},{status:'started',external_url:'https://example.test/enroll'}]){
+   const t=await start(reply);
+   assert.match(t.card(),/Claim\.MD did not provide an enrollment link for this insurer.*Open Claim\.MD/);
+   assert.match(t.card(),/data-eligibility-support/);
+   assert.doesNotMatch(t.card(),/data-eligibility-enroll|example\.test/);
+   assert.deepEqual(t.opened,[]);
+   assert.doesNotMatch(text(t.card().replace(/<details class="eligibility-technical">.*?<\/details>/gs,'')),technical);
+  }
   const help=setup({role:'front_desk'}),unexplained=failed({kind:'provider_rejected',http_status:200,provider_codes:['42'],provider_hints:['required']});help.histories.set(ids.coverage,[unexplained]);help.c.eligibilityState=()=>({items:new Map([[ids.coverage,{history:{items:[unexplained]}}]])});
   await help.click({eligibilitySupport:ids.check,coverage:ids.coverage});
   const draft=help.support.get('new');assert.equal(draft.subject,'Eligibility check was refused');for(const line of ['Checked: 2026-11-13T15:00:00.000Z','Clearinghouse code: 42','Words in the clearinghouse\'s reply: required',`Check reference: ${ids.check}`,'Synthetic Health'])assert.ok(draft.message.includes(line),line);
   assert.doesNotMatch(draft.message,/Synthetic Patient|SYN-MEMBER|1980/,'the ticket text carries no patient details; the chart is attached by the support form');assert.equal(help.calls.at(-1).url,'support');
   const connections=setup();await connections.click({},['data-eligibility-connections']);assert.equal(connections.calls.at(-1).url,'connections');
-  console.log('PASS Claim.MD eligibility setup opens its form, explains refusals, and support requests carry the check time and codes');
+  console.log('PASS Claim.MD eligibility enrollment offers a link after explicit requests, explains refusals, and support requests carry the check time and codes');
  }
 
  // ---- History --------------------------------------------------------------------------------------------------

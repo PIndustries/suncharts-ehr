@@ -174,12 +174,16 @@ fn professional_json(out: &Submission) -> Result<Value> {
         Some("S") => "S",
         _ => "E",
     };
+    let billing_name = crate::x12::organization_name(
+        required(content, "billing_provider_name")?,
+        "billing_provider_name",
+    )?;
     for (key, value) in [
         ("accept_assign", "Y"),
         ("auto_accident", "N"),
         ("employment_related", "N"),
         ("claim_form", "1500"),
-        ("bill_name", required(content, "billing_provider_name")?),
+        ("bill_name", &billing_name),
         ("bill_npi", required(content, "billing_npi")?),
         ("bill_taxid", required(content, "tax_id")?),
         ("bill_taxid_type", bill_taxid_type),
@@ -245,7 +249,8 @@ fn professional_json(out: &Submission) -> Result<Value> {
         .map(str::trim)
         .filter(|v| !v.is_empty())
     {
-        native.insert("payer_name".into(), json!(name));
+        let payer_name = crate::x12::organization_name(name, "payer_name")?;
+        native.insert("payer_name".into(), json!(payer_name));
     }
     let diagnoses = content["diagnosis_codes"]
         .as_array()
@@ -840,6 +845,28 @@ mod tests {
         assert_eq!(claim["charge"][0]["mod1"], "25");
         assert_eq!(claim["charge"][0]["mod2"], "95");
         assert!(value.get("AccountKey").is_none());
+    }
+
+    #[test]
+    fn native_preflight_and_payload_use_transport_names_from_the_frozen_claim() {
+        let mut out = submission();
+        let billing = "Synthetic Clinic — Do Not Transmit";
+        let payer = "Synthetic Payer – Do Not Transmit";
+        out.claim_snapshot["content"]["billing_provider_name"] = json!(billing);
+        out.claim_snapshot["snapshot"]["account"]["coverage_snapshot"]["payer"]["content"]
+            ["name"] = json!(payer);
+        let frozen = out.claim_snapshot.clone();
+
+        assert!(preflight(&out).is_ok());
+        let payload = professional_json(&out).unwrap();
+        let claim = &payload["claim"][0];
+        assert_eq!(claim["bill_name"], "Synthetic Clinic - Do Not Transmit");
+        assert_eq!(claim["payer_name"], "Synthetic Payer - Do Not Transmit");
+        assert_eq!(claim["bill_npi"], "1234567893");
+        assert_eq!(claim["payerid"], "SYN-payer");
+        assert_eq!(out.claim_snapshot, frozen);
+        out.claim_snapshot["content"]["billing_provider_name"] = json!("Synthetic*Clinic");
+        assert!(preflight(&out).is_err());
     }
 
     #[test]

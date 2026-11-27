@@ -872,3 +872,12 @@ dialog[data-encounter-codes-dialog] #visit-diagnoses > [data-diagnosis-refresh]:
  .signed-claim-delivery-timeline li{grid-template-columns:minmax(0,1fr)}
  .signed-claim-delivery-timeline small{grid-column:1}
 }
+
+
+.signed-claim-held-editor [data-claim-modifier-picker]{margin-block:16px}
+.signed-claim-held-editor .modifier-options{gap:6px;max-width:none}
+.signed-claim-held-editor .modifier-chip{min-height:40px}
+.signed-claim-held-editor .modifier-chip:not(.is-on) small{display:block}
+
+.signed-claim-blockers{display:grid;gap:10px;margin-block:12px}
+.signed-claim-blockers .signed-claim-issue{margin:0}

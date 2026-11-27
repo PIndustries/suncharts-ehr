@@ -149,7 +149,7 @@ function claimmdEligibilityResult(check,coverage,options={}){
  const problem=summary.status==='unknown'&&summary.errors.length?claimmdPayerProblem(summary.errors):'';
  const said=summary.errors.map(error=>typeof error==='string'?error:error?.error_message||error?.error_mesg||error?.message||'').filter(Boolean)[0];
  const explain=problem==='member'?'The insurer could not find this member. Check the member ID, name and date of birth on the coverage.':problem==='provider'?`The insurer does not recognise ${claimmdProviderLabel(check)} for eligibility checks yet.`:problem==='retry'?'The insurer\'s system could not answer right now. Try again in a few minutes.':problem?`The insurer did not confirm coverage${said?': “'+String(said).slice(0,300)+'”':'.'}`:summary.status==='unknown'?'The insurer answered but did not say whether the plan is active.':'';
- const next=options.actions===false||!problem?'':problem==='member'&&typeof billingCan==='function'&&billingCan()?`<button type="button" data-edit-coverage="${esc(coverage.id)}">Edit insurance</button>`:problem==='member'?'<p>Ask billing staff to correct the coverage.</p>':problem==='provider'?claimmdEnrollAction(check,coverage):problem==='retry'?claimmdTryAgain(coverage,options):'';
+ const next=options.actions===false||!problem?'':problem==='member'&&typeof billingCan==='function'&&billingCan()?`<button type="button" data-edit-coverage="${esc(coverage.id)}">Edit insurance</button>`:problem==='member'?'<p>Ask billing staff to correct the coverage.</p>':problem==='provider'?claimmdProviderEnrollmentReview():problem==='retry'?claimmdTryAgain(coverage,options):'';
  const other=options.serviceDate&&serviceDate&&serviceDate!==options.serviceDate?`<p class="eligibility-caution">This answer is for ${esc(claimmdDay(serviceDate))}. The encounter is on ${esc(claimmdDay(options.serviceDate))}.</p>`:'';
  return `<div class="eligibility-result"><p class="eligibility-status"><span class="eligibility-pill ${summary.status}">${label}</span> <span>${serviceDate?'on '+esc(claimmdDay(serviceDate))+' · ':''}${esc(claimmdCheckedLine(check))}</span></p>${other}${explain?`<p>${esc(explain)}</p>${next}`:''}${summary.status==='inactive'?'<p>The insurer reports this plan is not active on this date. Ask the patient for their current insurance card.</p>':''}`
   +`<dl class="billing-dl eligibility-facts">${fact('Plan',summary.plan)}${fact('Insurance type',summary.type)}${fact('Group number',summary.group)}${fact('Coverage dates',summary.dates)}${fact('Member name from the insurer',summary.memberName)}</dl>${summary.differs.length?`<p class="eligibility-caution">The insurer has a different ${esc(summary.differs.join(' and '))} on file.</p>`:''}`
@@ -166,32 +166,49 @@ function claimmdProviderLabel(check){
 function claimmdFailureKind(check){
  const failure=check?.response_snapshot?.failure;if(!failure)return 'other';
  const hints=Array.isArray(failure.provider_hints)?failure.provider_hints:[],has=(...words)=>words.some(word=>hints.includes(word)),status=Number(failure.http_status)||0;
- if(has('eligibility')&&has('provider')||has('enroll','not enabled'))return 'enroll';
+ if(failure.kind==='configuration_unavailable'||status===401||status===403)return 'connection';
+ if(['transport_unavailable','response_invalid'].includes(failure.kind)||status>=500||status===429||has('timeout','unavailable'))return 'retry';
+ if(has('enroll','not enabled'))return 'enroll';
+ if(has('eligibility')&&has('provider'))return 'provider';
  if(has('member','subscriber','name','birth','insured'))return 'member';
  if(has('payer'))return 'payer';
- if(['transport_unavailable','response_invalid'].includes(failure.kind)||status>=500||status===429||has('timeout','unavailable'))return 'retry';
- if(failure.kind==='configuration_unavailable'||status===401||status===403||has('key','account','not authorized'))return 'connection';
+ if(has('key','account','not authorized'))return 'connection';
  return 'other';
 }
 function claimmdTryAgain(coverage,options={}){return options.actions!==false&&claimmdEligibilityCanRequest(coverage)?`<button type="button" data-claimmd-eligibility="${esc(coverage.id)}">Try again</button>`:'';}
+function claimmdProviderEnrollmentReview(){
+ return claimmdEligibilityOwner()?
+  '<a class="button" href="https://www.claim.md/" target="_blank" rel="noopener noreferrer">Open Claim.MD</a><p class="muted">Open Provider Enrollment and check eligibility for this provider and insurer.</p>':
+  '<p>Ask the practice owner to check this provider’s eligibility enrollment with the insurer.</p>';
+}
+function claimmdEligibilitySupportAction(check,coverage){
+ return typeof supportHelpAvailable==='function'&&supportHelpAvailable()?
+  `<button type="button" data-eligibility-support="${esc(check.id)}" data-coverage="${esc(coverage.id)}">Send this to support</button>`:'';
+}
 function claimmdEnrollAction(check,coverage){
- if(!claimmdEligibilityOwner())return '<p>Ask the practice owner to set this up under Claim connections.</p>';
+ if(!claimmdEligibilityOwner())return claimmdProviderEnrollmentReview();
  const result=claimmdEligibilityUiFor(coverage.id).enrollment;
- const hints=result?.failure?.provider_hints||[],canSupport=typeof supportHelpAvailable==='function'&&supportHelpAvailable(),support=canSupport?`<button type="button" data-eligibility-support="${esc(check.id)}" data-coverage="${esc(coverage.id)}">Send this to support</button>`:'';
- const outcome=!result||result.check!==check.id?'':result.status==='started'?`<p role="status">The clearinghouse's setup form opened in a new tab. Finish it there. The insurer can take a few days to turn eligibility on. <a href="${esc(result.external_url)}" target="_blank" rel="noopener noreferrer">Open the form again</a></p>`:result.status==='refused'&&(hints.includes('already')||hints.includes('duplicate'))?'<p role="status">The clearinghouse says this is already set up or already requested. The insurer can take a few days to turn it on. Try the check again later.</p>':`<p role="status">The clearinghouse did not open a setup form for this insurer. Sign in to the clearinghouse and open Provider Enrollment${canSupport?', or send this to support':''}.</p>${support}`;
- return `<button type="button" class="primary" data-eligibility-enroll="${esc(check.id)}" data-coverage="${esc(coverage.id)}">Set up eligibility with the clearinghouse</button>${outcome}`;
+ if(!result||result.check!==check.id)return `<button type="button" class="primary" data-eligibility-enroll="${esc(check.id)}" data-coverage="${esc(coverage.id)}">Request eligibility enrollment link</button>`;
+ if(result.status==='pending')return '<p role="status">Requesting the Claim.MD enrollment link…</p>';
+ const url=String(result.external_url||'');
+ if(result.status==='started'&&/^https:\/\/(www\.)?claim\.md\//.test(url))
+  return `<a class="button primary" href="${esc(url)}" target="_blank" rel="noopener noreferrer">Open enrollment in Claim.MD</a>`;
+ const hints=result.failure?.provider_hints||[];
+ const already=result.status==='refused'&&(hints.includes('already')||hints.includes('duplicate'));
+ return `<p role="status">${already?'Claim.MD reports that enrollment is already on file or has been requested.':'Claim.MD did not provide an enrollment link for this insurer.'}</p>${claimmdProviderEnrollmentReview()}${already?'':claimmdEligibilitySupportAction(check,coverage)}`;
 }
 function claimmdEligibilityFailure(check,coverage,options={}){
  const kind=claimmdFailureKind(check),failure=check?.response_snapshot?.failure,owner=claimmdEligibilityOwner(),insurer=typeof payerName==='function'&&coverage?payerName(coverage.content.payer_id):'the insurer',actions=options.actions!==false&&coverage;
- const canSupport=actions&&typeof supportHelpAvailable==='function'&&supportHelpAvailable();
+ const support=actions?claimmdEligibilitySupportAction(check,coverage):'';
  const edit=actions&&typeof billingCan==='function'&&billingCan()?`<button type="button" data-edit-coverage="${esc(coverage.id)}">Edit insurance</button>`:'';
  const [text,action]={
-  enroll:[`Review eligibility enrollment for ${claimmdProviderLabel(check)} with ${insurer}.`,actions?claimmdEnrollAction(check,coverage):''],
+  enroll:[`Claim.MD reported an eligibility enrollment issue for ${claimmdProviderLabel(check)} with ${insurer}.`,actions?claimmdEnrollAction(check,coverage):''],
+  provider:[`Check eligibility enrollment for ${claimmdProviderLabel(check)} with ${insurer}.`,actions?claimmdProviderEnrollmentReview():''],
   member:['Review the recorded member ID, name and date of birth against the insurance card.',edit||(actions?'<p>Ask billing staff to correct the coverage.</p>':'')],
   payer:[`Review the payer ID recorded for ${insurer}.`,actions?claimmdPayerAction(coverage):''],
   retry:['No usable eligibility answer was received. Try again in a few minutes.',actions?claimmdTryAgain(coverage,options):''],
   connection:['Check the practice’s clearinghouse connection before retrying.',actions?(owner&&(typeof workspaceModuleAllowed!=='function'||workspaceModuleAllowed('edi'))?'<button type="button" data-eligibility-connections>Open Claim connections</button>':'<p>Ask the practice owner to check Claim connections.</p>'):''],
-  other:canSupport?['No specific reason is available for this failure.',`<button type="button" data-eligibility-support="${esc(check.id)}" data-coverage="${esc(coverage.id)}">Send this to support</button>`]:['No specific reason is available for this failure. Contact SunCharts support and tell them when this check was tried.','']
+  other:support?['No specific reason is available for this failure.',support]:['No specific reason is available for this failure. Contact SunCharts support and tell them when this check was tried.','']
  }[kind];
  return `<div class="eligibility-failure" data-failure="${kind}"><p class="eligibility-status"><span class="eligibility-pill unknown">Check failed</span> <span>${esc(claimmdCheckedLine(check).replace(/^Checked/,'Tried'))}</span></p><p>Eligibility remains unconfirmed for this check. ${esc(text)}</p>${action}${failure?claimmdTechnicalDetails({kind:failure.kind,status:failure.http_status,codes:failure.provider_codes||[],words:failure.provider_hints||[]}):''}</div>`;
 }
@@ -408,11 +425,16 @@ document.addEventListener('click',event=>{
  });return;}
  if(data.eligibilityEnroll){claim();run(async()=>{
   const coverage=coverageFor(data.coverage),patientId=selected,identity=me;
-  const result=await api(`/api/v1/patients/${patientId}/coverages/${coverage.id}/claimmd-eligibility/enrollment`,'POST',{check_id:data.eligibilityEnroll});
-  if(selected!==patientId||me!==identity)return;
-  if(result.status==='started'&&/^https:\/\/(www\.)?claim\.md\//.test(String(result.external_url)))window.open(result.external_url,'_blank','noopener,noreferrer');
-  claimmdEligibilityUiFor(coverage.id).enrollment={...result,check:data.eligibilityEnroll};claimmdEligibilityRepaint(coverage.id);
-  if(result.status==='started')notice('Finish the setup in the clearinghouse tab that just opened.');
+  const ui=claimmdEligibilityUiFor(coverage.id),check=data.eligibilityEnroll;
+  if(ui.enrollment?.check===check)return;
+  const current=()=>selected===patientId&&me===identity;
+  ui.enrollment={check,status:'pending'};claimmdEligibilityRepaint(coverage.id);
+  try{
+   const result=await api(`/api/v1/patients/${patientId}/coverages/${coverage.id}/claimmd-eligibility/enrollment`,'POST',{check_id:check});
+   if(current()){ui.enrollment={...result,check};claimmdEligibilityRepaint(coverage.id);}
+  }catch(error){
+   if(current()){delete ui.enrollment;claimmdEligibilityRepaint(coverage.id);throw error;}
+  }
  });return;}
  if(data.eligibilitySupport){claim();run(async()=>{
   const coverage=coverageFor(data.coverage),ui=claimmdEligibilityUiFor(coverage.id);

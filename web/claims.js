@@ -10,9 +10,18 @@ const claimsBase='/api/v1/billing/claims',eraBase='/api/v1/billing/remittances';
 const claimMonitorStages={action:'Needs action',send:'To send',wait:'Waiting',fix:'Needs correction','remittance-review':'Remittance to review',posted:'Posted'};
 const claimRecordFilters=['draft','ready','submitted','accepted','rejected','adjudicated','void'];
 const claimMonitorSelectedRecords=['all',...claimRecordFilters,'payments'];
-const claimActionGroups=['send','fix','delivery','payment'];
+const claimActionGroups=['send','fix','delivery','payment','resubmit'];
+function claimCanceledRecovery(claim,recovery=claim?.canceled_claim_recovery){
+ if(claim?.status!=='void'||!recovery?.encounter_id||!recovery.account_id||recovery.claim_id!==claim.id||
+  recovery.account_id!==claim.account_id||recovery.encounter_id!==(claim.visit_id||claim.snapshot?.account?.content?.visit_id)||
+  recovery.version!==claim.version||!Number.isSafeInteger(recovery.version)||recovery.version<1||
+  !Number.isSafeInteger(recovery.account_version)||recovery.account_version<1)return null;
+ if(typeof billingCan==='function'?!billingCan('create'):typeof billingWrite==='function'&&!billingWrite())return null;
+ if(typeof workspaceResourceAllowed==='function'&&!workspaceResourceAllowed('claims','create'))return null;
+ return recovery;
+}
 function claimWorkGroup(c){
- if(c.status==='void')return '';
+ if(c.status==='void')return claimCanceledRecovery(c)?'resubmit':'';
  if(c.worklist_remittance?.id)return 'payment';
  if(claimIsCrossover(c))return '';
  if(c.status==='rejected'||c.payer_denied===true||claimMdNeedsCorrection(c,c))return 'fix';
@@ -65,6 +74,7 @@ function claimWorklistAge(c,group,now){
 function claimWorklistAction(c,group){
  const readOnly=typeof billingWrite==='function'&&!billingWrite();
  const action=(label,reason,intent=null)=>({label:readOnly?'View claim':label,reason,intent:readOnly?null:intent});
+ if(group==='resubmit')return {label:'Resubmit claim',reason:'Canceled before sending',recovery:claimCanceledRecovery(c)};
  if(group==='payment')return {label:'Review payment',reason:'Insurer response needs review',remittance:c.worklist_remittance};
  if(group==='fix'&&claimMdNeedsCorrection(c,c)){
   const line=c.claimmd_position?.correction?.line;
@@ -90,18 +100,22 @@ function claimWorklistAction(c,group){
  if(c.status==='void')return action('Review cancellation','Claim canceled');
  return action('Open claim',claimStatusLabel(c)||'Claim status unavailable');
 }
+function claimCanceledRecoveryButton(claim,recovery,primary=false){
+ return `<button type="button"${primary?' class="primary"':''} data-claim-open="${esc(claim.id)}" data-claim-visit data-claim-intent="resubmit" data-canceled-claim-version="${recovery.version}" data-canceled-account-version="${recovery.account_version}">Resubmit claim</button>`;
+}
 function claimWorklistButton(c,next){
  if(next.remittance){
   const row=next.remittance.row_index;
   const target=Number.isInteger(row)&&row>=0?` data-era-row="${row}" data-era-claim="${esc(c.id)}"`:'';
   return `<button type="button" data-era-open="${esc(next.remittance.id)}"${target}>${esc(next.label)}</button>`;
  }
+ if(next.recovery)return claimCanceledRecoveryButton(c,next.recovery);
  const attributes=next.intent?` data-claim-intent="${next.intent.kind}"${next.intent.procedure?` data-claim-procedure="${esc(next.intent.procedure)}" data-claim-line="${next.intent.line}"`:''}${next.intent.field?` data-claim-field="${esc(next.intent.field)}"`:''}${next.intent.part?` data-claim-part="${esc(next.intent.part)}"`:''}`:'';
- return `<button type="button" data-claim-open="${esc(c.id)}" data-claim-visit${attributes}>${esc(next.label)}</button>`;
+ return `<button type="button" data-claim-open="${esc(c.id)}"${c.status==='void'?'':' data-claim-visit'}${attributes}>${esc(next.label)}</button>`;
 }
 function claimRowMarkup(c,now=Date.now()){
  const group=claimWorkGroup(c),posted=c.status==='adjudicated'&&c.remittance_posted===true&&c.paid_cents>0&&!c.payer_denied;
- const tone=posted?'paid':group||'other',next=claimWorklistAction(c,group);
+ const tone=posted?'paid':group==='resubmit'?'send':group||'other',next=claimWorklistAction(c,group);
  const encounter=c.visit_id&&typeof encounterRowChip==='function'?encounterRowChip(c):'';
  const summary=[c.payer_name&&esc(c.payer_name),c.service_date&&esc(displayDate(c.service_date)),Number.isSafeInteger(c.total_cents)&&money(c.total_cents)].filter(Boolean).join(' · ');
  return `<tr role="row"><td role="cell" class="monitor-record"><b>${esc(c.patient_name)}</b><small class="claim-control">${encounter?`${encounter} · `:''}Claim ${esc(c.control_number||'Not assigned')}${c.frequency&&c.frequency!=='original'?` · ${esc(displayStatus(c.frequency))}`:''}</small>${summary?`<small>${summary}</small>`:''}</td><td role="cell" class="monitor-status"><span class="pill claim-status-${tone}">${esc(posted?'Payment posted':next.reason)}</span></td><td role="cell" class="monitor-age">${claimWorklistAge(c,group,now)}</td><td role="cell" class="monitor-action">${claimWorklistButton(c,next)}</td></tr>`;
@@ -610,7 +624,11 @@ function claimPrimaryActionMarkup(claim,detail={},options={}){
  // A claim file the clearinghouse has already received is out the door whatever the claim row still
  // says, so the next step cannot be to send it again. A file merely prepared is not proof it went.
  const received=claimHasRecordedSubmission(detail);
- if(claim.status==='void')words='This claim is voided. Nothing more goes to the insurer from it.';
+ if(claim.status==='void'){
+  const recovery=claimCanceledRecovery(claim,detail.canceled_claim_recovery);
+  words=recovery?'Canceled before sending. Resubmitting opens a new draft from the current posted charges for review.':'This claim was canceled. View its history for prior activity.';
+  if(recovery)button=claimCanceledRecoveryButton(claim,recovery,true);
+ }
  else if(claimMdNeedsCorrection(claim,detail)){
   words='Claim.MD is holding this claim for correction.';
   const message=detail.claimmd_position.correction?.message;
@@ -640,7 +658,7 @@ function claimPrimaryActionMarkup(claim,detail={},options={}){
  const correction=canWrite&&!claimIsCrossover(claim)&&claim.status==='adjudicated'&&claim.payer_control_number?'<button type="button" data-replacement-claim>Correct or void this claim</button>':'';
  const download=!claimIsCrossover(claim)&&!['draft','void'].includes(claim.status)?`${claimPacketDownload(claim)}`:'';
  const existing=(detail?.tracking?.submissions||[]).filter(item=>['prepared','delivered'].includes(item.status)&&item.id).at(-1);
- const openFile=existing?`<button type="button" data-claim-existing-submission="${esc(existing.id)}">Open the claim file already prepared</button>`:'';
+ const openFile=existing&&claim.status!=='void'?`<button type="button" data-claim-existing-submission="${esc(existing.id)}">Open the claim file already prepared</button>`:'';
  const extras=[secondary,correction,openFile].filter(Boolean).join('');
  return `<section class="claim-primary" data-claim-primary aria-label="Next step"><div class="claim-primary-action"><p>${esc(words)}</p>${holdResponse}<div class="claim-primary-buttons">${button}</div>${options.connectionNotice||''}</div><div class="claim-primary-side">${cms}</div>${extras?`<div class="claim-primary-extra">${extras}</div>`:''}${download?`<p class="claim-primary-download">${download}</p>`:''}${claim.parent_id?`<p class="claim-primary-parent"><button type="button" data-claim-open="${claim.parent_id}">Open the claim this one corrects</button></p>`:''}${options.secondaryEvidence||''}</section>`;
 }
@@ -927,7 +945,7 @@ async function insertClaimStatusTimeline(context,claim,detail,history){
   anchor.insertAdjacentHTML(box?'afterend':'beforebegin','<div class="claim-status-timeline-host" data-claim-timeline><p class="muted">Reading what happened to this claim…</p></div>');
  const slot=host.querySelector('[data-claim-timeline]'),identity=typeof me==='undefined'?undefined:me;
  let html='<p class="muted">What happened to this claim is not available right now. The claim details below are unaffected.</p>';
- try{const built=await build(claim,detail,history,{syncClearinghouse:!context.savedActivityOnly});if(built)html=built;}catch{}
+ try{const built=await build(claim,detail,history,{syncClearinghouse:claim.status!=='void'&&!context.savedActivityOnly});if(built)html=built;}catch{}
  // Another claim may have opened while the provider was answering; never write a
  // stale timeline into the container of the claim now on screen.
  if(claim!==claimCurrent||(typeof me!=='undefined'&&me!==identity)||!slot?.isConnected)return;
@@ -965,12 +983,12 @@ function claimScreenMarkup(claim,detail,history){
  const lines=chargeTable(account.content.lines.map((line,index)=>({...line,diagnosis_codes:(claim.content?.line_diagnosis_pointers?.[index]||[]).map(pointer=>claim.content?.diagnosis_codes?.[pointer-1]).filter(Boolean)})));
  const editClaim=billingWrite()&&claim.status==='draft'?'<button type="button" data-edit-claim>Edit claim details</button>':'';
  const inVisit=claimViewContext?.kind==='encounter';
+ const charges=inVisit?'':`${claimMoneySummaryMarkup(claim,detail)}<div class="claim-lines" data-claim-lines>${lines}</div>`;
  return `<section class="billing-account-detail">${claimScreenHeadMarkup(claim,account,patient,detail)}
  ${typeof claimProblemReport==='function'?claimProblemBoxMarkup(claimProblemReport(claim,detail),claimResponseWords(detail),claim.id):''}
  ${claimPrimaryActionMarkup(claim,detail,{connectionNotice:claimConnectionNotice(claim,detail),secondaryEvidence:sections.secondaryEvidence,recordOutside})}
  ${claimIsCrossover(claim)?'<p class="muted">Nothing is sent or downloaded for a crossover claim. The secondary payment stays with the original visit.</p>':['void','voided'].includes(claim.status)?'':claimMissingMarkup(missing,claim,detail)}
- ${inVisit?'':claimMoneySummaryMarkup(claim,detail)}
- ${inVisit?'':`<div class="claim-lines" data-claim-lines>${lines}</div>`}
+ ${claim.status==='void'&&charges?`<details class="amendment" data-inline><summary>Original claim charges</summary>${charges}</details>`:charges}
  ${withdraw}
  ${claimMoreDetailsMarkup(claim,detail,history,sections)}
  ${inVisit?'':`<div class="actions"><button type="button" data-claim-account="${esc(claim.account_id)}" data-patient="${esc(claim.patient_id)}">Open encounter</button>${editClaim}</div>`}
@@ -987,7 +1005,7 @@ async function showClaim(id){
   // The Claim.MD panels and the "what happened" timeline are filled in after the screen is drawn,
   // and sit inside More details. Each is left alone when its own script is not loaded.
   const claim=d.claim;
-  const lifecycle=typeof claimMdClaimLifecycle==='function'?claimMdClaimLifecycle(claim,d,h,{responsesOpen:context.savedActivityOnly?false:undefined}):'';
+  const lifecycle=claim.status!=='void'&&typeof claimMdClaimLifecycle==='function'?claimMdClaimLifecycle(claim,d,h,{responsesOpen:context.savedActivityOnly?false:undefined}):'';
   if(lifecycle){const anchor=claimPanelAnchor(claimWorkspaceHost(context));if(anchor?.insertAdjacentHTML)anchor.insertAdjacentHTML('beforeend',`<section class="claim-more-item" data-claim-more="claim-progress"><h3>Claim progress</h3>${lifecycle}</section>`);}
   // "What happened" gets its own container, placed after the rejection box above the
   // lifecycle panel, so the other panels can be replaced without touching it.
@@ -1230,7 +1248,7 @@ document.addEventListener('click',e=>{const chip=e.target.closest?.('#claims-too
  if(b.dataset.mapClaim){const m=await api(`/api/v1/patients/${selected}/history/${b.dataset.mapClaim}/claim-mapping`);if(m.native_id){await showClaimsWorkspace();await showClaim(m.native_id);return;}const candidates=workspace.billing.accounts.filter(a=>a.status==='posted'&&a.coverage_snapshot),patient=selected;await showClaimsWorkspace();claimSource=m;claimPane(`<h2>Create a claim from an imported record</h2>${sourceNotice(m)}<p>Choose the posted charges this claim belongs to.</p>${candidates.map(a=>`<button type="button" data-source-claim-account="${a.id}" data-patient="${patient}">${esc(a.content.service_date)} · ${money(a.total_cents)} · ${a.id.slice(0,8)}</button>`).join('')||'<p>No posted charges with insurance for this patient. Post the charges in the patient chart first.</p>'}`);window.claimSourceAccounts=candidates;return;}
  if(b.dataset.sourceClaimAccount){claimEditor({...window.claimSourceAccounts.find(a=>a.id===b.dataset.sourceClaimAccount),patient_id:b.dataset.patient},null,claimSource);return;}
  if(b.hasAttribute('data-era-next')){await showMoreMonitorRemittances();return;}
- if(b.dataset.claimAccount){const context=claimContextSnapshot();requireClaimContext(context,claimCurrent);if(context.kind!=='encounter'&&claimCurrent&&await openClaimOnVisit(claimCurrent.id))return;billingSelected=b.dataset.claimAccount;if(context.kind==='encounter'){captureClaimDraft();$('encounter-claims').replaceChildren();$('encounter-claims').hidden=true;claimViewContext=null;if(typeof openVisitChargesDetail==='function')openVisitChargesDetail(b.dataset.claimAccount);else showBillingAccount(b.dataset.claimAccount,false,true);return;}await showClinical();await selectPatient(b.dataset.patient);showBillingAccount(b.dataset.claimAccount);return;}
+ if(b.dataset.claimAccount){const context=claimContextSnapshot();requireClaimContext(context,claimCurrent);if(context.kind!=='encounter'&&claimCurrent&&await openClaimOnVisit(claimCurrent.id,claimCurrent.status==='void'?{kind:'encounter'}:undefined))return;billingSelected=b.dataset.claimAccount;if(context.kind==='encounter'){captureClaimDraft();$('encounter-claims').replaceChildren();$('encounter-claims').hidden=true;claimViewContext=null;if(typeof openVisitChargesDetail==='function')openVisitChargesDetail(b.dataset.claimAccount);else showBillingAccount(b.dataset.claimAccount,false,true);return;}await showClinical();await selectPatient(b.dataset.patient);showBillingAccount(b.dataset.claimAccount);return;}
  if(b.dataset.claimExistingSubmission){await reviewExistingClaimSubmission(b.dataset.claimExistingSubmission);return;}
  if(b.dataset.claimRelease){await releaseClaimToSend(b.dataset.claimRelease);return;}
  if(b.dataset.claimOpen){if(b.hasAttribute('data-claim-visit')&&claimViewContext?.kind!=='encounter'&&await openClaimOnVisit(b.dataset.claimOpen,claimWorklistIntent(b.dataset)))return;await showClaim(b.dataset.claimOpen);return;}if(b.hasAttribute('data-edit-claim')){claimEditor(claimCurrent.snapshot.account,claimCurrent);return;}
@@ -1319,19 +1337,25 @@ function claimWorklistIntent(dataset){
  if(dataset.claimIntent==='correction')return {kind:'correction',procedure:dataset.claimProcedure,line:Number(dataset.claimLine)};
  if(dataset.claimIntent==='missing')return {kind:'missing',field:dataset.claimField,part:dataset.claimPart};
  if(dataset.claimIntent==='delivery')return {kind:'delivery'};
+ if(dataset.claimIntent==='resubmit')return {kind:'resubmit',version:Number(dataset.canceledClaimVersion),accountVersion:Number(dataset.canceledAccountVersion)};
 }
 // Open the encounter's claim dialog if the selected worklist claim is still current for that visit.
 // Older and imported claims open directly in the claims workspace.
 async function openClaimOnVisit(claimId,intent){
  const context=claimContextSnapshot(),identity=context.identity;
  const request={kind:'visit-claim',id:claimId};context.detailRequest=request;
- const claim=(await api(`${claimsBase}/${encodeURIComponent(claimId)}`)).claim,visitId=claim?.snapshot?.account?.content?.visit_id;
+ const detail=await api(`${claimsBase}/${encodeURIComponent(claimId)}`),claim=detail.claim,visitId=claim?.snapshot?.account?.content?.visit_id;
  if(!claimContextCurrent(context)||context.detailRequest!==request)return true;
  if(claim?.id!==claimId)throw new Error('The claim response does not match the selected claim.');
+ const resubmit=intent?.kind==='resubmit',recovery=resubmit?claimCanceledRecovery(claim,detail.canceled_claim_recovery):null;
+ if(resubmit&&(!recovery||recovery.version!==intent.version||recovery.account_version!==intent.accountVersion||
+  recovery.encounter_id!==visitId))throw new Error('The claim or posted charges changed. Refresh the worklist and review the current claim.');
  if(!visitId||typeof selectPatient!=='function'||typeof showClinical!=='function')return false;
  captureClaimDraft();await showClinical();if(me!==identity)return true;
  await selectPatient(claim.patient_id,visitId);if(me!==identity||selected!==claim.patient_id||activeVisit?.id!==visitId)return true;
+ if(recovery){await visitResubmitFromWorklist(recovery);return true;}
  setEncounterSection('charges');
+ if(intent?.kind==='encounter')return true;
  if(typeof visitOpenCurrentEncounterClaim==='function'&&$('visit-page-host')){
   if(await visitOpenCurrentEncounterClaim(claim.id,claim.account_id,intent))return true;
   if(await showClaimsWorkspace())await showClaim(claim.id);

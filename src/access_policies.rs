@@ -217,6 +217,7 @@ pub(crate) async fn allows(
         "create" => Action::Create,
         "edit" => Action::Edit,
         "delete" => Action::Delete,
+        "compound" => Action::Compound,
         _ => return Ok(false),
     };
     if matches!(

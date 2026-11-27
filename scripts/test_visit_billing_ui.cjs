@@ -51,10 +51,9 @@ const states=[
  [selfPay(),'Self-pay: collect payment','Collect payment','data-visit-collect',/Patient owes \$280\.00\. Waiting for the patient/],
  [visitSummary({state:'claim_cancelled',claim:null,canceled_claim:{id:'cancelled-original',version:2}}),'The claim to Synthetic Medicare PPO was cancelled','Resubmit claim','data-visit-claim-resend="cancelled-original" data-canceled-claim-version="2" aria-haspopup="dialog"',/Opens a new draft for review/],
   [visitSummary({state:'fix_claim',claim:{issues:[{code:'tax_id',missing:'billing organization tax ID',detail:'Tax ID is required'},{code:'npi',missing:'provider NPI',detail:'x'}]}}),'Claim to Synthetic Medicare PPO needs details','Fix claim details',`data-visit-claim-fix="${esc(visitSummary().claim.id)}"`,/Practice billing setup:<\/b> billing organization tax ID, provider NPI/],
-  // A claim the server has filled in and checked needs no review to press; it is ready to go out.
-  [visitSummary({claim:{status:'ready'}}),'Claim ready to send to Synthetic Medicare PPO','Send claim to Synthetic Medicare PPO','data-visit-claim-direct-send="claim"',/Nothing has been sent yet\./],
-  // A draft claim has not been checked yet, so the card still opens the review, which releases it.
-  [visitSummary({claim:{status:'draft'}}),'Claim ready to send to Synthetic Medicare PPO','Review and send to the clearinghouse','data-visit-review-open="account"',/Nothing has been sent yet\./],
+  // Both ready and draft claims open the same review before sending.
+  [visitSummary({claim:{status:'ready'}}),'Review claim for Synthetic Medicare PPO','Review claim','data-visit-review-open="account"',/Open the claim to check it before sending\./],
+  [visitSummary({claim:{status:'draft'}}),'Review claim for Synthetic Medicare PPO','Review claim','data-visit-review-open="account"',/Open the claim to check it before sending\./],
  [visitSummary({state:'waiting_insurer',waiting_on:'insurer',insurance:{status:'waiting',sent_on:'2026-11-12'},claim:{status:'submitted',sent_on:'2026-11-12'}}),'Waiting on Synthetic Medicare PPO','Check claim status','data-revenue-claim="claim"',/Claim sent Nov 12, 2026\. Waiting for the payer’s decision./],
  [visitSummary({state:'claimmd_received',waiting_on:'insurer',insurance:{status:'received'},claim:{status:'submitted'}}),'Received by the clearinghouse','Check claim status','data-revenue-claim="claim"',/Waiting for payer acceptance\./],
  [visitSummary({state:'waiting_insurer',waiting_on:'insurer',insurance:{status:'waiting'},claim:{status:'accepted'}}),'Accepted by the payer','Check claim status','data-revenue-claim="claim"',/Waiting for the payer’s decision\./],
@@ -290,7 +289,7 @@ const index=fs.readFileSync('web/index.html','utf8');assert.ok(index.indexOf('/v
  let host=node('encounter-revenue').innerHTML,status=node('encounter-revenue-status').innerHTML;
  assert.deepEqual(sent.map(c=>[c[0],c[1]]),[['/api/v1/visits/visit/diagnoses','GET'],['/api/v1/patients/patient/billing/visit-summary?visit_id=visit','GET'],['/api/v1/patients/patient/billing/accounts/account/claims/prepare','POST'],['/api/v1/patients/patient/billing/visit-summary?visit_id=visit','GET']]);
  assert.equal(JSON.stringify(sent.find(c=>c[0].endsWith('/claims/prepare'))[2]),'{}','preparing sends no amounts and no claim details');
- assert.match(status,/Claim ready to send to Synthetic Medicare PPO/);assert.deepEqual(primaries(status),['Review and send to the clearinghouse']);
+ assert.match(status,/Review claim for Synthetic Medicare PPO/);assert.deepEqual(primaries(status),[],'the encounter guide owns the next action');
  await ctx.loadEncounterRevenueStatus(account,true);assert.equal(prepared,1,'a refresh never prepares again');
  // Layout: one card, collect hidden until asked, charges and history collapsed, details not offered to staff.
  assert.match(host,/<h2>Procedures \(CPT\)<\/h2><p class="muted">Nov 12, 2026 · Posted<\/p>/);
@@ -320,12 +319,11 @@ const index=fs.readFileSync('web/index.html','utf8');assert.ok(index.indexOf('/v
   const readyButton=(button,shown)=>{ctx.workspace.billing.accounts=[draftAccount];ctx.billingStep.data={summary:shown};ctx.billingStep.account='account';ctx.billingStep.visit='visit';ctx.billingStep.reviewCard=shown;return card(shown)&&button;};
   const readyCard=()=>card(readySummary);
   ctx.claimMdConnectionState={configured:true,connected:true};ctx.loadClaimMdConnection=async()=>ctx.claimMdConnectionState;
-  // Its one main button is the send itself, and a small text link beside it still opens the review.
   let out=readyCard();
-  assert.match(out,/class="primary" data-visit-claim-direct-send="claim">Send claim to Synthetic Medicare PPO</);
-  assert.match(out,/class="text-button" data-visit-review-open="account">Review claim</);
-  assert.deepEqual(primaries(out),['Send claim to Synthetic Medicare PPO'],'one primary action, and it is the send');
-  assert.equal((out.match(/data-visit-review-open/g)||[]).length,1,'the card offers the review once, as the small link');
+  assert.match(out,/class="primary" data-visit-review-open="account">Review claim</);
+  assert.doesNotMatch(out,/data-visit-claim-direct-send/);
+  assert.deepEqual(primaries(out),['Review claim'],'one primary action opens the review');
+  assert.equal((out.match(/data-visit-review-open/g)||[]).length,1);
   // A claim already with the insurer, a secondary claim, a support session and a sign-in that
   // cannot write or cannot see claims are given no send at all.
   for(const [why,shown,context] of [
@@ -336,8 +334,7 @@ const index=fs.readFileSync('web/index.html','utf8');assert.ok(index.indexOf('/v
    ['read-only',readySummary,{...all,canWrite:false}],
    ['claims hidden',readySummary,{...all,claimsAllowed:false}],
   ]){const html=card(shown,context);assert.doesNotMatch(html,/data-visit-claim-direct-send/,`${why}: nothing to press`);}
-  // A support session acts for the practice and gets the same one-click send.
-  assert.match(card(readySummary,{...all,delegated:true}),/data-visit-claim-direct-send/,'support session: the same send button');
+  assert.deepEqual(primaries(card(readySummary,{...all,delegated:true})),['Review claim'],'delegated billing follows the same review entry point');
   // A card drawn away from the live visit keeps the review button instead of a send: the send
   // reads the account the screen is actually on, and this card does not know it.
   ctx.billingStep.reviewCard={...readySummary};
@@ -535,14 +532,14 @@ const index=fs.readFileSync('web/index.html','utf8');assert.ok(index.indexOf('/v
  assert.match(status,/The claim to Synthetic Medicare PPO could not be prepared/);assert.match(status,/The charges changed; open the encounter again\. Try again, or open Insurance and eligibility/);assert.deepEqual(primaries(status),['Try again']);
  assert.equal(sent.filter(c=>c[1]==='POST').length,1);await ctx.loadEncounterRevenueStatus(ctx.workspace.billing.accounts[0],true);assert.equal(sent.filter(c=>c[1]==='POST').length,1,'no retry loop');
  reply=(url,method,body)=>url.endsWith('/claims/prepare')?{outcome:'prepared'}:visitSummary({account:{version:3}});click({visitClaimPrepare:''});await ctx.pending;await settle();
- assert.equal(JSON.stringify(sent.filter(c=>c[1]==='POST').at(-1)[2]),'{}');assert.equal(ctx.noticed,'Claim prepared from this encounter. Nothing was sent.');assert.match(node('encounter-revenue-status').innerHTML,/Claim ready to send/);
+ assert.equal(JSON.stringify(sent.filter(c=>c[1]==='POST').at(-1)[2]),'{}');assert.equal(ctx.noticed,'Claim prepared from this encounter. Nothing was sent.');assert.match(node('encounter-revenue-status').innerHTML,/Review claim for/);
  // A delegated support session never triggers the automatic draft, by its own flag or the server's; it prepares by pressing.
  for(const [identity,viewer] of [[{role:'owner',delegated:true},{delegated:false}],[{role:'owner'},{delegated:true}]]){ctx.me=identity;node('encounter-revenue').dataset.revenueKey='';ctx.workspace.billing.accounts=[{...account,version:ctx.workspace.billing.accounts[0].version+1}];sent.length=0;reply=()=>visitSummary({state:'prepare_claim',claim:null,account:{version:ctx.workspace.billing.accounts[0].version},viewer});ctx.renderEncounterRevenue();await settle();assert.equal(sent.filter(c=>c[1]==='POST').length,0,'support session wrote nothing');assert.match(node('encounter-revenue-status').innerHTML,/data-visit-claim-prepare/,'it is offered the Prepare claim button to press itself');}
  ctx.me={role:'front_desk'};
  // Opening the encounter on another step (its note, from the schedule or the chart) prepares nothing; going to the billing step does.
  ctx.encounterSection='documentation';node('encounter-revenue').dataset.revenueKey='';ctx.workspace.billing.accounts=[{...account,version:30}];sent.length=0;let made=false;reply=url=>{if(url.endsWith('/claims/prepare')){made=true;return {outcome:'prepared'};}return made?visitSummary({account:{version:30}}):visitSummary({state:'prepare_claim',claim:null,account:{version:30}});};ctx.renderEncounterRevenue();await settle();
  assert.equal(sent.filter(c=>c[1]==='POST').length,0,'the note step never prepares a claim');
- ctx.encounterSection='charges';ctx.renderEncounterRevenue();await settle();assert.equal(sent.filter(c=>c[1]==='POST').length,1,'the billing step prepares it at once');assert.match(node('encounter-revenue-status').innerHTML,/Claim ready to send/);
+ ctx.encounterSection='charges';ctx.renderEncounterRevenue();await settle();assert.equal(sent.filter(c=>c[1]==='POST').length,1,'the billing step prepares it at once');assert.match(node('encounter-revenue-status').innerHTML,/Review claim for/);
  // People who cannot prepare claims never trigger it.
  ctx.billingCan=()=>false;node('encounter-revenue').dataset.revenueKey='';ctx.workspace.billing.accounts=[{...account,version:40}];sent.length=0;reply=()=>visitSummary({state:'prepare_claim',claim:null,account:{version:40}});ctx.renderEncounterRevenue();await settle();
  assert.equal(sent.filter(c=>c[1]==='POST').length,0);assert.match(node('encounter-revenue-status').innerHTML,/Billing staff prepare the claim to Synthetic Medicare PPO/);assert.deepEqual(primaries(node('encounter-revenue-status').innerHTML),[]);

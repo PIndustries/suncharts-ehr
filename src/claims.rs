@@ -650,23 +650,20 @@ pub(crate) fn preflight(c: &Claim) -> Result<Vec<String>> {
     if !npi(&p.billing_npi) || !npi(&p.rendering_npi) {
         issues.push("Billing and rendering NPIs require valid check digits".into());
     }
-    // The 837P carries these names as X12 elements. Catch characters the file cannot hold
-    // (long dashes, accents, curly quotes) here, before the claim is released, instead of
-    // failing later when the file is generated.
     let plain = "can only use plain letters, numbers and basic punctuation (no long dashes, accents or curly quotes)";
+    let organization_text =
+        "can only use plain letters, numbers and basic punctuation, up to 60 characters";
     if !p.billing_provider_name.trim().is_empty()
-        && crate::x12::element(&p.billing_provider_name, 1, 60, "billing_provider_name").is_err()
+        && crate::x12::organization_name(&p.billing_provider_name, "billing_provider_name").is_err()
     {
-        issues.push(format!(
-            "Billing provider name {plain}, up to 60 characters"
-        ));
+        issues.push(format!("Billing provider name {organization_text}"));
     }
-    if let Some(payer) =
-        c.snapshot["account"]["coverage_snapshot"]["payer"]["content"]["name"].as_str()
-    {
-        if crate::x12::element(payer, 1, 60, "payer_name").is_err() {
-            issues.push(format!("Payer name {plain}, up to 60 characters"));
-        }
+    let payer = &c.snapshot["account"]["coverage_snapshot"]["payer"]["content"];
+    let payer_name = payer["name"].as_str().unwrap_or("");
+    if payer_name.trim().is_empty() {
+        issues.push("Payer name is required".into());
+    } else if crate::x12::organization_name(payer_name, "payer_name").is_err() {
+        issues.push(format!("Payer name {organization_text}"));
     }
     // The frozen snapshot carries these as plain strings. element() trims outer
     // whitespace, so a value that only has a stray leading/trailing space is never
@@ -719,18 +716,7 @@ pub(crate) fn preflight(c: &Claim) -> Result<Vec<String>> {
             format!("Patient last name {plain}, 1 to 60 characters"),
         ),
         (
-            c.snapshot["account"]["coverage_snapshot"]["payer"]["content"]["name"]
-                .as_str()
-                .unwrap_or(""),
-            1,
-            60,
-            "payer_name",
-            format!("Insurer name {plain}, 1 to 60 characters"),
-        ),
-        (
-            c.snapshot["account"]["coverage_snapshot"]["payer"]["content"]["payer_code"]
-                .as_str()
-                .unwrap_or(""),
+            payer["payer_code"].as_str().unwrap_or(""),
             2,
             80,
             "payer_code",
@@ -785,12 +771,8 @@ pub(crate) fn preflight(c: &Claim) -> Result<Vec<String>> {
     if priority == "tertiary" {
         issues.push("Tertiary electronic claim coordination is not supported".into());
     }
-    let payer = &c.snapshot["account"]["coverage_snapshot"]["payer"]["content"];
     if payer["payer_code"].as_str().unwrap_or("").trim().is_empty() {
         issues.push("Claim.MD payer ID is missing from the frozen payer mapping. Open the charge account and payer mapping, add the correct Claim.MD payer ID, then post a new insured account before preparing the electronic claim".into());
-    }
-    if payer["name"].as_str().unwrap_or("").trim().is_empty() {
-        issues.push("Payer name is required".into());
     }
     Ok(issues)
 }
@@ -921,6 +903,13 @@ async fn claims(
         .iter()
         .filter_map(|row| Uuid::parse_str(row["id"].as_str()?).ok())
         .collect();
+    let canceled_ids: Vec<Uuid> = rows
+        .iter()
+        .filter(|row| row["status"] == "void")
+        .filter_map(|row| Uuid::parse_str(row["id"].as_str()?).ok())
+        .collect();
+    let mut recoveries =
+        crate::visit_billing::canceled_claim_recoveries(&mut tx, &a, &canceled_ids).await?;
     let mut positions = claim_md_positions(&mut tx, a.tenant_id, &ids).await?;
     let mut handoffs =
         crate::visit_claim_handoff::evidence_for_claims(&mut tx, a.tenant_id, &ids).await?;
@@ -956,6 +945,9 @@ async fn claims(
             record.remove("snapshot");
         }
         if let Some(id) = row["id"].as_str().and_then(|id| Uuid::parse_str(id).ok()) {
+            if let Some(recovery) = recoveries.remove(&id) {
+                row["canceled_claim_recovery"] = json!(recovery);
+            }
             if let Some(position) = positions.remove(&id) {
                 row["claimmd_position"] = position;
             }
@@ -1281,13 +1273,8 @@ async fn claim_detail(
         .bind(id)
         .fetch_all(&mut *tx)
         .await?;
-    let artifact_generated: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM edi_submissions WHERE tenant_id=$1 AND claim_id=$2)",
-    )
-    .bind(a.tenant_id)
-    .bind(id)
-    .fetch_one(&mut *tx)
-    .await?;
+    let artifact_generated = claim_artifact_exists(&mut tx, &a, id).await?;
+    let can_return_to_draft = can_return_to_draft(&mut tx, &a, &c, artifact_generated).await?;
     let can_confirm_self_policyholder = !artifact_generated
         && a.scheduling().is_ok()
         && self_policyholder_birth_date(&c).is_some()
@@ -1320,14 +1307,22 @@ async fn claim_detail(
         .unwrap_or_else(|| {
             json!({"needs_correction":false,"correction":null,"received_at":null,"acknowledged":false})
         });
+    let canceled_claim_recovery = if c.status == "void" {
+        crate::visit_billing::canceled_claim_recoveries(&mut tx, &a, &[id])
+            .await?
+            .remove(&id)
+    } else {
+        None
+    };
     crate::postgres::audit(&mut tx, &a, "claim.read", id).await?;
     tx.commit().await?;
     let transport = clearinghouse_transport(db(&s)?, a.tenant_id, artifact_generated).await?;
     let (frequency, frequency_code) = claim_resend_plan_for(&payer_control);
     Ok(Json(
-        json!({"claim":c,"preflight_issues":issues,"submission_issues":submission_issues,"can_confirm_self_policyholder":can_confirm_self_policyholder,"transport":transport,"submission_defaults":submission_defaults,"tracking":tracking,
+        json!({"claim":c,"preflight_issues":issues,"submission_issues":submission_issues,"can_confirm_self_policyholder":can_confirm_self_policyholder,"can_return_to_draft":can_return_to_draft,"transport":transport,"submission_defaults":submission_defaults,"tracking":tracking,
             "resend":{"frequency":frequency,"frequency_code":frequency_code,"payer_control_number":payer_control},
             "claimmd_position":claimmd_position,
+            "canceled_claim_recovery":canceled_claim_recovery,
             "responses":{"revisions":responses,"feed":feed}}),
     ))
 }
@@ -1579,6 +1574,61 @@ fn self_policyholder_address(value: &Value) -> Result<String> {
         .join(", "))
 }
 
+async fn claim_artifact_exists(
+    tx: &mut Transaction<'_, Postgres>,
+    actor: &Actor,
+    claim_id: Uuid,
+) -> Result<bool> {
+    Ok(sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM edi_submissions WHERE tenant_id=$1 AND claim_id=$2)",
+    )
+    .bind(actor.tenant_id)
+    .bind(claim_id)
+    .fetch_one(&mut **tx)
+    .await?)
+}
+
+async fn claim_has_delivery_evidence(
+    tx: &mut Transaction<'_, Postgres>,
+    actor: &Actor,
+    claim: &Claim,
+) -> Result<bool> {
+    Ok(sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM claim_revisions WHERE tenant_id=$1 AND claim_id=$2
+                       AND snapshot->>'status' IN ('submitted','accepted','rejected','adjudicated'))
+         OR EXISTS(SELECT 1 FROM claimmd_operation_records WHERE tenant_id=$1
+                   AND (claim_id=$2::uuid::text OR patient_control_number=$3))",
+    )
+    .bind(actor.tenant_id)
+    .bind(claim.id)
+    .bind(&claim.control_number)
+    .fetch_one(&mut **tx)
+    .await?)
+}
+
+async fn can_return_to_draft(
+    tx: &mut Transaction<'_, Postgres>,
+    actor: &Actor,
+    claim: &Claim,
+    artifact_generated: bool,
+) -> Result<bool> {
+    Ok(!artifact_generated
+        && claim.status == "ready"
+        && claim.frequency == "original"
+        && claim.parent_id.is_none()
+        && claim.source_history_id.is_none()
+        && claim.payer_control_number.trim().is_empty()
+        && claim.content["external_control_number"]
+            .as_str()
+            .unwrap_or("")
+            .trim()
+            .is_empty()
+        && claim.snapshot["coordination_of_benefits"].is_null()
+        && actor.scheduling().is_ok()
+        && crate::access_policies::allows(tx, actor, "claims", "compound").await?
+        && !claim_has_delivery_evidence(tx, actor, claim).await?)
+}
+
 async fn confirm_self_policyholder(
     tx: &mut Transaction<'_, Postgres>,
     actor: &Actor,
@@ -1599,19 +1649,9 @@ async fn confirm_self_policyholder(
             "Review the current posted account and policy before correcting the claim",
         ));
     }
-    let has_artifact_or_send: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM edi_submissions WHERE tenant_id=$1 AND claim_id=$2)
-         OR EXISTS(SELECT 1 FROM claim_revisions WHERE tenant_id=$1 AND claim_id=$2
-                   AND snapshot->>'status' IN ('submitted','accepted','rejected','adjudicated'))
-         OR EXISTS(SELECT 1 FROM claimmd_operation_records WHERE tenant_id=$1
-                   AND (claim_id=$2::uuid::text OR patient_control_number=$3))",
-    )
-    .bind(actor.tenant_id)
-    .bind(claim.id)
-    .bind(&claim.control_number)
-    .fetch_one(&mut **tx)
-    .await?;
-    if has_artifact_or_send {
+    if claim_artifact_exists(tx, actor, claim.id).await?
+        || claim_has_delivery_evidence(tx, actor, claim).await?
+    {
         return Err(Error::Conflict(
             "Review the existing file or delivery evidence before changing the claim",
         ));
@@ -1981,6 +2021,36 @@ async fn claim_action_versioned(
         let corrected = confirm_self_policyholder(&mut tx, &a, &c, &v.reason).await?;
         tx.commit().await?;
         return Ok(Json(corrected));
+    }
+    if v.action == "return_to_draft" {
+        if !v.reference.is_empty() || v.event_date.is_some() || !v.payer_control_number.is_empty() {
+            return Err(Error::Invalid(
+                "Returning a claim to draft does not record an external event",
+            ));
+        }
+        let artifact_generated = claim_artifact_exists(&mut tx, &a, id).await?;
+        if !can_return_to_draft(&mut tx, &a, &c, artifact_generated).await? {
+            return Err(Error::Conflict(
+                "Only a ready original claim without a generated file or delivery history can return to draft",
+            ));
+        }
+        sqlx::query(
+            "UPDATE ehr_claims SET status='draft',version=version+1 WHERE tenant_id=$1 AND id=$2",
+        )
+        .bind(a.tenant_id)
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+        let draft = revision(
+            &mut tx,
+            &a,
+            id,
+            &v.reason,
+            json!({"action":"return_to_draft","network_transmitted":false}),
+        )
+        .await?;
+        tx.commit().await?;
+        return Ok(Json(draft));
     }
     if crate::claim_cob::tracking_only(&c) && v.action != "withdraw_crossover" {
         return Err(Error::Conflict(
@@ -3233,6 +3303,22 @@ mod submission_default_tests {
             content: json!({"billing_provider_name":"Synthetic Practice","billing_npi":"1234567893","tax_id":"000000001","billing_address":"1 Example Way","rendering_npi":"1234567893","patient_address":"1 Example Way","subscriber_address":"1 Example Way","subscriber_birth_date":"1990-01-01","place_of_service":"11","diagnosis_codes":["Z00.00"],"line_diagnosis_pointers":[[1]],"external_control_number":"","notes":"Synthetic"}),
             snapshot: json!({"patient":{"given_name":"Avery","family_name":"Synthetic","birth_date":"1990-01-01"},"account":{"total_cents":10000,"content":{"currency":"USD","service_date":"2026-10-25","lines":[{"code_system":"CPT","code":"99213","modifiers":"","units":1,"amount_cents":10000}]},"coverage_snapshot":{"coverage":{"content":{"priority":"primary","relationship":"self","member_id":member_id,"group_number":"SYN-GROUP","plan_name":"Synthetic plan"}},"payer":{"content":{"name":"Synthetic Payer","payer_code":"SYN-PAYER"}}}}}),
         }
+    }
+
+    #[test]
+    fn preflight_names_each_unsafe_organization_once() {
+        let mut claim = preflight_claim("SYN-MEMBER");
+        claim.content["billing_provider_name"] = json!("Synthetic Équipe");
+        claim.snapshot["account"]["coverage_snapshot"]["payer"]["content"]["name"] =
+            json!("Synthetic~Payer");
+        let issues = preflight(&claim).unwrap();
+        assert_eq!(issues.len(), 2, "{issues:?}");
+        assert!(issues[0].starts_with("Billing provider name"));
+        assert!(issues[1].starts_with("Payer name"));
+        claim.snapshot["account"]["coverage_snapshot"]["payer"]["content"]["name"] = json!("");
+        let issues = preflight(&claim).unwrap();
+        assert_eq!(issues.len(), 2, "{issues:?}");
+        assert_eq!(issues[1], "Payer name is required");
     }
 
     #[test]
