@@ -172,7 +172,10 @@ async function checkClaimResponse(browser,viewport,returned=false,held=false){
    assert.equal(await page.$eval(xs,button=>button.getAttribute('aria-pressed')),'false');
    assert.deepEqual(writes,[],'showing modifier options never changes the claim');
    const screenshotDir=process.env.CLAIM_DETAILS_SCREENSHOT_DIR;
-   if(screenshotDir)await (await page.$(details)).screenshot({path:path.join(screenshotDir,`held-claim-modifiers-${viewport.width}.png`)});
+   if(screenshotDir){
+    await page.waitForFunction(selector=>getComputedStyle(document.querySelector(selector)).opacity==='1',{},details);
+    await (await page.$(details)).screenshot({path:path.join(screenshotDir,`held-claim-modifiers-${viewport.width}.png`)});
+   }
    await page.locator(xs).click();
    await page.waitForFunction(()=>document.querySelector('[data-held-save-status]')?.textContent==='Saved');
    assert.equal(await page.$eval(xs,button=>button.getAttribute('aria-pressed')),'true');
