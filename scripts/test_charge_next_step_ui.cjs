@@ -293,7 +293,7 @@ const claimReady=(over={})=>({id:'claim',status:'ready',version:2,payer_name:'Sy
 // The billing step holding this encounter's summary, as an encounter-summary reply leaves it: the same
 // patient, sign-in, visit and account the screen is on, and its card drawn from this summary.
 const stepFor=(summary,version)=>{
- const step={patient:'patient',identity:ctx.me,visit:'visit',account:'account',version,pending:null,data:{summary},loadedAt:Date.now(),filter:'all',prepared:true,review:null,reviewCard:summary};
+ const step={patient:'patient',identity:ctx.me,visit:'visit',visitStatus:ctx.activeVisit?.status,account:'account',version,pending:null,data:{summary},loadedAt:Date.now(),filter:'all',prepared:true,review:null,reviewCard:summary};
  ctx.step=step;
  vm.runInContext('encounterRevenueState=step',ctx);
  return step;
