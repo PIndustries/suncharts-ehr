@@ -30,6 +30,11 @@
   current.cleanup();
   current.host.replaceChildren();
   current.host.hidden=true;
+  if(current.layer){
+   current.layer.close();
+   document.body.append(current.host);
+   current.layer.remove();
+  }
   pendingRestore=current.restore;
   restoreFocus();
   current.resolve(result==='alternate'?'alternate':Boolean(result));
@@ -45,6 +50,7 @@
    const confirm=host.querySelector('[data-dialog-confirm]'),cancel=host.querySelector('button[data-dialog-cancel]');
    const focusables=()=>[...host.querySelectorAll(focusableSelector)];
    const onConfirm=()=>close(true),onCancel=()=>close(false);
+   const onNativeCancel=event=>{event.preventDefault();onCancel();};
    const onKeydown=event=>{
     if(active?.host!==host)return;
     if(event.key==='Escape'){event.preventDefault();close(false);return;}
@@ -64,7 +70,17 @@
     document.removeEventListener('focusin',onFocusin,true);
     options.signal?.removeEventListener('abort',onAbort);
    };
-   active={host,resolve,restore,cleanup};
+   // A body overlay is inert behind a native sheet. Put the confirmation in its own top layer.
+   let layer=null;
+   if(document.querySelector?.('dialog[open]')){
+    layer=document.createElement('dialog');
+    layer.className='app-dialog-layer';
+    layer.setAttribute('aria-labelledby','app-dialog-title');
+    layer.addEventListener('cancel',onNativeCancel);
+    document.body.append(layer);
+    layer.append(host);
+   }
+   active={host,layer,resolve,restore,cleanup};
    confirm.addEventListener('click',onConfirm,{once:true});
    // An optional second choice resolves to 'alternate'; confirm stays true and cancel false.
    host.querySelector('[data-dialog-alternate]')?.addEventListener('click',()=>close('alternate'),{once:true});
@@ -72,6 +88,7 @@
    document.addEventListener('keydown',onKeydown,true);
    document.addEventListener('focusin',onFocusin,true);
    options.signal?.addEventListener('abort',onAbort,{once:true});
+   layer?.showModal();
    const initial=options.initialFocus==='cancel'||options.tone==='danger'?cancel:confirm;
    initial.focus({preventScroll:true});
   });

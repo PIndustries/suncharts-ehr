@@ -787,6 +787,16 @@ async function run(browser, viewport, reducedMotion, failures, scenario = 'blank
       const ndcField=codesDialog+' .billing-charge-row [name="ndc_code"]';
       await page.waitForSelector(ndcField,{visible:true});
       assert.equal(await page.$eval(ndcField,field=>field.closest('.billing-charge-row').querySelector('[name="code"]').value),'J0585');
+      const confirm='[role="alertdialog"] [data-dialog-confirm]';
+      await page.evaluate(()=>{void confirmAction('Synthetic nested confirmation.').then(result=>{window.syntheticConfirmation=result;});});
+      await page.waitForSelector(confirm,{visible:true});
+      await page.keyboard.press('Escape');
+      await page.waitForFunction(()=>window.syntheticConfirmation===false);
+      await page.waitForSelector(codesDialog,{visible:true});
+      await page.evaluate(()=>{void confirmAction('Synthetic nested confirmation.').then(result=>{window.syntheticConfirmation=result;});});
+      await page.locator(confirm).click();
+      await page.waitForFunction(()=>window.syntheticConfirmation===true);
+      await page.waitForSelector(codesDialog,{visible:true});
       await page.keyboard.press('Escape');
       await page.locator('[data-step-payment] [data-open-encounter-payment-history]').click();
       await page.waitForFunction(()=>document.querySelectorAll('[data-step-payment-details][open] #visit-billing-ledger [data-copay-receipt]').length===5);
