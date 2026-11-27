@@ -1049,6 +1049,7 @@ async fn create_claim(
             tracking,
             reason: &v.reason,
             automatic: false,
+            copied_canceled_claim: None,
         },
     )
     .await?;
@@ -1069,6 +1070,7 @@ pub(crate) struct NewClaimRecord<'a> {
     pub(crate) tracking: bool,
     pub(crate) reason: &'a str,
     pub(crate) automatic: bool,
+    pub(crate) copied_canceled_claim: Option<(Uuid, i64)>,
 }
 pub(crate) async fn insert_claim(
     tx: &mut Transaction<'_, Postgres>,
@@ -1123,6 +1125,9 @@ pub(crate) async fn insert_claim(
     let mut evidence = json!({"transport":"none","crossover_tracking_only":v.tracking,"network_transmitted":false});
     if v.automatic {
         evidence["prepared"] = json!("automatic");
+    }
+    if let Some((id, version)) = v.copied_canceled_claim {
+        evidence["copied_canceled_claim"] = json!({"id":id,"version":version});
     }
     revision(tx, a, claim, v.reason, evidence).await
 }

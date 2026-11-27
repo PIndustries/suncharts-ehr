@@ -49,6 +49,23 @@ function visitBillingDenialActions(s,ctx){
  if(s.state!=='denied'||s.claim?.status!=='adjudicated'||s.claim.answer?.denied!==true||!s.claim.id||!ctx.canWrite||ctx.claimsAllowed===false)return '';
  return `<button type="button" data-denial-action="patient_balance">Move to patient balance</button><button type="button" data-denial-action="write_off">Write off</button><button type="button" data-denial-appeal="${esc(s.claim.id)}">Start appeal</button>`;
 }
+function visitBillingCanceledClaim(s,ctx){
+ const claim=s?.canceled_claim;
+ if(s?.state!=='claim_cancelled'||s.canceled_claim_blocked||s.account?.status!=='posted'||!s.insurance?.electronic||
+  !ctx.canCreate||!ctx.claimsAllowed||!ctx.canResubmitClaim||
+  !claim?.id||!Number.isSafeInteger(claim.version)||claim.version<1)return null;
+ return claim;
+}
+function visitBillingCanceledStatus(s,ctx,headline){
+ const claim=visitBillingCanceledClaim(s,ctx);
+ let action='';
+ if(claim)action=`<button type="button" class="primary" data-visit-claim-resend="${esc(claim.id)}" data-canceled-claim-version="${claim.version}" aria-haspopup="dialog">Resubmit claim</button>`;
+ else if(s.canceled_claim_blocked&&ctx.claimsAllowed){
+  const target=s.canceled_claim_status_id?`data-revenue-claim="${esc(s.canceled_claim_status_id)}"`:'data-refresh-revenue';
+  action=`<button type="button" ${target}>Check claim status</button>`;
+ }
+ return {headline,detail:s.canceled_claim_blocked||(claim?'Opens a new draft for review.':''),action};
+}
 // The status line: what is happening, who is waiting on whom, and the one next step.
 function visitBillingStatus(s,ctx={}){
  const insurer=visitBillingInsurer(s),owes=money(s.patient.owes_now_cents),paid=money(s.insurance.paid_cents),account=s.account?.id||'',claim=s.claim?.id||'',write=ctx.canWrite,create=ctx.canCreate;
@@ -66,7 +83,7 @@ function visitBillingStatus(s,ctx={}){
    }
    case 'self_pay_collect':return {headline:'Self-pay: collect payment',detail:`Patient owes ${owes}. Waiting for the patient.`,action:create?button('Collect payment','data-visit-collect'):''};
   case 'prepare_claim':return ctx.prepareError?{headline:`The claim to ${insurer} could not be prepared`,detail:ctx.prepareError,action:create?button('Try again','data-visit-claim-prepare'):''}:create?{headline:`Preparing the claim to ${insurer}`,detail:'The claim is filled in from this encounter. Nothing is sent until you send it.',action:ctx.preparing?'':button('Prepare claim','data-visit-claim-prepare')}:{headline:'Posted',detail:`Billing staff prepare the claim to ${insurer}.`,action:''};
-   case 'claim_cancelled':return {headline:`The claim to ${insurer} was cancelled`,detail:'Nothing is with the insurer.',action:create&&!ctx.delegated?button('Send the claim again','data-visit-claim-resend'):''};
+   case 'claim_cancelled':return visitBillingCanceledStatus(s,ctx,`The claim to ${insurer} was cancelled`);
    case 'fix_claim':return {headline:`Claim to ${insurer} needs details`,detail:'Nothing has been sent yet. Fill in what is missing right on the claim below.',issues:s.claim?.issues||[],action:write?button('Fix claim details',`data-visit-claim-fix="${esc(claim)}"`):''};
     case 'send_claim':return {headline:`Claim ready to send to ${insurer}`,detail:'Nothing has been sent yet.',action:visitBillingDirectSend(s,ctx)||reviewButton(s,ctx)||(write?button('Review and send claim',`data-visit-claim-send="${esc(claim)}"`):'')};
     case 'correct_claim':return {headline:'Charges changed after the claim was sent',detail:`Send a corrected claim to ${insurer}.`,action:button('Open claim',`data-revenue-claim="${esc(claim)}"`)};
@@ -381,7 +398,7 @@ function visitBillingInsuranceWords(s){
  if(s.state==='claimmd_correction')return 'The clearinghouse found a problem';
  if(s.state==='claimmd_received')return 'Received by the clearinghouse';
  if(s.state==='correct_claim')return 'Charges changed after the claim was sent';
- if(s.state==='claim_cancelled')return 'Claim cancelled. Nothing is with the insurer';
+ if(s.state==='claim_cancelled')return 'Claim cancelled';
  return ({not_billed:'Claim is made when the charges are posted',not_sent:'Claim not sent yet',waiting:`Claim sent${i.sent_on?` ${visitBillingDate(i.sent_on)}`:''}. Waiting for their answer`,denied:'Denied',answered:s.claim?.answer?.payment_date?`Answered ${visitBillingDate(s.claim.answer.payment_date)}`:'Answered',outside:'Billed outside SunCharts',restricted:'Handled by billing staff'})[i.status]||'';
 }
 // The one prior authorization number the claim will carry, kept with the encounter's charges.
@@ -400,13 +417,13 @@ function visitBillingCardMarkup(s,ctx={}){
    const secondary=owing&&ctx.canCreate?'<button type="button" data-visit-statement>Patient statement</button>':visitBillingDenialActions(s,ctx);
    const sent=typeof visitBillingSentLine==='function'?visitBillingSentLine(s,ctx):'';
    const direct=s.state==='send_claim'?visitBillingDirectSend(s,ctx):'';
-   const main=status.action;
+   const main=s.state==='claim_cancelled'&&ctx.encounterSteps?'':status.action;
    const review='<button type="button" class="text-button" data-visit-review-open="account">Review claim</button>';
    // The one-click send keeps its small review link beside it; a card left opening the review
    // panel says it once, as its single main button.
    const action=direct&&!main.includes(direct)?`${main}${review}`:main;
    const payment=ctx.encounterSteps&&s.insurance?.insured===false&&!s.claim?.id?'':visitBillingTotalsLine(s)+visitBillingBreakdown(s,ctx)+(posted||s.account||s.visit?visitBillingMore(s,ctx):'');
-   return `<section class="visit-billing-card" data-visit-billing-state="${esc(s.state)}"><div class="visit-billing-status"><div><span class="eyebrow">${s.waiting_on==='nobody'?'Status':'Next step'}</span><p class="visit-billing-headline">${esc(status.headline)}</p>${s.state==='fix_claim'&&typeof visitReviewPanelMarkup==='function'?'':`<p class="muted">${esc(status.detail)}</p>`}${issues}</div><div class="actions">${action||''}${secondary}</div></div>${sent}${visitBillingColumn(s,ctx)}${payment}</section>`;
+   return `<section class="visit-billing-card" data-visit-billing-state="${esc(s.state)}"><div class="visit-billing-status"><div><span class="eyebrow">${s.waiting_on==='nobody'?'Status':'Next step'}</span><p class="visit-billing-headline">${esc(status.headline)}</p>${s.state==='fix_claim'&&typeof visitReviewPanelMarkup==='function'?'':`<p class="muted">${esc(status.detail)}</p>`}${issues}</div><div class="actions">${action||''}${secondary}</div></div>${sent}${visitBillingColumn(s,{...ctx,billingCard:true})}${payment}</section>`;
 }
 const visitBillingFilters=[['all','Everything'],['charges','Charges'],['insurance','Insurance'],['payments','Payments'],['statements','Statements']];
 function visitBillingEventText(event){

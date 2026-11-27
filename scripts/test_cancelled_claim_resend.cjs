@@ -3,9 +3,8 @@
 const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
 {const createContext=vm.createContext;vm.createContext=(...args)=>{const context=createContext(...args);vm.runInContext(fs.readFileSync('web/display-format.js','utf8'),context);return context;};}
 const {visitSummary}=require('./visit_billing_fixture.cjs');
-// A cancelled claim goes out again in one press: prepare again, read the encounter back, then the
-// review panel's own send when nothing needs fixing, or the review panel when something does.
-// Synthetic DOM and a recording api; nothing talks to a server.
+// A cancelled claim first prepares a new draft. Exercise the action with a synthetic encounter
+// and recording API, including attempts to reuse a stale or unauthorized action.
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const handlers={},nodes={},sent=[],log=[];
 const node=id=>nodes[id]??={id,innerHTML:'',dataset:{},hidden:false,scrollIntoView(){},querySelectorAll(){return [];},querySelector(){return null;},replaceChildren(){this.innerHTML='';},append(){}};
@@ -15,55 +14,94 @@ const ctx={console,Date,Intl,URL,Map,Set,Array,Math,Number,String,JSON,encodeURI
  activeVisit:{id:'visit',appointment_id:'appointment',status:'signed',version:3},
  workspace:{patient:{id:'patient'},demographics:{patient_id:'patient',content:{}},appointments:[],visits:[{id:'visit'}],billing:{accounts:[account],coverages:[],entries:[],copays:[]}},
  esc,human:v=>String(v).replaceAll('_',' '),date:v=>v,money:v=>`$${(v/100).toFixed(2)}`,dollars:v=>(v/100).toFixed(2),payerName:()=>'Synthetic Medicare PPO',billingCan:()=>true,
- showChartSection(){},setEncounterSection(){},notice:m=>{ctx.noticed=m;},run:fn=>{ctx.pending=Promise.resolve().then(fn).catch(e=>{ctx.failed=e.stack||String(e);});return ctx.pending;},
- api:async(url,method='GET',body)=>{sent.push([url,method,body]);return {outcome:'prepared',claim_id:'claim',issues:[]};}};
+ showChartSection(){},setEncounterSection(){},notice:m=>{ctx.noticed=m;},run:fn=>{if(ctx.pending)return;ctx.pending=fn().catch(e=>{ctx.failed=e.stack||String(e);}).finally(()=>{ctx.pending=null;});return ctx.pending;},
+ api:async(url,method='GET',body)=>{sent.push([url,method,body]);return {outcome:'prepared',claim_id:'replacement',issues:[]};}};
 vm.createContext(ctx);
 for(const f of ['visit-billing.js','patient-revenue.js','visit-review.js'])vm.runInContext(fs.readFileSync('web/'+f,'utf8'),ctx);
-const fresh=visitSummary({state:'send_claim',claim:{id:'claim',status:'ready',issues:[]}});
-ctx.loadEncounterRevenueStatus=async()=>{log.push('reload');vm.runInContext('encounterRevenueState',ctx).data={summary:fresh};};
-ctx.visitReviewChecks=()=>ctx.checks||[];
-ctx.visitReviewRun=async(id,options)=>{log.push(['run',id,!!options]);return true;};
-ctx.visitReviewOpen=()=>log.push('open');
-const click=dataset=>{const button={dataset,disabled:false,isConnected:true,textContent:'',hasAttribute:n=>n.replace(/^data-/,'').replace(/-([a-z])/g,(_,c)=>c.toUpperCase()) in dataset,closest:()=>null};for(const h of handlers.click||[])h({target:{closest:s=>s==='button'?button:null},preventDefault(){}});return button;};
-const settle=async()=>{for(let i=0;i<10;i++)await new Promise(r=>setImmediate(r));};
-const cancelled=()=>visitSummary({state:'claim_cancelled',claim:null});
-const card=(s,context)=>ctx.visitBillingCardMarkup(s,context);
-const all={canCreate:true,canWrite:true,claimsAllowed:true};
+const fresh=visitSummary({state:'send_claim',claim:{id:'replacement',status:'ready',issues:[]}});
+const canceled=visitSummary({state:'claim_cancelled',claim:null,canceled_claim:{id:'cancelled-original',version:4}});
+const state=vm.runInContext('encounterRevenueState',ctx);
+const show=(summary=canceled)=>{state.data={summary};};
+const prepareResult=ctx.api;
+let reload=fresh;
+ctx.loadEncounterRevenueStatus=async(account,force,options)=>{log.push(['reload',account.id,force,options?.prepare]);show(reload);};
+ctx.visitReviewRun=async()=>{throw new Error('Resubmit must not send');};
+ctx.visitReviewOpen=()=>{throw new Error('Resubmit must open the exact draft');};
+ctx.visitOpenSignedClaimDetails=()=>log.push(['review',state.data.summary.claim.id]);
+const dataset={visitClaimResend:'cancelled-original',canceledClaimVersion:'4'};
+const click=(fields=dataset)=>{const button={dataset:fields,disabled:false,isConnected:true,textContent:'Resubmit claim',hasAttribute:n=>n.replace(/^data-/,'').replace(/-([a-z])/g,(_,c)=>c.toUpperCase()) in fields,closest:()=>null};for(const h of handlers.click||[])h({target:{closest:s=>s==='button'?button:null},preventDefault(){}});return button;};
+const all={canCreate:true,canWrite:true,claimsAllowed:true,canResubmitClaim:true};
+const draw=(s=canceled,options={})=>ctx.visitBillingCardMarkup(s,{...all,...options});
+const action=/data-visit-claim-resend="cancelled-original" data-canceled-claim-version="4" aria-haspopup="dialog">Resubmit claim/;
+function reset(summary){sent.length=0;log.length=0;ctx.noticed=undefined;ctx.api=prepareResult;reload=fresh;show(summary);}
 
 (async()=>{
- // (a) the next step offers the one button
- const html=card(cancelled(),all);
- assert.match(html,/The claim to Synthetic Medicare PPO was cancelled/);
- assert.match(html,/Nothing is with the insurer/);
- assert.match(html,/<button type="button" class="primary" data-visit-claim-resend>Send the claim again</);
- // (d) no button without permission to create, and none for a support session
- assert.doesNotMatch(card(cancelled(),{...all,canCreate:false}),/data-visit-claim-resend/);
- assert.doesNotMatch(card(cancelled(),{...all,delegated:true}),/data-visit-claim-resend/);
-
- // (b) prepare again, reload, then the review panel's send when nothing must be fixed
- const button=click({visitClaimResend:''});
- assert.equal(button.disabled,true);assert.equal(button.textContent,'Sending…');
- await settle();
+ for(const delegated of [false,true]){
+  const html=draw(canceled,{delegated});
+  assert.match(html,/The claim to Synthetic Medicare PPO was cancelled/);
+  assert.match(html,/Opens a new draft for review/);
+  assert.match(html,action);
+  assert.equal((html.match(/>Resubmit claim</g)||[]).length,1);
+  const encounter=ctx.visitEncounterClaimStatus(canceled,{...all,delegated},false);
+  assert.match(encounter,action);
+  assert.doesNotMatch(encounter,/data-open-signed-claim-details/);
+ }
+ for(const denied of ['canCreate','claimsAllowed','canResubmitClaim'])assert.doesNotMatch(draw(canceled,{[denied]:false}),action);
+ assert.match(draw(canceled,{canWrite:false}),action,'claims creation can prepare a draft independently of edit or send');
+ const blocked=visitSummary({state:'claim_cancelled',claim:null,canceled_claim_blocked:'Verify the clearinghouse cancellation first.'});
+ for(const html of [draw(blocked),ctx.visitEncounterClaimStatus(blocked,all,false)]){
+  assert.match(html,/Verify the clearinghouse cancellation first/);
+  assert.match(html,/data-refresh-revenue>Check claim status/);
+  assert.doesNotMatch(html,action);
+  assert.doesNotMatch(html,/Nothing is with the insurer/);
+ }
+ const blockedWithHistory={...blocked,canceled_claim_status_id:'cancelled-original'};
+ const history=ctx.visitEncounterClaimStatus(blockedWithHistory,all,false);
+ assert.match(history,/data-revenue-claim="cancelled-original">Check claim status/);
+ assert.doesNotMatch(history,/data-refresh-revenue/);
+ assert.doesNotMatch(ctx.visitEncounterClaimStatus(blockedWithHistory,{...all,claimsAllowed:false},false),/cancelled-original/);
+ show();
+ const button=click();
+ assert.equal(button.disabled,true);assert.equal(button.textContent,'Preparing draft…');
+ click();
+ await ctx.pending;
  assert.equal(ctx.failed,undefined);
- assert.equal(sent.length,1);assert.match(sent[0][0],/\/billing\/accounts\/account\/claims\/prepare$/);
- assert.equal(sent[0][1],'POST');assert.equal(JSON.stringify(sent[0][2]),'{"again":true}');
- assert.equal(JSON.stringify(log.filter(x=>x==='reload'||x[0]==='run')),JSON.stringify(['reload',['run','claim',true]]),'reloaded, then sent through the review chain');
+ assert.deepEqual(JSON.parse(JSON.stringify(sent)),[['/api/v1/patients/patient/billing/accounts/account/claims/prepare','POST',
+  {again:true,canceled_claim_id:'cancelled-original',canceled_claim_version:4}]]);
+ assert.deepEqual(log,[['reload','account',true,false],['review','replacement']]);
+ assert.equal(button.disabled,false);
 
- // (c) a must-fix item opens the review panel and sends nothing
- log.length=0;sent.length=0;ctx.checks=[{level:'must',text:'x'}];
- click({visitClaimResend:''});await settle();
- assert.equal(sent.length,1);
- assert.equal(JSON.stringify(log),JSON.stringify(['reload','open']),'the panel opens, no send');
- // While preparation is pending, another visit for the same patient must never send its claim.
- const priorApi=ctx.api;
+ reset();ctx.me={role:'front_desk',delegated:true};ctx.workspaceResourceAllowed=(resource,action)=>resource!=='claims'||action==='view';
+ click();await ctx.pending;
+ assert.equal(sent.length,0,'view-only claims access never prepares a draft');
+ ctx.workspaceResourceAllowed=()=>true;
+ click({...dataset,canceledClaimVersion:'3'});await ctx.pending;
+ assert.equal(sent.length,0,'a stale rendered button cannot submit a different version');
+ click();await ctx.pending;
+ assert.equal(sent.length,1,'a delegated billing actor with effective write access can resubmit');
+ assert.deepEqual(log,[['reload','account',true,false],['review','replacement']]);
+
+ reset();reload=visitSummary({state:'send_claim',claim:{id:'another-claim',status:'ready'}});
+ click();await ctx.pending;
+ assert.equal(sent.length,1);assert.deepEqual(log,[['reload','account',true,false]]);
+ assert.match(ctx.noticed,/could not be confirmed/);
+
+ reset();ctx.api=async()=>({outcome:'exists',claim_id:'replacement'});
+ click();await ctx.pending;
+ assert.deepEqual(log,[['reload','account',true,false],['review','replacement']]);
+
+ reset();reload=blocked;ctx.api=async()=>{throw new Error('The cancelled claim changed.');};
+ click();await ctx.pending;
+ assert.deepEqual(log,[['reload','account',true,false]],'refreshes once after a conflict without opening or retrying');
+ assert.equal(ctx.noticed,'The cancelled claim changed.');
+
+ reset();
  let finish;
- ctx.api=async(...args)=>{await new Promise(resolve=>{finish=resolve;});return priorApi(...args);};
- ctx.checks=[];log.length=0;sent.length=0;
- const request=ctx.visitClaimResend();
- const previousVisit=ctx.activeVisit;
- ctx.activeVisit={...previousVisit,id:'another-visit'};
- finish();await request;assert.equal(log.some(entry=>entry==='open'||entry[0]==='run'),false);
- assert.equal(sent.length,1,'only the original preparation was requested');
+ ctx.api=async(...args)=>{await new Promise(resolve=>{finish=resolve;});return prepareResult(...args);};
+ click();
+ const previousVisit=ctx.activeVisit;ctx.activeVisit={...previousVisit,id:'another-visit'};
+ finish();await ctx.pending;
+ assert.equal(sent.length,1);assert.deepEqual(log,[],'do not refresh or open a draft after switching encounters');
  ctx.activeVisit=previousVisit;
  console.log('cancelled claim resend checks ok');
 })().catch(e=>{console.error(e);process.exit(1);});

@@ -41037,6 +41037,24 @@
                 "schema": {
                   "type": "object",
                   "properties": {
+                    "canceled_claim": {
+                      "description": "The locally canceled original, when the same signed visit has posted insured charges and no prior delivery evidence.",
+                      "type": "object",
+                      "properties": {
+                        "id": { "type": "string", "format": "uuid" },
+                        "version": { "type": "integer", "minimum": 1 }
+                      },
+                      "required": ["id", "version"]
+                    },
+                    "canceled_claim_blocked": {
+                      "description": "Reason the canceled claim cannot be copied.",
+                      "type": "string"
+                    },
+                    "canceled_claim_status_id": {
+                      "description": "Exact claim to open for read-only review when copying is blocked, including an earlier claim with delivery evidence when present.",
+                      "type": "string",
+                      "format": "uuid"
+                    },
                     "automatic_invoice": {
                       "type": "object",
                       "properties": {
@@ -41290,7 +41308,8 @@
     },
     "/api/v1/patients/{p}/billing/accounts/{id}/claims/prepare": {
       "post": {
-        "summary": "Prepare the visit's draft insurance claim from its posted charges when none exists; never marks it ready or sends it",
+        "summary": "Prepare a draft insurance claim from the posted visit or its locally canceled original; never sends a claim",
+        "description": "Provide again=true together with the canceled claim ID and version to copy that exact original into a new draft. This requires a signed encounter, posted charges for the same coverage, and no prior delivery or payer activity. A delegated session needs the source ID and version when copying.",
         "operationId": "prepareVisitClaim",
         "requestBody": {
           "required": false,
@@ -41302,6 +41321,14 @@
                 "properties": {
                   "again": {
                     "type": "boolean"
+                  },
+                  "canceled_claim_id": {
+                    "type": "string",
+                    "format": "uuid"
+                  },
+                  "canceled_claim_version": {
+                    "type": "integer",
+                    "minimum": 1
                   }
                 }
               }
@@ -41310,7 +41337,7 @@
         },
         "responses": {
           "200": {
-            "description": "prepared, exists, cancelled or not_needed. Repeating the call returns the existing claim.",
+            "description": "prepared, exists, cancelled or not_needed. Repeating an exact-source request returns the same draft while it is still eligible for review.",
             "content": {
               "application/json": {
                 "schema": {
@@ -41319,11 +41346,14 @@
               }
             }
           },
+          "400": {
+            "description": "Canceled-claim ID and version must be provided together with again=true"
+          },
           "403": {
             "description": "Role cannot prepare claims"
           },
           "409": {
-            "description": "Charges changed while preparing"
+            "description": "Charges or canceled claim changed, or prior delivery or payer activity requires review"
           }
         },
         "security": [

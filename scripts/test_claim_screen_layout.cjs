@@ -21,8 +21,8 @@ const ctx={console,Date,Intl,URL,Map,Set,Array,Math,Number,String,JSON,selected:
  insuranceEligibilityState:{items:new Map([['coverage',{}]])},insuranceEligibilityMarkup:()=>'<p>Recorded eligibility result</p>'};
 vm.createContext(ctx);
 for(const file of ['billing.js','visit-billing.js','visit-review.js'])vm.runInContext(fs.readFileSync('web/'+file,'utf8'),ctx);
-const all={canWrite:true,canCreate:true,claimsAllowed:true};
-const summary=(state='send_claim',status='draft')=>visitSummary({state,charges_cents:10000,claim:{id:'claim',status,content,snapshot:{account}},patient:{owes_now_cents:1000}});
+const all={canWrite:true,canCreate:true,claimsAllowed:true,canResubmitClaim:true};
+const summary=(state='send_claim',status='draft')=>visitSummary({state,charges_cents:10000,claim:{id:'claim',status,content,snapshot:{account}},patient:{owes_now_cents:1000},...(state==='claim_cancelled'?{canceled_claim:{id:'claim',version:2}}:{})});
 const draw=(s,extra={})=>{ctx.encounterRevenueState.data={summary:s};return ctx.visitReviewPanelMarkup(s,{...all,...extra});};
 const card=(html,key)=>html.match(new RegExp(`<section class="claim-card[^\"]*" data-claim-card="${key}">([^]*?)</section>`))?.[1]||'';
 const footer=html=>html.slice(html.indexOf('<footer'));
@@ -56,7 +56,7 @@ for(const [key,target] of [['practice-npi','visit'],['patient-address','insuranc
 }
 assert.match(footer(html),/7 things to fix before sending/);assert.match(footer(html),/data-visit-review-send disabled>Send claim/);assert.match(footer(html),/data-claim-problems>7 things to fix/);
 ctx.visitReviewChecks=original;
-for(const [state,status,label] of [['send_claim','draft','Send claim'],['post_charges','draft','Send claim'],['claim_cancelled','void','Send the claim again'],['waiting_insurer','submitted',null]]){
+for(const [state,status,label] of [['send_claim','draft','Send claim'],['post_charges','draft','Send claim'],['claim_cancelled','void','Resubmit claim'],['waiting_insurer','submitted',null]]){
  html=draw(summary(state,status));
  assert.deepEqual([...footer(html).matchAll(/class="primary"[^>]*>([^<]+)</g)].map(m=>m[1]),label?[label]:[],`${state}: one footer action or none`);
 }

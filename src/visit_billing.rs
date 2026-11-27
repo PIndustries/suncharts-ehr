@@ -1019,6 +1019,21 @@ pub(crate) async fn summarize(
         "receipts": paid_at_desk.items.iter().map(|row| json!({"id":row["id"],"appointment_id":row["appointment_id"],"amount_cents":row["amount_cents"],"method":if row["hosted_checkout"].is_object() { json!("card") } else { row["method"].clone() },"occurred_on":row["occurred_on"],"payment_group_id":row["payment_group_id"],"reference":row["reference"],"voided":row["voided"],"refunded_cents":cents(&row["hosted_checkout"]["refunded_cents"])+cents(&row["cash_refunded_cents"]),"needs_review":row["hosted_checkout"]["status"]=="needs_review" || cents(&row["reversed_cents"])>0,"test":row["hosted_checkout"]["livemode"]==false})).collect::<Vec<_>>(),
     });
 
+    if opt.claims && state == "claim_cancelled" {
+        if let (Some(account), Some(source)) = (account.as_ref(), views.last()) {
+            let source_id = serde_json::from_value(source.row["id"].clone())
+                .map_err(|_| Error::Invalid("invalid canceled claim"))?;
+            let source = claims::claim_row(tx, a, source_id).await?;
+            if let Some((reason, status_id)) =
+                canceled_claim_block_reason(tx, a, account, &source).await?
+            {
+                out["canceled_claim_blocked"] = json!(reason);
+                out["canceled_claim_status_id"] = json!(status_id);
+            } else {
+                out["canceled_claim"] = json!({"id":source.id,"version":source.version});
+            }
+        }
+    }
     if let Some(id) = out["claim"]["id"]
         .as_str()
         .and_then(|v| Uuid::parse_str(v).ok())
@@ -1426,6 +1441,108 @@ async fn delegated(tx: &mut Transaction<'_, Postgres>, a: &Actor) -> Result<bool
     .fetch_one(&mut **tx)
     .await?)
 }
+#[derive(Clone, Copy)]
+struct CanceledClaimSource {
+    id: Uuid,
+    version: i64,
+}
+
+const CANCELED_CHANGED: &str =
+    "The canceled claim changed. Reopen this encounter before preparing another claim.";
+const CANCELED_DELIVERY: &str =
+    "Prior delivery or payer activity needs review before a new claim can be prepared.";
+
+async fn canceled_claim_block_reason(
+    tx: &mut Transaction<'_, Postgres>,
+    a: &Actor,
+    account: &billing::Account,
+    claim: &claims::Claim,
+) -> Result<Option<(&'static str, Uuid)>> {
+    let blocked = |reason| Ok(Some((reason, claim.id)));
+    let billed_account = &claim.snapshot["account"];
+    let original_coverage = &billed_account["coverage_snapshot"];
+    let visit = &account.content["visit_id"];
+    if claim.status != "void"
+        || claim.account_id != account.id
+        || claim.patient_id != account.patient_id
+        || claim.frequency != "original"
+        || claim.parent_id.is_some()
+        || claim.source_history_id.is_some()
+        || claim.snapshot["coordination_of_benefits"].is_object()
+    {
+        return blocked("Only a locally canceled original claim can be copied here. Review the saved claim history.");
+    }
+    let Some(coverage) = account.coverage_snapshot.as_ref() else {
+        return blocked("The posted charges do not have insurance on file.");
+    };
+    let payer: Option<Uuid> = serde_json::from_value(coverage["payer"]["id"].clone()).ok();
+    if payer != Some(claim.payer_id)
+        || coverage["payer"]["id"] != original_coverage["payer"]["id"]
+        || coverage["payer"]["content"]["payer_code"]
+            != original_coverage["payer"]["content"]["payer_code"]
+        || coverage["payer"]["content"]["payer_code"]
+            .as_str()
+            .is_none_or(|code| code.trim().is_empty())
+        || coverage["coverage"]["id"] != original_coverage["coverage"]["id"]
+    {
+        return blocked("The canceled claim and posted charges do not use the same insurance. Review the saved coverage first.");
+    }
+    let visit_id: Option<Uuid> = serde_json::from_value(visit.clone()).ok();
+    if account.status != "posted"
+        || visit_id.is_none()
+        || billed_account["content"]["visit_id"] != *visit
+    {
+        return blocked(
+            "Open the original signed encounter with posted charges before preparing a new claim.",
+        );
+    }
+    let (signed, canceled_locally, prior_delivery): (bool, bool, Option<Uuid>) = sqlx::query_as(
+        "SELECT EXISTS(SELECT 1 FROM visits v
+             WHERE v.tenant_id=$1 AND v.patient_id=$2 AND v.id=$3 AND v.status='signed'),
+         EXISTS(SELECT 1 FROM claim_revisions r
+             WHERE r.tenant_id=$1 AND r.claim_id=$5 AND r.version=$6 AND r.snapshot->>'status'='void'
+               AND (r.evidence->>'action'='void_draft' OR r.evidence->'voided_after_charge_correction'='true'::jsonb)),
+         (SELECT c.id FROM ehr_claims c
+             JOIN billing_accounts b ON b.tenant_id=c.tenant_id AND b.id=c.account_id AND b.patient_id=c.patient_id
+             WHERE c.tenant_id=$1 AND c.patient_id=$2
+               AND (b.id=$4 OR b.visit_id=$3)
+               AND (c.status IN ('submitted','accepted','rejected','adjudicated')
+               OR btrim(c.payer_control_number)<>'' OR c.source_history_id IS NOT NULL
+               OR EXISTS(SELECT 1 FROM claim_revisions r WHERE r.tenant_id=c.tenant_id AND r.claim_id=c.id
+                   AND (r.snapshot->>'status' IN ('submitted','accepted','rejected','adjudicated')
+                     OR r.evidence->>'action'='record_submission' OR btrim(coalesce(r.snapshot->>'payer_control_number',''))<>''))
+               OR EXISTS(SELECT 1 FROM era_postings p WHERE p.tenant_id=c.tenant_id AND p.claim_id=c.id)
+               OR EXISTS(SELECT 1 FROM edi_submissions s WHERE s.tenant_id=c.tenant_id AND s.claim_id=c.id
+                   AND (s.status='delivered' OR s.delivered_claim_version IS NOT NULL
+                     OR s.technical_status<>'pending' OR s.payer_outcome<>'pending'
+                     OR EXISTS(SELECT 1 FROM edi_delivery_jobs j WHERE j.tenant_id=s.tenant_id AND j.submission_id=s.id
+                         AND (j.status<>'cancelled' OR j.attempts>0 OR j.receipt_reference IS NOT NULL))
+                     OR EXISTS(SELECT 1 FROM audit_events e WHERE e.tenant_id=s.tenant_id AND e.resource_id=s.id AND e.action='edi.file_export')
+                     OR EXISTS(SELECT 1 FROM edi_acknowledgments k WHERE k.tenant_id=s.tenant_id AND k.submission_id=s.id)
+                     OR EXISTS(SELECT 1 FROM edi_277ca_reviews k WHERE k.tenant_id=s.tenant_id AND k.submission_id=s.id))))
+             ORDER BY (btrim(c.payer_control_number)<>'' OR c.status IN ('accepted','adjudicated')) DESC,
+                      c.created_at DESC,c.id DESC LIMIT 1)",
+    )
+    .bind(a.tenant_id)
+    .bind(account.patient_id)
+    .bind(visit_id)
+    .bind(account.id)
+    .bind(claim.id)
+    .bind(claim.version)
+    .fetch_one(&mut **tx)
+    .await?;
+    if !signed {
+        return blocked("Sign the original encounter before preparing a new claim.");
+    }
+    if let Some(status_id) = prior_delivery {
+        return Ok(Some((CANCELED_DELIVERY, status_id)));
+    }
+    if !canceled_locally {
+        return blocked("SunCharts could not verify that this claim was canceled locally. Review the saved claim history.");
+    }
+    Ok(None)
+}
+
 /// Prepares the visit's insurance claim draft when its charges are posted and no claim
 /// exists yet. The draft is the same record the claim form saves, attributed to the person
 /// whose action or page opened it; it is never marked ready or sent here. Calling it again
@@ -1438,6 +1555,17 @@ pub(crate) async fn prepare_claim(
     account_id: Uuid,
     again: bool,
 ) -> Result<Value> {
+    prepare_claim_with_source(pool, a, p, account_id, again, None).await
+}
+
+async fn prepare_claim_with_source(
+    pool: &PgPool,
+    a: &Actor,
+    p: Uuid,
+    account_id: Uuid,
+    again: bool,
+    canceled: Option<CanceledClaimSource>,
+) -> Result<Value> {
     a.scheduling()?;
     let mut tx = pool.begin().await?;
     let account = claims::account(&mut tx, a, account_id, Some(p)).await?;
@@ -1445,7 +1573,13 @@ pub(crate) async fn prepare_claim(
     // A delegated support session acts with the owner's authority and may prepare the claim when
     // it asks; the claim's revision records the session as the one who prepared it. The screen
     // never prepares automatically on a support session's behalf.
-    let skipped = |reason: &str| Ok(json!({"outcome":"not_needed","reason":reason}));
+    let skipped = |reason: &str| {
+        if canceled.is_some() {
+            Err(Error::Conflict(CANCELED_CHANGED))
+        } else {
+            Ok(json!({"outcome":"not_needed","reason":reason}))
+        }
+    };
     if account.status != "posted" {
         return skipped("charges_not_posted");
     }
@@ -1470,32 +1604,83 @@ pub(crate) async fn prepare_claim(
     {
         return Err(Error::Conflict("the charges changed; open the visit again"));
     }
-    let existing: Vec<(Uuid, String, Value)> = sqlx::query_as("SELECT id,status,content FROM ehr_claims WHERE tenant_id=$1 AND account_id=$2 ORDER BY created_at,id")
-        .bind(a.tenant_id).bind(account_id).fetch_all(&mut *tx).await?;
-    if let Some((id, _, _)) = existing.iter().rev().find(|row| row.1 != "void") {
+    let existing: Vec<(Uuid, String, Uuid)> = sqlx::query_as(
+        "SELECT id,status,request_id FROM ehr_claims WHERE tenant_id=$1 AND account_id=$2 ORDER BY created_at,id",
+    )
+    .bind(a.tenant_id)
+    .bind(account_id)
+    .fetch_all(&mut *tx)
+    .await?;
+    let mut request_id = derived_id(&("visit-claim", a.tenant_id, account_id, existing.len()))?;
+    let mut copied_source = None;
+    let live = existing.iter().rev().find(|row| row.1 != "void");
+    if let Some((id, _, _)) = live.filter(|_| canceled.is_none()) {
         return Ok(json!({"outcome":"exists","claim_id":id}));
     }
-    if let Some((_, _, cancelled)) = existing.last() {
+    if let Some((source, _, _)) = existing.iter().rev().find(|row| row.1 == "void") {
         if !again {
             return Ok(json!({"outcome":"cancelled"}));
         }
-        // Keep what a person had corrected on the cancelled claim.
-        if let Ok(previous) = serde_json::from_value::<ClaimContent>(cancelled.clone()) {
-            // The diagnoses and the line pointers always follow the charges as they are now:
-            // after a charge correction the lines, and so the pointers, may have changed.
-            content = ClaimContent {
-                external_control_number: String::new(),
-                diagnosis_codes: content.diagnosis_codes.clone(),
-                line_diagnosis_pointers: content.line_diagnosis_pointers.clone(),
-                encounter: content.encounter.clone(),
-                ..previous
+        let previous = claims::claim_row(&mut tx, a, *source).await?;
+        if canceled.is_some_and(|expected| {
+            expected.id != previous.id || expected.version != previous.version
+        }) {
+            return Err(Error::Conflict(CANCELED_CHANGED));
+        }
+        if let Some((reason, _)) = canceled_claim_block_reason(&mut tx, a, &b, &previous).await? {
+            return if canceled.is_some() {
+                Err(Error::Conflict(reason))
+            } else {
+                Ok(json!({"outcome":"cancelled","reason":reason}))
             };
         }
+        request_id = derived_id(&(
+            "copy-canceled-visit-claim",
+            a.tenant_id,
+            account_id,
+            previous.id,
+            previous.version,
+        ))?;
+        if let Some((id, status, existing_request)) = live {
+            if *existing_request == request_id && matches!(status.as_str(), "draft" | "ready") {
+                return Ok(json!({"outcome":"exists","claim_id":id}));
+            }
+            return Err(Error::Conflict(CANCELED_CHANGED));
+        }
+        let previous_content =
+            serde_json::from_value::<ClaimContent>(previous.content).map_err(|_| {
+                Error::Conflict(
+                    "The canceled claim cannot be copied. Review the saved claim history.",
+                )
+            })?;
+        // Use the currently posted procedures and diagnoses. Keep a separately saved Box 23
+        // value from the canceled claim for these same charges and coverage.
+        if !previous_content
+            .encounter
+            .prior_authorization_number
+            .is_empty()
+        {
+            content.encounter.prior_authorization_number = previous_content
+                .encounter
+                .prior_authorization_number
+                .clone();
+        }
+        // A claim marked for paper should not change to electronic merely because it was copied.
+        content.encounter.paper_only |= previous_content.encounter.paper_only;
+        content = ClaimContent {
+            external_control_number: String::new(),
+            diagnosis_codes: content.diagnosis_codes,
+            line_diagnosis_pointers: content.line_diagnosis_pointers,
+            encounter: content.encounter,
+            ..previous_content
+        };
+        copied_source = Some((previous.id, previous.version));
+    } else if canceled.is_some() {
+        return Err(Error::Conflict(CANCELED_CHANGED));
     }
     content.validate()?;
     let payer_id: Uuid = serde_json::from_value(snapshot["payer"]["id"].clone())
         .map_err(|_| Error::Invalid("invalid payer snapshot"))?;
-    let request_id = derived_id(&("visit-claim", a.tenant_id, account_id, existing.len()))?;
     let digest = claims::hash(&(p, account_id, &content, "automatic"))?;
     let claim = claims::insert_claim(
         &mut tx,
@@ -1512,8 +1697,13 @@ pub(crate) async fn prepare_claim(
             source_history_id: None,
             coordination: None,
             tracking: false,
-            reason: AUTO_REASON,
-            automatic: true,
+            reason: if canceled.is_some() {
+                "Prepared a new draft from the locally canceled claim"
+            } else {
+                AUTO_REASON
+            },
+            automatic: canceled.is_none(),
+            copied_canceled_claim: copied_source,
         },
     )
     .await?;
@@ -1680,6 +1870,8 @@ async fn read(
 struct Prepare {
     #[serde(default)]
     again: bool,
+    canceled_claim_id: Option<Uuid>,
+    canceled_claim_version: Option<i64>,
 }
 async fn prepare(
     a: Actor,
@@ -1687,8 +1879,37 @@ async fn prepare(
     Path((p, id)): Path<(Uuid, Uuid)>,
     body: Option<Json<Prepare>>,
 ) -> Result<Json<Value>> {
-    let again = body.map(|Json(v)| v.again).unwrap_or(false);
-    Ok(Json(prepare_claim(db(&s)?, &a, p, id, again).await?))
+    let request = body.map(|Json(v)| v).unwrap_or_default();
+    let canceled = match (request.canceled_claim_id, request.canceled_claim_version) {
+        (Some(id), Some(version)) if request.again && version > 0 => {
+            Some(CanceledClaimSource { id, version })
+        }
+        (None, None) => None,
+        _ => {
+            return Err(Error::Invalid(
+                "Preparing a new draft requires the canceled claim and its current version",
+            ))
+        }
+    };
+    if request.again {
+        crate::access_policies::require_native(&s, &a, "claims", "view").await?;
+        crate::access_policies::require_native(&s, &a, "claims", "create").await?;
+    }
+    if canceled.is_some() {
+        crate::access_policies::require_native(&s, &a, "billing", "create").await?;
+    }
+    let pool = db(&s)?;
+    if request.again && canceled.is_none() {
+        let mut tx = pool.begin().await?;
+        if delegated(&mut tx, &a).await? {
+            return Err(Error::Conflict(
+                "Reopen the encounter to prepare a draft from the current canceled claim.",
+            ));
+        }
+    }
+    Ok(Json(
+        prepare_claim_with_source(pool, &a, p, id, request.again, canceled).await?,
+    ))
 }
 async fn make_statement(
     a: Actor,

@@ -18,7 +18,7 @@ const ctx={console,Date,Intl,URL,Map,Set,Array,Math,Number,String,JSON,encodeURI
 vm.createContext(ctx);vm.runInContext(fs.readFileSync('web/visit-billing.js','utf8'),ctx);vm.runInContext(fs.readFileSync('web/patient-revenue.js','utf8'),ctx);vm.runInContext(fs.readFileSync('web/visit-review.js','utf8'),ctx);
 ctx.loadHostedCopays=()=>{};
 ctx.billingBase=()=>`/api/v1/patients/${ctx.selected}/billing/accounts`;
-const all={canCreate:true,canWrite:true,claimsAllowed:true};let b0;
+const all={canCreate:true,canWrite:true,claimsAllowed:true,canResubmitClaim:true};let b0;
 ctx.globalThis=ctx;ctx.__DIAG=[];
 const card=(summary,context=all)=>{
  // The billing step holds one live state object; opening an encounter's charges draws its card from
@@ -49,7 +49,7 @@ const states=[
  [visitSummary({state:'sign_visit',waiting_on:'clinician',account:{status:'draft'},balance_cents:null,claim:null,insurance:{status:'not_billed',pending_cents:0}}),'Charges can still be changed','Continue the encounter note','data-revenue-documentation',/The encounter note must be signed before the charges are posted\./],
   [visitSummary({state:'post_charges',account:{status:'draft'},balance_cents:null,claim:null,insurance:{status:'not_billed',pending_cents:0}}),'Post charges','Post charges','data-visit-post-charges="account"',/claim to Synthetic Medicare PPO is prepared for you next/],
  [selfPay(),'Self-pay: collect payment','Collect payment','data-visit-collect',/Patient owes \$280\.00\. Waiting for the patient/],
- [visitSummary({state:'claim_cancelled',claim:null}),'The claim to Synthetic Medicare PPO was cancelled','Send the claim again','data-visit-claim-resend',/Nothing is with the insurer/],
+ [visitSummary({state:'claim_cancelled',claim:null,canceled_claim:{id:'cancelled-original',version:2}}),'The claim to Synthetic Medicare PPO was cancelled','Resubmit claim','data-visit-claim-resend="cancelled-original" data-canceled-claim-version="2" aria-haspopup="dialog"',/Opens a new draft for review/],
   [visitSummary({state:'fix_claim',claim:{issues:[{code:'tax_id',missing:'billing organization tax ID',detail:'Tax ID is required'},{code:'npi',missing:'provider NPI',detail:'x'}]}}),'Claim to Synthetic Medicare PPO needs details','Fix claim details',`data-visit-claim-fix="${esc(visitSummary().claim.id)}"`,/Practice billing setup:<\/b> billing organization tax ID, provider NPI/],
   // A claim the server has filled in and checked needs no review to press; it is ready to go out.
   [visitSummary({claim:{status:'ready'}}),'Claim ready to send to Synthetic Medicare PPO','Send claim to Synthetic Medicare PPO','data-visit-claim-direct-send="claim"',/Nothing has been sent yet\./],
@@ -534,8 +534,8 @@ const index=fs.readFileSync('web/index.html','utf8');assert.ok(index.indexOf('/v
  ctx.renderEncounterRevenue();await settle();status=node('encounter-revenue-status').innerHTML;
  assert.match(status,/The claim to Synthetic Medicare PPO could not be prepared/);assert.match(status,/The charges changed; open the encounter again\. Try again, or open Insurance and eligibility/);assert.deepEqual(primaries(status),['Try again']);
  assert.equal(sent.filter(c=>c[1]==='POST').length,1);await ctx.loadEncounterRevenueStatus(ctx.workspace.billing.accounts[0],true);assert.equal(sent.filter(c=>c[1]==='POST').length,1,'no retry loop');
- reply=(url,method,body)=>url.endsWith('/claims/prepare')?{outcome:'prepared'}:visitSummary({account:{version:3}});click({visitClaimPrepare:'again'});await ctx.pending;await settle();
- assert.equal(JSON.stringify(sent.filter(c=>c[1]==='POST').at(-1)[2]),'{"again":true}');assert.equal(ctx.noticed,'Claim prepared from this encounter. Nothing was sent.');assert.match(node('encounter-revenue-status').innerHTML,/Claim ready to send/);
+ reply=(url,method,body)=>url.endsWith('/claims/prepare')?{outcome:'prepared'}:visitSummary({account:{version:3}});click({visitClaimPrepare:''});await ctx.pending;await settle();
+ assert.equal(JSON.stringify(sent.filter(c=>c[1]==='POST').at(-1)[2]),'{}');assert.equal(ctx.noticed,'Claim prepared from this encounter. Nothing was sent.');assert.match(node('encounter-revenue-status').innerHTML,/Claim ready to send/);
  // A delegated support session never triggers the automatic draft, by its own flag or the server's; it prepares by pressing.
  for(const [identity,viewer] of [[{role:'owner',delegated:true},{delegated:false}],[{role:'owner'},{delegated:true}]]){ctx.me=identity;node('encounter-revenue').dataset.revenueKey='';ctx.workspace.billing.accounts=[{...account,version:ctx.workspace.billing.accounts[0].version+1}];sent.length=0;reply=()=>visitSummary({state:'prepare_claim',claim:null,account:{version:ctx.workspace.billing.accounts[0].version},viewer});ctx.renderEncounterRevenue();await settle();assert.equal(sent.filter(c=>c[1]==='POST').length,0,'support session wrote nothing');assert.match(node('encounter-revenue-status').innerHTML,/data-visit-claim-prepare/,'it is offered the Prepare claim button to press itself');}
  ctx.me={role:'front_desk'};
