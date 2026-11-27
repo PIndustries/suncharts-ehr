@@ -5,7 +5,13 @@
 // this tab only and are dropped when the signed-in person changes.
 const visitNoteSources=new Map(),visitNoteUndo=new Map(),visitNotePeople=new Map();
 function clearVisitNoteSession(){if(visitNoteCopySheet?.dialog.open)sheetClose(visitNoteCopySheet.dialog);visitNoteSources.clear();visitNoteUndo.clear();visitNotePeople.clear();clearTimeout(visitNoteSaveTimer);clearTimeout(visitNoteSearchTimer);visitNoteSearches.clear();}
-function visitNoteSaved(visit){if(!visit)return;visitNoteUndo.delete(visit.id);visitNoteBar(visit.id);if($('note-message')?.isConnected!==false)showVisitNoteMessage('Note saved.');showVisitNoteAuthorship();}
+function visitNoteSaved(visit){
+ if(!visit)return;
+ visitNoteUndo.delete(visit.id);visitNoteBar(visit.id);
+ if($('note-form')?.querySelector?.('[data-note-autosave-retry]'))visitNoteSaveStatus('Saved');
+ else if($('note-message')?.isConnected!==false)showVisitNoteMessage('Note saved.');
+ showVisitNoteAuthorship();
+}
 // Messages shown beside Save note and Sign note, where the person just clicked.
 function showVisitNoteMessage(message){
  const host=$('note-message');if(!host||host.isConnected===false)return;
@@ -15,10 +21,29 @@ function hideVisitNoteMessage(){const host=$('note-message');if(host&&host.isCon
 // A draft needs at least some text; signing needs Subjective, Objective, Assessment and Plan.
 function hasVisitNoteText(form){return noteSectionKeys.some(key=>String(form?.elements[key]?.value??'').trim());}
 function noteMissingForSign(form){return noteSectionKeys.slice(0,4).filter(key=>!String(form?.elements[key]?.value??'').trim());}
+function visitNoteMarkMissing(form,missing){
+ for(const key of noteSectionKeys.slice(0,4)){
+  const field=form.elements[key];if(!field)continue;
+  let hint=field.parentElement?.querySelector('[data-note-field-needed]');
+  if(missing.includes(key)){
+   if(!hint){
+    hint=document.createElement('small');hint.className='note-field-needed';hint.dataset.noteFieldNeeded='';
+    hint.id=`note-${key}-needed`;hint.textContent='Required to sign';field.after(hint);
+   }
+   field.setAttribute('aria-invalid','true');field.setAttribute('aria-describedby',hint.id);
+  }else if(hint){
+   field.removeAttribute('aria-invalid');field.removeAttribute('aria-describedby');hint.remove();
+  }
+ }
+}
 function refuseVisitNoteSigning(form,missing){
- showVisitNoteMessage(`Add ${visitNoteNames(missing)} before signing.`);
- $('note-message')?.classList?.add('note-sign-error');
- for(const key of missing)form.elements[key]?.setAttribute?.('aria-invalid','true');
+ if(form?.querySelector?.('[data-note-autosave-retry]')){
+  form.dataset.noteSignChecked='';visitNoteMarkMissing(form,missing);
+ }else{
+  showVisitNoteMessage(`Add ${visitNoteNames(missing)} before signing.`);
+  $('note-message')?.classList?.add('note-sign-error');
+  for(const key of missing)form.elements[key]?.setAttribute?.('aria-invalid','true');
+ }
  const field=form?.elements?.[missing[0]];
  // Scroll only the encounter pane, leaving the fixed bars in place.
  if(typeof encounterStepOpen==='function')encounterStepOpen(1,false);
@@ -181,20 +206,33 @@ function visitNoteEnqueue(work){
  const task=visitNoteSaveQueue.then(()=>{if(activeVisit?.id!==id||selected!==patient||me!==identity)throw new Error('This page changed. Open the encounter again.');return work();});
  visitNoteSaveQueue=task.catch(()=>{});return task;
 }
-function visitNoteSaveStatus(text){const host=$('note-save-status');if(host)host.textContent=text;}
+function visitNoteSaveStatus(text){
+ const host=$('note-save-status');if(host)host.textContent=text;
+ const retry=$('note-form')?.querySelector?.('[data-note-autosave-retry]');
+ if(retry){retry.hidden=text!=='Not saved';retry.textContent='Retry save';}
+}
+function visitNoteEnableAutosave(form){
+ const button=form?.querySelector('[data-note-actions] button[type="submit"]');
+ if(!button||button.hasAttribute('data-note-autosave-retry'))return;
+ button.dataset.noteAutosaveRetry='';
+ const note=activeVisit?.note||{},retained=typeof visitDrafts!=='undefined'&&visitDrafts.get(activeVisit?.id)?.note;
+ visitNoteSaveStatus(retained?'Not saved':noteSectionKeys.some(key=>String(note[key]||'').trim())?'Saved':'Autosave on');
+}
 function queueVisitNoteAutosave(event){
  const form=event.target?.closest?.('#note-form,#vitals-form,#rooming-form');
- if(form?.id==='note-form'&&event.target.value?.trim()){event.target.removeAttribute?.('aria-invalid');if($('note-message')?.classList?.contains('note-sign-error')){const missing=noteMissingForSign(form);if(missing.length)showVisitNoteMessage(`Add ${visitNoteNames(missing)} before signing.`);else{$('note-message').classList.remove('note-sign-error');hideVisitNoteMessage();}}}
  if(!form||event.isComposing||event.target.readOnly||event.target.disabled||activeVisit?.status==='signed')return;
+ if(form.id==='note-form'&&Object.hasOwn(form.dataset||{},'noteSignChecked'))visitNoteMarkMissing(form,noteMissingForSign(form));
+ else if(form.id==='note-form'&&event.target.value?.trim()){event.target.removeAttribute?.('aria-invalid');if($('note-message')?.classList?.contains('note-sign-error')){const missing=noteMissingForSign(form);if(missing.length)showVisitNoteMessage(`Add ${visitNoteNames(missing)} before signing.`);else{$('note-message').classList.remove('note-sign-error');hideVisitNoteMessage();}}}
  if(form.id==='vitals-form'&&typeof visitVitalsFeedback==='function')visitVitalsFeedback(form);
  // Inline searches and chip edits have their own save paths.
  if(event.target.closest?.('[data-note-inline]'))return;
  clearTimeout(visitNoteSaveTimer);visitNoteSaveStatus('Saving…');
- const id=activeVisit.id,identity=me;
+ const id=activeVisit.id,identity=me,patient=selected;
+ const current=()=>activeVisit?.id===id&&me===identity&&selected===patient;
  visitNoteSaveTimer=setTimeout(()=>{
   visitNoteSaveTimer=null;
-  if(activeVisit?.id!==id||me!==identity)return;
-  void visitNoteFlush().catch(error=>{visitNoteSaveStatus('Not saved');showVisitNoteMessage(error.message);});
+  if(!current())return;
+  void visitNoteFlush().catch(error=>{if(current()){visitNoteSaveStatus('Not saved');showVisitNoteMessage(error.message);}});
  },600);
 }
 document.addEventListener('input',queueVisitNoteAutosave);

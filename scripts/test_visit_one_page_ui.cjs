@@ -193,7 +193,10 @@ async function close(fixture){
   const draftAmount=draft.querySelector('[name="amount"]');
   draftAmount.value='120.00';
   draftAmount.dispatchEvent(new signed.w.Event('input',{bubbles:true}));
-  draft.querySelector('[data-visit-post-charges]').click();
+  find('dialog[open] [data-save-encounter-codes]').click();
+  await signed.wait(()=>!find('dialog[data-encounter-codes-dialog][open]'),'closing codes saves the new amount');
+  const post=await signed.wait(()=>find('[data-encounter-post-charges]:not([hidden])'),'the signed self-pay visit offers Post charges inline');
+  post.click();
   await signed.wait(()=>find('[data-encounter-step-number="2"] [data-visit-collect]'),'posting enables payment for the updated balance');
   assert.match(find('[data-encounter-step-number="2"]').textContent,/Patient amount due\s*\$120\.00/);
   assert.deepEqual(signed.calls.filter(call=>call.method!=='GET').map(call=>[call.method,call.route.split('/').pop()]),[['PUT',account.id],['POST','actions']]);

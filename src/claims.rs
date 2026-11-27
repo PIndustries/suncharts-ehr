@@ -997,7 +997,9 @@ async fn create_claim(
                 || prior.status != "rejected"
                 || !prior.payer_control_number.is_empty()
             {
-                return Err(Error::Conflict("original resubmission requires a linked rejected claim without a payer control number"));
+                return Err(Error::Conflict(
+                    "original resubmission requires a linked rejected claim without a payer control number",
+                ));
             }
         }
         ("replacement" | "void_request", Some(parent)) => {
@@ -1007,13 +1009,15 @@ async fn create_claim(
                 || !["rejected", "adjudicated"].contains(&prior.status.as_str())
                 || prior.payer_control_number.is_empty()
             {
-                return Err(Error::Conflict("replacement/void request requires a rejected or adjudicated claim on this account with a payer control number"));
+                return Err(Error::Conflict(
+                    "replacement/void request requires a rejected or adjudicated claim on this account with a payer control number",
+                ));
             }
         }
         _ => {
             return Err(Error::Invalid(
                 "choose original, or a linked replacement/void request",
-            ))
+            ));
         }
     }
     let prior_original:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM ehr_claims WHERE tenant_id=$1 AND account_id=$2 AND payer_id=$3 AND frequency='original' AND status<>'void')").bind(a.tenant_id).bind(id).bind(payer_id).fetch_one(&mut *tx).await?;
@@ -1150,6 +1154,11 @@ async fn claim_detail(
     let c = refill_draft(db(&s)?, &mut tx, &a, &c, false).await?;
     let issues = preflight(&c)?;
     let submission_defaults = claim_submission_defaults(&mut tx, &a, &c).await?;
+    let submission_issues = if ["draft", "ready"].contains(&c.status.as_str()) {
+        claim_submission_issues(&submission_defaults)
+    } else {
+        vec![]
+    };
     let tracking = crate::retrieval::claim_tracking(&mut tx, &a, &c).await?;
     // A claim that came back needs one more thing than its own row: the answer it carries may sit on
     // a revision recorded by hand or arrived from Claim.MD, and the response feed is keyed to the
@@ -1177,6 +1186,7 @@ async fn claim_detail(
     let can_confirm_self_policyholder = !artifact_generated
         && a.scheduling().is_ok()
         && self_policyholder_birth_date(&c).is_some()
+        && submission_defaults["source_references"]["patient_address_from_chart"] == true
         && self_policyholder_address(&submission_defaults["patient_address"]).is_ok();
     // The resend frequency follows the same rule the create endpoint enforces, so it also has to
     // look at the claim this one is linked to: a correction whose parent is on file with the payer
@@ -1210,7 +1220,7 @@ async fn claim_detail(
     let transport = clearinghouse_transport(db(&s)?, a.tenant_id, artifact_generated).await?;
     let (frequency, frequency_code) = claim_resend_plan_for(&payer_control);
     Ok(Json(
-        json!({"claim":c,"preflight_issues":issues,"can_confirm_self_policyholder":can_confirm_self_policyholder,"transport":transport,"submission_defaults":submission_defaults,"tracking":tracking,
+        json!({"claim":c,"preflight_issues":issues,"submission_issues":submission_issues,"can_confirm_self_policyholder":can_confirm_self_policyholder,"transport":transport,"submission_defaults":submission_defaults,"tracking":tracking,
             "resend":{"frequency":frequency,"frequency_code":frequency_code,"payer_control_number":payer_control},
             "claimmd_position":claimmd_position,
             "responses":{"revisions":responses,"feed":feed}}),
@@ -1254,6 +1264,128 @@ fn structured_x12_address(content: Option<&Value>) -> Value {
         "state": address.get("region").or_else(|| address.get("state")).and_then(Value::as_str).unwrap_or_default(),
         "postal_code": address.get("postal_code").and_then(Value::as_str).unwrap_or_default(),
     })
+}
+
+fn recorded_x12_address(value: &Value) -> Option<Value> {
+    // Only map explicit comma-separated address parts. An ambiguous address needs review.
+    let mut parts = value
+        .as_str()?
+        .split(',')
+        .map(str::trim)
+        .collect::<Vec<_>>();
+    if parts.last().is_some_and(|part| {
+        ["US", "USA", "United States"]
+            .iter()
+            .any(|country| part.eq_ignore_ascii_case(country))
+    }) {
+        parts.pop();
+    }
+    let last = parts.pop()?;
+    let (state, zip) = match last.split_once(char::is_whitespace) {
+        Some(pair) => pair,
+        None => (parts.pop()?, last),
+    };
+    let city = parts.pop()?;
+    let (line1, line2) = match parts.as_slice() {
+        [line1] => (*line1, ""),
+        [line1, line2] => (*line1, *line2),
+        _ => return None,
+    };
+    let address = crate::x12::Address {
+        line1: line1.to_string(),
+        line2: line2.to_string(),
+        city: city.to_string(),
+        state: state.to_ascii_uppercase(),
+        postal_code: match zip.trim().as_bytes() {
+            [a, b, c, d, e, b'-', f, g, h, i]
+                if [a, b, c, d, e, f, g, h, i]
+                    .iter()
+                    .all(|byte| byte.is_ascii_digit()) =>
+            {
+                zip.trim().replace('-', "")
+            }
+            value => std::str::from_utf8(value).ok()?.to_string(),
+        },
+    };
+    address.validate().ok()?;
+    serde_json::to_value(address).ok()
+}
+
+fn valid_x12_address(value: &Value) -> bool {
+    serde_json::from_value::<crate::x12::Address>(value.clone())
+        .is_ok_and(|address| address.validate().is_ok())
+}
+
+fn claim_submission_issues(defaults: &Value) -> Vec<Value> {
+    let mut issues = Vec::new();
+    for (field, label) in [
+        ("patient_address", "Patient address"),
+        ("subscriber_address", "Policy holder’s address"),
+        ("billing_address", "Billing address"),
+    ] {
+        let address = &defaults[field];
+        if valid_x12_address(address) {
+            continue;
+        }
+        let mut needed = Vec::new();
+        for (part, min, max, name) in [
+            ("line1", 1, 55, "street"),
+            ("line2", 0, 55, "address line 2"),
+            ("city", 1, 30, "city"),
+        ] {
+            if crate::x12::element(
+                address[part].as_str().unwrap_or_default(),
+                min,
+                max,
+                "address_line1",
+            )
+            .is_err()
+            {
+                needed.push(name);
+            }
+        }
+        let locality = json!({"line1":"1 Example Way","line2":"","city":"Example",
+            "state":address["state"],"postal_code":address["postal_code"]});
+        if !valid_x12_address(&locality) {
+            needed.push("US state and ZIP");
+        }
+        issues.push(json!({"field":field,"message":format!("{label} needs valid {} for electronic submission.", needed.join(", "))}));
+    }
+    for (given, family, field, label) in [
+        (
+            "subscriber_given_name",
+            "subscriber_family_name",
+            "subscriber_name",
+            "Policy holder",
+        ),
+        (
+            "rendering_given_name",
+            "rendering_family_name",
+            "rendering_provider_name",
+            "Rendering provider",
+        ),
+    ] {
+        let failed = |key| {
+            crate::x12::element(
+                defaults[key].as_str().unwrap_or_default(),
+                1,
+                35,
+                "subscriber_given_name",
+            )
+            .is_err()
+        };
+        if failed(given) || failed(family) {
+            issues.push(json!({"field":field,"message":format!("{label} needs a valid first and last name for electronic submission.")}));
+        }
+    }
+    let taxonomy = defaults["billing_taxonomy"]
+        .as_str()
+        .unwrap_or_default()
+        .trim();
+    if taxonomy.len() != 10 || !taxonomy.bytes().all(|byte| byte.is_ascii_alphanumeric()) {
+        issues.push(json!({"field":"billing_taxonomy","message":"The rendering provider needs a ten-character taxonomy for electronic submission."}));
+    }
+    issues
 }
 
 // Confirmation is only offered for the ambiguous Other relationship on an unsent
@@ -1432,10 +1564,9 @@ pub(crate) async fn claim_submission_defaults(
             billing_taxonomy_source = "npi_registry";
         }
     }
-    // The billing street address is prefilled only when the practice has exactly
-    // one active facility, the same rule visit_billing uses when it prepares a
-    // claim, and only when that facility's parts were recorded. It reflects the
-    // facility as it is now, not the frozen claim.
+    // If the saved claim address cannot be mapped, a single active facility
+    // supplies the default. This is the same facility rule used when preparing
+    // claim drafts, including drafts created before address mapping was available.
     let facilities: Vec<(String, String, String, String, String)> = sqlx::query_as(
         "SELECT address_line1,address_line2,city,state,postal_code FROM practice_facilities WHERE tenant_id=$1 AND active ORDER BY name,id LIMIT 2",
     )
@@ -1446,7 +1577,7 @@ pub(crate) async fn claim_submission_defaults(
         [only] if !only.0.is_empty() => Some(only.clone()),
         _ => None,
     };
-    let billing_address = match &facility {
+    let facility_address = match &facility {
         Some((line1, line2, city, state, postal_code)) => json!({
             "line1": line1,
             "line2": line2,
@@ -1476,11 +1607,20 @@ pub(crate) async fn claim_submission_defaults(
             .as_ref()
             .and_then(|value| value["administrative_gender"].as_str()),
     );
-    let patient_address = structured_x12_address(demographics.as_ref());
+    let billing_address =
+        recorded_x12_address(&claim.content["billing_address"]).unwrap_or(facility_address);
+    let chart_address = structured_x12_address(demographics.as_ref());
+    let patient_address_from_chart = valid_x12_address(&chart_address);
+    let patient_address = if patient_address_from_chart {
+        chart_address
+    } else {
+        recorded_x12_address(&claim.content["patient_address"]).unwrap_or(chart_address)
+    };
     let subscriber_address = if relationship == "self" {
         patient_address.clone()
     } else {
-        json!({"line1":"","line2":"","city":"","state":"","postal_code":""})
+        recorded_x12_address(&claim.content["subscriber_address"])
+            .unwrap_or_else(|| structured_x12_address(None))
     };
     let filing = filing_indicator(
         payer["name"].as_str().unwrap_or_default(),
@@ -1502,6 +1642,7 @@ pub(crate) async fn claim_submission_defaults(
         "payer_address": {"line1":"","line2":"","city":"","state":"","postal_code":""},
         "source_references": {
             "billing_address": claim.content["billing_address"].as_str().unwrap_or_default(),
+            "patient_address_from_chart": patient_address_from_chart,
             "payer_address": payer["address"].as_str().unwrap_or_default(),
             "provider_name": provider_name.unwrap_or_default(),
         }
@@ -1706,14 +1847,18 @@ async fn claim_action_versioned(
         return Ok(Json(corrected));
     }
     if crate::claim_cob::tracking_only(&c) && v.action != "withdraw_crossover" {
-        return Err(Error::Conflict("crossover tracking follows the received remittance; no outbound or manual submission event is allowed"));
+        return Err(Error::Conflict(
+            "crossover tracking follows the received remittance; no outbound or manual submission event is allowed",
+        ));
     }
     let status = match (v.action.as_str(), c.status.as_str()) {
         ("withdraw_crossover", "submitted" | "accepted" | "rejected") => {
             if !crate::claim_cob::tracking_only(&c)
                 || crate::era_chains::head(&mut tx, &a, c.id).await?.is_some()
             {
-                return Err(Error::Conflict("reverse the active crossover remittance before withdrawing its tracking record"));
+                return Err(Error::Conflict(
+                    "reverse the active crossover remittance before withdrawing its tracking record",
+                ));
             }
             let downstream:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM ehr_claims WHERE tenant_id=$1 AND parent_id=$2 AND status<>'void')").bind(a.tenant_id).bind(c.id).fetch_one(&mut *tx).await?;
             if downstream {
@@ -1835,7 +1980,9 @@ fn review_money(cents: Option<i64>) -> String {
 // A records review of frozen claim evidence, never a paper-submission form.
 fn render_cms1500_review(c: &Claim) -> Result<String> {
     if crate::claim_cob::evidence(c)?.is_some() {
-        return Err(Error::Conflict("secondary coordination is available in the electronic 837P and frozen claim evidence; a secondary CMS-1500 review is not yet supported"));
+        return Err(Error::Conflict(
+            "secondary coordination is available in the electronic 837P and frozen claim evidence; a secondary CMS-1500 review is not yet supported",
+        ));
     }
     let content: ClaimContent = serde_json::from_value(c.content.clone())
         .map_err(|_| Error::Invalid("invalid claim content"))?;
@@ -2109,7 +2256,7 @@ async fn import_remittance(
         _ => {
             return Err(Error::Invalid(
                 "provide normalized document or bounded x12_835 text, not both",
-            ))
+            ));
         }
     };
     document.validate()?;
@@ -2459,7 +2606,7 @@ async fn remit_action(
         _ => {
             return Err(Error::Conflict(
                 "remittance action is not allowed in this state",
-            ))
+            ));
         }
     };
     sqlx::query(
@@ -2813,7 +2960,8 @@ pub(crate) async fn post_rows(
 #[cfg(test)]
 mod submission_default_tests {
     use super::{
-        new_control_number, preflight, split_person_name, structured_x12_address, x12_sex,
+        claim_submission_issues, new_control_number, preflight, recorded_x12_address,
+        split_person_name, structured_x12_address, x12_sex,
     };
     use serde_json::json;
 
@@ -2873,6 +3021,47 @@ mod submission_default_tests {
                 "state": "IL",
                 "postal_code": "61114"
             })
+        );
+    }
+
+    #[test]
+    fn maps_explicit_claim_addresses_without_guessing_missing_parts() {
+        let full = "21 Example Ln, Suite 4, Portland, OR 97204-1234";
+        assert_eq!(
+            recorded_x12_address(&json!(full)),
+            Some(
+                json!({"line1":"21 Example Ln","line2":"Suite 4","city":"Portland","state":"OR","postal_code":"972041234"})
+            )
+        );
+        assert_eq!(
+            recorded_x12_address(&json!("21 Example Ln, Portland, OR, 97204, US")),
+            Some(
+                json!({"line1":"21 Example Ln","line2":"","city":"Portland","state":"OR","postal_code":"97204"})
+            )
+        );
+        for ambiguous in [
+            "21 Example Ln Portland OR 97204",
+            "21 Example Ln, Portland, OR",
+            "21 Example Ln, Portland, XX 97204",
+            "21 Example Ln, Portland, OR 9-7204",
+            "21 Example Ln, Portland, OR 97204, Canada",
+        ] {
+            assert_eq!(recorded_x12_address(&json!(ambiguous)), None);
+        }
+    }
+
+    #[test]
+    fn electronic_issues_name_only_unusable_fields() {
+        let address = json!({"line1":"21 Example Ln","line2":"","city":"Portland","state":"OR","postal_code":"97204"});
+        let mut defaults = json!({"patient_address":address,"subscriber_address":address,"billing_address":address,
+            "subscriber_given_name":"Synthetic","subscriber_family_name":"Subscriber","rendering_given_name":"Synthetic","rendering_family_name":"Provider","billing_taxonomy":"207Q00000X"});
+        assert!(claim_submission_issues(&defaults).is_empty());
+        defaults["subscriber_address"]["city"] = json!("");
+        assert_eq!(
+            claim_submission_issues(&defaults),
+            vec![
+                json!({"field":"subscriber_address","message":"Policy holder’s address needs valid city for electronic submission."})
+            ]
         );
     }
 

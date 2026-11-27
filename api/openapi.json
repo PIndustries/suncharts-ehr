@@ -18863,6 +18863,11 @@
                   "request_id": {
                     "type": "string",
                     "format": "uuid"
+                  },
+                  "visit_version": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Optional version of the encounter containing the saved note being checked. A newer version is refused before contacting SunCharts AI."
                   }
                 }
               }
@@ -18916,7 +18921,7 @@
             "description": "Resource not found in tenant"
           },
           "409": {
-            "description": "SunCharts AI is not switched on for this practice"
+            "description": "The encounter changed before the request, or SunCharts AI is not switched on for this practice"
           },
           "503": {
             "description": "Too many requests are waiting, or the assistant could not answer"
@@ -46882,6 +46887,19 @@
           "can_confirm_self_policyholder": {
             "type": "boolean",
             "description": "Whether this unsent draft has matching patient and policy holder details and a complete patient address on file for staff confirmation. Writes also recheck version, access and artifact evidence."
+          },
+          "submission_issues": {
+            "type": "array",
+            "description": "Newly prepared electronic claims need these structured fields in addition to standard claim preflight.",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "field": {"type": "string"},
+                "message": {"type": "string"}
+              },
+              "required": ["field", "message"]
+            }
           },
           "transport": {
             "type": "object",

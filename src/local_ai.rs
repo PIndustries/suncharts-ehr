@@ -65,6 +65,7 @@ async fn local_status(a: Actor, ExtractState(s): ExtractState<State>) -> Result<
 #[serde(deny_unknown_fields)]
 struct Input {
     request_id: Uuid,
+    visit_version: Option<i64>,
 }
 
 async fn request_suggestions(
@@ -75,9 +76,14 @@ async fn request_suggestions(
 ) -> Result<(StatusCode, Json<Value>)> {
     let pool = db(&s)?;
     let tenant = a.tenant_id;
-    let out = request(pool, &a, id, input.request_id, |body| async move {
-        crate::connect_services::local_ai_submit(pool, tenant, &body).await
-    })
+    let out = request(
+        pool,
+        &a,
+        id,
+        input.request_id,
+        input.visit_version,
+        |body| async move { crate::connect_services::local_ai_submit(pool, tenant, &body).await },
+    )
     .await?;
     Ok((StatusCode::ACCEPTED, Json(out)))
 }
@@ -302,6 +308,7 @@ pub(crate) async fn request<F, Fut>(
     a: &Actor,
     visit_id: Uuid,
     request_id: Uuid,
+    visit_version: Option<i64>,
     submit: F,
 ) -> Result<Value>
 where
@@ -312,6 +319,11 @@ where
     let mut tx = pool.begin().await?;
     let v = visit_diagnoses::visit(&mut tx, a, visit_id, false).await?;
     authorize(&mut tx, a, &v).await?;
+    if visit_version.is_some_and(|version| version != v.version) {
+        return Err(Error::Conflict(
+            "The note changed. Refresh the encounter before checking codes.",
+        ));
+    }
     let sections = note_text(&v.note);
     if sections.is_empty() {
         return Err(Error::Invalid("Write the assessment or plan first."));

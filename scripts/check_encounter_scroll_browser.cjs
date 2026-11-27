@@ -527,6 +527,7 @@ async function run(browser, viewport, reducedMotion, failures, scenario = 'blank
   let currentVisit = structuredClone(visit);
   let correction = null, handoffs=0, savedHandoffAccount;
   if(scenario==='handoff')currentVisit.note={subjective:'Synthetic symptom',objective:'Synthetic exam',assessment:'Synthetic diagnosis',plan:'Synthetic follow-up'};
+  if(scenario==='unsigned-codes')currentVisit.note={subjective:draftText,objective:'Synthetic exam',assessment:'Synthetic assessment'};
   const procedureWrites=[];
   let procedureAccount,releaseFirstProcedureSave;
   const firstProcedureSave=new Promise(resolve=>{releaseFirstProcedureSave=resolve;});
@@ -704,7 +705,7 @@ async function run(browser, viewport, reducedMotion, failures, scenario = 'blank
     if (scenario === 'first-code') {
       const launcher = '#encounter-documentation [data-open-encounter-codes]';
       await page.waitForSelector(launcher, {visible:true});
-      assert.match(await page.$eval(launcher, button => button.innerText), /Add codes/);
+      assert.equal(await page.$eval(launcher, button => button.innerText), 'Add diagnosis');
       await page.click(launcher);
       const dx = codesDialog + ' #visit-diagnoses-form';
       await page.waitForSelector(dx+' input[name=code]',{visible:true});
@@ -724,9 +725,9 @@ async function run(browser, viewport, reducedMotion, failures, scenario = 'blank
       assert.equal(currentVisit.diagnoses?.[0].code,diagnosis.code);
       const summary = '#encounter-documentation [data-encounter-codes-summary]';
       await page.waitForFunction(selector => document.querySelector(selector)?.innerText.includes('J30.9'), {}, summary);
-      assert.match(await page.$eval(launcher, button => button.innerText), /Edit codes/);
+      assert.equal(await page.$eval(launcher, button => button.innerText), 'Add procedure');
       assert.deepEqual(errors, []);
-      console.log('Add codes records the first ICD diagnosis and returns to the encounter summary.');
+      console.log('Add diagnosis starts with the first ICD field and advances to Add procedure after saving.');
       return;
     }
     if (scenario === 'unsigned-codes') {
@@ -738,6 +739,16 @@ async function run(browser, viewport, reducedMotion, failures, scenario = 'blank
       assert.match(await page.$eval(summary, node => node.innerText), /99213/);
       assert.match(await page.$eval(launcher, node => node.innerText), /Edit codes/);
       assert.equal(await page.$eval('#note-form', node => node.querySelectorAll('[data-note-inline], [data-note-code-search]').length), 0);
+      assert.equal(await page.$eval('#note-form [data-note-autosave-retry]',button=>button.hidden),true);
+      await page.locator('#note-form [data-action="sign"]').click();
+      const plan='#note-form [name="plan"]';
+      await page.waitForSelector(plan+'[aria-invalid="true"]',{visible:true});
+      assert.deepEqual(await page.$$eval('#note-form [aria-invalid="true"]',fields=>fields.map(field=>field.name)),['plan']);
+      assert.equal(await page.$eval('#note-plan-needed',hint=>hint.textContent),'Required to sign');
+      await page.locator(plan).fill('Synthetic follow-up');
+      await page.waitForFunction(()=>document.querySelector('#note-save-status')?.textContent==='Saved');
+      assert.equal(currentVisit.note.plan,'Synthetic follow-up');
+      assert.equal(await page.$(plan+'[aria-invalid="true"]'),null);
       const top = await page.$eval(launcher, button => {
         button.scrollIntoView({behavior:'instant', block:'center'});
         button.focus({preventScroll:true});
@@ -754,9 +765,9 @@ async function run(browser, viewport, reducedMotion, failures, scenario = 'blank
         focused: document.activeElement === button, top: (button.closest('.frame-content') || document.querySelector('#app > main')).scrollTop
       })), {focused: true, top}, 'Closing the dialog restores focus and the original chart position');
       assert.equal(await page.$('#note-form .actions [data-menu], #note-form [data-note-diagnoses-editor]'), null);
-      assert.equal(await page.$eval('#note-form button[type=submit]', b => b.textContent.trim()), 'Save note');
+      assert.equal(await page.$eval('#note-form [data-note-autosave-retry]',button=>button.hidden),true);
       assert.deepEqual(errors, []);
-      console.log('Unsigned visit has one ICD/CPT dialog. Closing returns to the same place. Save note is a direct action.');
+      console.log('Unsigned visit highlights only the missing Plan, saves it automatically, and preserves focus after closing the ICD/CPT editor.');
       return;
     }
     if (partialRooming) {

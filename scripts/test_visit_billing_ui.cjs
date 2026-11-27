@@ -91,7 +91,7 @@ for(const [summary] of states){const html=card(summary).replace(/<[^>]*>/g,' ');
  const signingVisit={...ctx.activeVisit,status:'in_progress'};
  const charges={...account,status:'draft',content:{...account.content,lines:[{code:'99213',units:1,amount_cents:28000,diagnosis_codes:['Z00.00']}]}};
  const ready=visitSummary({state:'sign_visit',visit:signingVisit,account:{status:'draft'},
-  claim:{content:{billing_provider_name:'Synthetic practice',billing_address:'100 Synthetic Way',tax_id:'123456789',
+  claim:{content:{billing_provider_name:'Synthetic practice',billing_address:'100 Synthetic Way',tax_id:'123456789',patient_address:'100 Synthetic Way, Trenton, NJ 08608',
    billing_npi:'1234567893',rendering_npi:'1234567893',subscriber_address:'100 Synthetic Way',
    subscriber_birth_date:'1990-01-01',place_of_service:'11',diagnosis_codes:['Z00.00']}}});
  const saved={visit:ctx.activeVisit,accounts:ctx.workspace.billing.accounts};
@@ -103,6 +103,10 @@ for(const [summary] of states){const html=card(summary).replace(/<[^>]*>/g,' ');
   assert.equal(ctx.visitEncounterCanSignAndSubmit(ready,null),false);
   assert.equal(ctx.visitEncounterCanSignAndSubmit(ready,{...charges,content:{...charges.content,lines:[{code:''}]}}),false);
   assert.equal(ctx.visitEncounterCanSignAndSubmit({...ready,insurance:{...ready.insurance,electronic:false}},charges),false);
+  assert.equal(ctx.visitReviewPatient(ready).some(check=>check.key==='patient-address'),false,'a recorded claim address does not depend on a second copy in the live chart');
+  const electronicIssue={...ready,claim:{...ready.claim,preflight_issues:[],submission_issues:[{field:'patient_address',message:'Patient address needs valid US state and ZIP for electronic submission.'}]}};
+  assert.equal(ctx.visitEncounterCanSignAndSubmit(electronicIssue,charges),false,'an actual electronic validation error keeps standalone signing available');
+  assert.equal(ctx.visitReviewChecks(electronicIssue,all).filter(check=>check.key==='patient-address').length,1);
   const needsAddress={...ready,claim:{...ready.claim,content:{...ready.claim.content,subscriber_address:''}}};
   assert.equal(ctx.visitEncounterCanSignAndSubmit(needsAddress,charges),false,'a claim field failure keeps standalone signing available');
   ctx.workspace.billing.accounts=[{...charges,content:{...charges.content,lines:[{...charges.content.lines[0],amount_cents:null}]}}];
@@ -409,14 +413,14 @@ const index=fs.readFileSync('web/index.html','utf8');assert.ok(index.indexOf('/v
   card(selfDraft);
   const selfCard=ctx.visitBillingCardMarkup(ctx.billingStep.reviewCard,all),selfStep=ctx.visitBillingChargeStep(ctx.billingStep.reviewCard,all);
   assert.deepEqual(primaries(selfCard),['Post charges'],'self-pay posts charges, nothing about a claim');
-  assert.doesNotMatch(selfCard,/send claim|Post charges and send claim/i);
+  assert.doesNotMatch(selfCard,/send claim|Post charges and review claim/i);
   assert.equal(selfStep.label,'Post charges');assert.equal(selfStep.attribute,'data-visit-post-charges="account"','and the line under the table says the same');
   // Insurance with no electronic ID is billed outside SunCharts, so it is never offered a send.
   const noPayer=visitSummary({state:'post_charges',account:{id:'account',status:'draft',version:2},claim:null,insurance:{insured:true,insurer:'Synthetic Medicare PPO',electronic:false,status:'not_billed'}});
   card(noPayer);
   assert.equal(ctx.visitBillingChargeStep(ctx.billingStep.reviewCard,all).label,'Post charges','a payer with no insurer ID keeps the plain post');
 
-  // ---- Post charges and send claim stops on fix_claim --------------------------------------
+  // ---- Post charges and review claim stops on fix_claim ------------------------------------
   // A draft the practice is working, with a payer whose claims go electronically: the line under
   // the charge table offers one button that posts, lets the claim be prepared, and sends it.
   // Something the claim cannot go without is asked for before the charges post: the card's one button
@@ -440,7 +444,7 @@ const index=fs.readFileSync('web/index.html','utf8');assert.ok(index.indexOf('/v
   // Opening the encounter's charges draws its card, and the line under the table answers from that
   // same on-screen step, so the card is put on screen first.
   card(draftPost);
-  assert.equal(ctx.visitBillingChargeStep(ctx.billingStep.reviewCard,all).label,'Post charges and send claim');
+  assert.equal(ctx.visitBillingChargeStep(ctx.billingStep.reviewCard,all).label,'Post charges and review claim');
   // The claim the server prepares after the post comes back needing details: the press stops there
   // and the card is left showing the fix_claim card with its issues. Nothing is submitted.
   const fixAfter=visitSummary({state:'fix_claim',account:{id:'account',status:'posted',version:3},claim:{id:'claim',status:'draft',issues:[{code:'tax_id',missing:'billing organization tax ID',detail:'Tax ID is required'}]}});

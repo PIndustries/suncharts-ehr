@@ -70,7 +70,7 @@ async function check(browser,viewport,variant){
   await page.waitForFunction(selector=>document.querySelector(selector)===document.activeElement,{},button);
   assert.equal(await page.$(compact+' [data-encounter-codes-anchor]'),null,'Visit already has the coding action');
   const add='#encounter-documentation [data-open-encounter-codes]';
-  assert.match(await page.$eval(add,n=>n.innerText),/Add codes/);
+  assert.equal(await page.$eval(add,n=>n.innerText),'Add diagnosis');
   if(viewport.width===390){
    const anchored='[data-encounter-step-open="1"]';
    await page.locator(anchored).click();
@@ -91,7 +91,7 @@ async function check(browser,viewport,variant){
   await page.locator(add).click();
   await page.waitForSelector('dialog[data-encounter-codes-dialog][open]',{visible:true});
   assert.deepEqual(errors,[]);assert.deepEqual(writes,[]);
-  console.log('PASS '+viewport.width+'px signed insured visit: '+variant+', compact claim, stable review and Add codes');
+  console.log('PASS '+viewport.width+'px signed insured visit: '+variant+', compact claim, stable review and first code entry');
  }catch(error){console.error(viewport.width,errors,writes,await page.evaluate(()=>({notice:document.getElementById('notice')?.textContent,claim:document.querySelector('[data-encounter-claim-status]')?.innerText.slice(0,420),dialog:document.querySelector('dialog[open]')?.innerText.slice(0,420)})));throw error;}
  finally{await context.close();}
 }
@@ -223,6 +223,7 @@ async function checkReadyClaim(browser,viewport){
  account.coverage_snapshot={coverage:{...coverage,content:{...coverage.content,relationship:'self'}},payer};
  account.content.claim_details={prior_authorization_number:'SYN-ACCOUNT-AUTH'};
  const content={billing_provider_name:'Synthetic Practice',billing_address:'100 Synthetic Avenue',tax_id:'123456789',
+  patient_address:'100 Synthetic Avenue, Trenton, NJ 08608',
   billing_npi:'1234567893',rendering_npi:'1234567893',place_of_service:'11',subscriber_address:'100 Synthetic Avenue, Trenton, NJ 08608',
   subscriber_birth_date:patient.birth_date,diagnosis_codes:account.content.lines[0].diagnosis_codes,line_diagnosis_pointers:[[1]],
   encounter:authorization?{prior_authorization_number:authorization}:{}};
@@ -233,7 +234,7 @@ async function checkReadyClaim(browser,viewport){
  billing.summary=summary;
  const claimEndpoint='/api/v1/billing/claims/'+claim.id;
  const handoffEndpoint=patientPath+'/billing/visits/'+signed.id+'/claim-handoff';
- let previewReads=0;
+ let previewReads=0,failNextAuthorization=false,submissionIssues=[],releaseFirstAuthorization;
  try{
   await page.setViewport(viewport);page.setDefaultTimeout(12000);
   await page.emulateMediaFeatures([{name:'prefers-color-scheme',value:theme}]);
@@ -243,7 +244,15 @@ async function checkReadyClaim(browser,viewport){
    const url=new URL(request.url()),route=url.pathname;
    if(url.origin!==origin)return request.abort();
    if(request.method()!=='GET'){
-    writes.push({method:request.method(),route,body:JSON.parse(request.postData()||'{}')});
+    const body=JSON.parse(request.postData()||'{}'),version=request.headers()['if-match'];
+    writes.push({method:request.method(),route,body,version});
+    if(route===claimEndpoint&&request.method()==='PUT'){
+     if(body.content.encounter.prior_authorization_number==='SYN-FIRST-EDIT')await new Promise(resolve=>{releaseFirstAuthorization=resolve;});
+     if(failNextAuthorization){failNextAuthorization=false;return request.respond({status:409,contentType:'application/json',body:JSON.stringify({message:'Check the current prior authorization before saving.'})});}
+     assert.equal(version,JSON.stringify(String(claim.version)));
+     claim.version++;claim.content=body.content;
+     return request.respond({status:200,contentType:'application/json',body:JSON.stringify(claim)});
+    }
     if(route===handoffEndpoint)return request.respond({status:200,contentType:'application/json',body:JSON.stringify({
      outcome:'needs_review',visit_id:signed.id,account_id:account.id,signed:true,visit_version:signed.version
     })});
@@ -251,14 +260,14 @@ async function checkReadyClaim(browser,viewport){
    }
    if(route===claimEndpoint+'/cms1500'){
     previewReads++;
-    return request.respond({status:200,contentType:'text/html',body:`<!DOCTYPE html><title>Synthetic CMS-1500</title><p>Box 23: ${authorization||'empty'}</p>`});
+    return request.respond({status:200,contentType:'text/html',body:`<!DOCTYPE html><title>Synthetic CMS-1500</title><p>Box 23: ${claim.content.encounter.prior_authorization_number||'empty'}</p>`});
    }
    let data;
    if(route===patientPath+'/billing')data=billing;
    else if(route===patientPath+'/billing/visit-summary')data=summary;
    else if(route===patientPath+'/demographics')data={patient_id:patient.id,content:{address:{line1:'100 Synthetic Avenue',city:'Trenton',region:'NJ',postal_code:'08608'}}};
    else if(route==='/api/v1/billing/payers')data={items:[payer],total:1};
-   else if(route===claimEndpoint)data={claim,preflight_issues:[],tracking:{}};
+   else if(route===claimEndpoint)data={claim,preflight_issues:[],submission_issues:submissionIssues,tracking:{}};
    else if(route.startsWith('/api/')||route.startsWith('/auth/'))data=fixture(route,signed,'insured',null,{});
    else if(/^\/$|\.(css|js|png|svg|webp|woff2?|ico)$/.test(route))return request.continue();
    else return request.abort();
@@ -271,8 +280,8 @@ async function checkReadyClaim(browser,viewport){
   await page.locator(trigger).click();
   await page.waitForSelector(send,{visible:true});
   await page.waitForFunction(selector=>getComputedStyle(document.querySelector(selector)).opacity==='1',{},dialog);
-  assert.match(await page.$eval(overview,node=>node.innerText),/Avery Example.*SYN-READY.*Synthetic Medicare.*Prior authorization \(Box 23\).*Ready to send.*This claim has not been sent\./s);
-  assert.equal(await page.$eval(overview+' [data-signed-claim-authorization]',node=>node.textContent),authorization||'Not entered');
+  assert.match(await page.$eval(overview,node=>node.innerText),/Avery Example.*SYN-READY.*Synthetic Medicare.*Prior authorization\s+\(Box 23\).*Ready to send.*This claim has not been sent\./s);
+  assert.equal(await page.$eval(overview+' [data-signed-claim-authorization]',node=>node.querySelector('input')?.value??node.textContent),authorization||'Not entered');
   assert.doesNotMatch(await page.$eval(dialog,node=>node.innerText),/Claim review|Claim progress|Now: Finish the claim|SYN-ACCOUNT-AUTH/);
   assert.deepEqual(await page.$$eval(dialog+' button.primary',nodes=>nodes.filter(node=>node.checkVisibility()).map(node=>node.textContent.trim())),['Review and send']);
   assert.equal(await page.$$eval(dialog+' details[open]',nodes=>nodes.filter(node=>node.checkVisibility()).length),0);
@@ -300,6 +309,54 @@ async function checkReadyClaim(browser,viewport){
   await page.locator(confirm+' button[data-dialog-cancel]').click();
   await page.waitForSelector(confirm,{hidden:true});
   assert.deepEqual(errors,[]);assert.deepEqual(writes,[]);
+  if(viewport.isMobile){
+   // Both claim reads are scoped to the reviewed claim. A printable address does not suppress the
+   // electronic validation of its actual saved fields, and a failed check opens no send prompt.
+   submissionIssues=[{field:'patient_address',message:'Patient address needs valid US state and ZIP for electronic submission.'}];
+   await page.locator(trigger).click();
+   const address=dialog+' [data-check="patient-address"]';
+   await page.waitForSelector(address,{visible:true});
+   assert.match(await page.$eval(address,node=>node.innerText),/US state and ZIP.*Edit patient address/s);
+   assert.equal(await page.$(send),null);
+   assert.equal(await page.$$eval(address,nodes=>nodes.length),1);
+   await page.keyboard.press('Escape');await page.waitForSelector(dialog,{hidden:true});
+   submissionIssues=[];
+   await page.locator(trigger).click();await page.waitForSelector(send,{visible:true});
+
+   // Preview immediately after an edit must flush both the in-flight version and the latest value.
+   const auth=dialog+' input[data-signed-claim-auth]';
+   await page.locator(auth).fill('SYN-FIRST-EDIT');
+   await page.waitForFunction(()=>document.querySelector('[data-signed-claim-auth-status]')?.textContent==='Saving…');
+   for(let attempt=0;attempt<200&&!releaseFirstAuthorization;attempt++)await new Promise(resolve=>setTimeout(resolve,10));
+   assert.equal(typeof releaseFirstAuthorization,'function','the first versioned autosave reached the fixture');
+   await page.locator(auth).fill('SYN-LATEST-EDIT');
+   const openPreview=page.locator(preview).click();
+   releaseFirstAuthorization();
+   await openPreview;
+   const frameNode=await page.waitForSelector(previewSheet+' iframe[title="Claim form (CMS-1500)"]',{visible:true});
+   const frame=await frameNode.contentFrame();
+   await frame.waitForFunction(()=>document.body.innerText.includes('Box 23: SYN-LATEST-EDIT'));
+   assert.equal(previewReads,2);
+   assert.deepEqual(writes.map(item=>[item.method,item.route,item.version,item.body.content.encounter.prior_authorization_number]),[
+    ['PUT',claimEndpoint,'"1"','SYN-FIRST-EDIT'],['PUT',claimEndpoint,'"2"','SYN-LATEST-EDIT']
+   ]);
+   await page.keyboard.press('Escape');await page.waitForSelector(previewSheet,{hidden:true});
+
+   // On version conflict the value stays in the field, with retry, and no confirmation is opened.
+   failNextAuthorization=true;
+   await page.locator(trigger).click();await page.waitForSelector(send,{visible:true});
+   await page.locator(auth).fill('SYN-AUTH-RETRY');
+   await page.locator(send).click();
+   await page.waitForSelector(dialog+' [data-signed-claim-auth-retry]',{visible:true});
+   assert.equal(await page.$eval(auth,node=>node.value),'SYN-AUTH-RETRY');
+   assert.equal(await page.$(confirm),null);
+   await page.locator(dialog+' [data-signed-claim-auth-retry]').click();
+   await page.waitForFunction(()=>document.querySelector('[data-signed-claim-auth-status]')?.textContent==='Saved');
+   await page.locator(send).click();await page.waitForSelector(confirm,{visible:true});
+   await page.locator(confirm+' button[data-dialog-cancel]').click();await page.waitForSelector(confirm,{hidden:true});
+   assert.equal(writes.length,4);
+   assert.ok(writes.every(item=>item.method==='PUT'&&item.route===claimEndpoint));
+  }
   if(!viewport.isMobile){
    await page.locator(trigger).click();
    await page.locator(send).click();
@@ -309,7 +366,7 @@ async function checkReadyClaim(browser,viewport){
    assert.equal(writes[0].route,handoffEndpoint);
    assert.deepEqual(writes[0].body.reviewed_claim,{id:claim.id,version:claim.version});
   }
-  console.log(viewport.width+'px '+theme+' PASS ready claim: one next step, claim-level Box 23, read-only preview and canceled confirmation');
+  console.log(viewport.width+'px '+theme+' PASS ready claim: review, exact Box 23, canceled confirmation'+(viewport.isMobile?', autosave convergence and conflict recovery':''));
  }catch(error){
   console.error(viewport.width,'ready',errors,writes,await page.evaluate(()=>({
    notice:document.getElementById('notice')?.textContent,dialogs:[...document.querySelectorAll('dialog[open]')].map(node=>node.innerText.slice(0,900))

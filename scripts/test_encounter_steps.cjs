@@ -117,9 +117,19 @@ for(const options of [{},{selfPay:true},{signed:true},{signed:true,sent:true},{s
  const f=fixture(),w=f.w;
  const editor=w.$('encounter-billing-editor');
  editor.innerHTML='<form id="billing-account-form"><input name="amount" value="180.00"><select name="diagnoses"><option>A</option></select><input name="ndc"></form>';
+ const diagnosisEditor=w.document.createElement('section');diagnosisEditor.id='encounter-diagnoses';
+ diagnosisEditor.innerHTML='<form id="visit-diagnoses-form"><button type="submit">Save</button></form>';
+ w.$('encounter-revenue').append(diagnosisEditor);
+ w.activeVisit.diagnoses=[];
  f.sync();
- assert.equal(editor.closest('dialog[data-encounter-codes-dialog]').open,false,'blank coding fields are only accessible through Add codes');assert.equal(f.page.querySelector('[data-open-encounter-codes]').textContent,'Add codes');
+ const codeLauncher=f.page.querySelector('[data-open-encounter-codes]');
+ assert.equal(editor.closest('dialog[data-encounter-codes-dialog]').open,false);
+ assert.equal(codeLauncher.textContent,'Add diagnosis');
+ assert.deepEqual([...f.page.querySelectorAll('.encounter-code-needed')].map(node=>node.textContent),['Add a diagnosis to bill this visit.','Add a procedure to bill this visit.']);
  w.activeVisit.diagnoses=[{code:'R51.9',display:'Headache'}];
+ f.sync();
+ assert.equal(codeLauncher.textContent,'Add procedure');
+ assert.equal(f.page.querySelectorAll('.encounter-code-needed').length,1);
  w.encounterRevenueState.data.summary.account.content={lines:[{code:'99213',description:'Office visit',units:1,amount_cents:18000}]};
  f.sync();
  const panel=f.page.querySelector('dialog[data-encounter-codes-dialog]');
@@ -127,6 +137,7 @@ for(const options of [{},{selfPay:true},{signed:true},{signed:true,sent:true},{s
  assert.equal(f.page.querySelector('[data-encounter-codes-heading] h3').textContent,'Diagnoses & procedures');
  assert.match(f.page.querySelector('[data-encounter-codes-summary]').textContent,/R51.9.*99213/);
  assert.equal(f.page.querySelector('[data-open-encounter-codes]').textContent,'Edit codes');
+ assert.equal(f.page.querySelectorAll('.encounter-code-needed').length,0);
  assert.equal(panel.querySelector('#billing-account-form'),editor.firstElementChild);
  f.page.querySelector('[data-open-encounter-codes]').click();
  const amount=editor.querySelector('input');amount.focus();amount.value='192.00';

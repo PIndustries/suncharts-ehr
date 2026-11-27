@@ -590,7 +590,7 @@ function chargeDiagnosisCell(l){return chargeDiagnosisCodesField(l)+'<div class=
 // On the one-page visit the codes & charges block carries its own stable diagnoses host
 // (#encounter-diagnoses, drawn and kept by the revenue block).
 function chargeDiagnosisSectionMarkup(){
- return '<section id="encounter-diagnoses" class="charge-visit-diagnoses encounter-diagnoses" data-charge-diagnosis-editor><div id="visit-diagnoses"><h4>Diagnoses (ICD-10)</h4><p class="muted">Loading…</p></div><div class="actions"><button type="button" data-note-suggest hidden>Suggest codes</button><span data-note-suggest-status role="status"></span></div><div id="note-diagnosis-suggestions" class="actions"></div></section>';
+ return '<section id="encounter-diagnoses" class="charge-visit-diagnoses encounter-diagnoses" data-charge-diagnosis-editor><div id="visit-diagnoses"><h4>Diagnoses (ICD-10)</h4><p class="muted">Loading…</p></div></section>';
 }
 function openChargeDiagnosisSection(){
  if(typeof renderVisitDiagnoses!=='function'||typeof activeVisit==='undefined'||!activeVisit)return;
@@ -642,11 +642,14 @@ function chargePriorAuthorizationFinishedMarkup(account,{claim,readOnly=false}={
 }
 // Saved onto the draft claim the way every other claim edit is: read it back for its version, put
 // the whole content back with the number changed, and let the claim be checked again.
-async function chargePriorAuthorizationSave(claimId,value,isCurrent=()=>true){
+async function chargePriorAuthorizationSave(claimId,value,isCurrent=()=>true,expectedNumber){
  const fresh=(await api(`/api/v1/billing/claims/${encodeURIComponent(claimId)}`)).claim;
- if(!isCurrent()||fresh?.id!==claimId)return false;
+ if(!isCurrent(fresh)||fresh?.id!==claimId)return false;
  if(fresh.status!=='draft')throw new Error('This claim has already been released. Send a corrected claim to change the number.');
  const number=String(value||'').trim().slice(0,50),encounter={...(fresh.content.encounter||{})};
+ const recorded=String(encounter.prior_authorization_number||'').trim();
+ if(recorded===number)return fresh;
+ if(expectedNumber!==undefined&&recorded!==expectedNumber)throw new Error('The prior authorization number changed elsewhere. Copy your entry before reviewing the current claim.');
  if(number)encounter.prior_authorization_number=number;else delete encounter.prior_authorization_number;
  const content={...fresh.content,encounter};
  if(!Object.keys(encounter).length)delete content.encounter;

@@ -135,10 +135,17 @@ impl Fixture {
     async fn ask(&self, a: &Actor, request: Uuid, position: i64) -> (Result<Value>, Sent) {
         let sent: Sent = Arc::default();
         let log = sent.clone();
-        let out = request_for(&self.db, a, self.visit, request, move |body| async move {
-            log.lock().unwrap().push(body);
-            Ok(json!({"request_id":request,"status":"queued","position":position}))
-        })
+        let out = request_for(
+            &self.db,
+            a,
+            self.visit,
+            request,
+            None,
+            move |body| async move {
+                log.lock().unwrap().push(body);
+                Ok(json!({"request_id":request,"status":"queued","position":position}))
+            },
+        )
         .await;
         (out, sent)
     }
@@ -344,9 +351,64 @@ async fn asking_again_while_waiting_returns_the_same_request() {
     );
 }
 #[tokio::test]
+async fn a_stale_automatic_request_does_not_send_the_newer_note() {
+    let f = setup().await;
+    let version: i64 =
+        sqlx::query_scalar("SELECT version FROM visits WHERE tenant_id=$1 AND id=$2")
+            .bind(f.owner.tenant_id)
+            .bind(f.visit)
+            .fetch_one(&f.db)
+            .await
+            .unwrap();
+    sqlx::query("UPDATE visits SET version=version+1,note=$3 WHERE tenant_id=$1 AND id=$2")
+        .bind(f.owner.tenant_id)
+        .bind(f.visit)
+        .bind(json!({"assessment":"Newer synthetic assessment"}))
+        .execute(&f.db)
+        .await
+        .unwrap();
+    let request_id = Uuid::new_v4();
+    let stale = request_for(
+        &f.db,
+        &f.owner,
+        f.visit,
+        request_id,
+        Some(version),
+        |_| async {
+            panic!("A stale request must not contact SunCharts AI");
+        },
+    )
+    .await;
+    assert!(matches!(stale, Err(Error::Conflict(_))));
+    assert_eq!(f.audits("visit.diagnosis_suggestions_requested").await, 0);
+    assert_eq!(
+        f.count("SELECT count(*) FROM diagnosis_suggestion_requests WHERE tenant_id=$1")
+            .await,
+        0
+    );
+    let current = request_for(
+        &f.db,
+        &f.owner,
+        f.visit,
+        request_id,
+        Some(version + 1),
+        |body| async move {
+            assert!(body["messages"][1]["content"]
+                .as_str()
+                .unwrap()
+                .contains("Newer synthetic assessment"));
+            Ok(json!({"request_id":request_id,"status":"queued","position":0}))
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(current["request_id"], json!(request_id));
+}
+
+#[tokio::test]
 async fn a_refused_submit_stores_nothing_and_says_why() {
     let f = setup().await;
-    let out = request_for(&f.db, &f.owner, f.visit, Uuid::new_v4(), |_| async {
+    let out = request_for(&f.db, &f.owner, f.visit, Uuid::new_v4(), None, |_| async {
         Err(Error::Unavailable(
             "Too many requests are waiting. Try again in a few minutes.",
         ))
@@ -356,7 +418,7 @@ async fn a_refused_submit_stores_nothing_and_says_why() {
         err_text(out),
         "Too many requests are waiting. Try again in a few minutes."
     );
-    let off = request_for(&f.db, &f.owner, f.visit, Uuid::new_v4(), |_| async {
+    let off = request_for(&f.db, &f.owner, f.visit, Uuid::new_v4(), None, |_| async {
         Err(Error::Conflict(
             "SunCharts AI is not switched on for this practice yet.",
         ))

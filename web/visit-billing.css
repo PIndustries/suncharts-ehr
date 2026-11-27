@@ -290,24 +290,22 @@
 @keyframes reader-pulse{0%,100%{box-shadow:0 0 0 0 color-mix(in srgb,var(--accent) 45%,transparent)}50%{box-shadow:0 0 0 8px transparent}}
 .reader-payment[data-reader-payment="approved"] .reader-state b{color:var(--success-text)}
 @media(prefers-reduced-motion:reduce){.reader-steps li.is-current span,.collect-done-mark,#encounter-hosted-copay-reader:not(:empty){animation:none}}
-.collect-sheet:is([data-method="cash"],[data-method="check"]) #encounter-hosted-copay{display:none}
+.collect-sheet:is([data-method="cash"],[data-method="check"]):not([data-collect-attention]) #encounter-hosted-copay{display:none}
 
 .code-check-fix{border-left:3px solid var(--danger-line,var(--warning-line));padding:4px 10px;margin:6px 0}
 .code-check-review{border-left:3px solid var(--warning-line);padding:4px 10px;margin:6px 0}
 
-.collect-target{display:grid;grid-template-columns:minmax(0,220px) 1fr auto;gap:12px;align-items:end;margin:0 0 12px}
-.collect-target input{font-size:1.2rem}
+.collect-progress{display:flex;align-items:baseline;justify-content:space-between;flex-wrap:wrap;gap:12px;margin:0 0 12px}
 .collect-taken{list-style:none;margin:0;padding:0;display:grid;gap:2px;color:var(--success-text);align-self:center}
 .collect-left{display:grid;justify-items:end;margin:0}
-.collect-sheet #visit-billing-collect .collect-target:not(:has(.collect-taken)) .collect-left{display:none}
 /* A single cash or check payment already has its editable tender amount below. */
-.collect-sheet:is([data-method="cash"],[data-method="check"]) #visit-billing-collect .collect-target:not([data-collect-split]):not(:has(.collect-taken)){display:none}
 .collect-left span{color:var(--muted);font-size:var(--fs-sm)}
 .collect-left b{font-size:1.4rem}
 .collect-step-done{padding:10px 12px;border-left:3px solid var(--success-line);background:var(--success-bg);border-radius:0}
-@media(max-width:700px){.collect-target{grid-template-columns:1fr}}
 
 .collect-settled{margin:0 0 12px;padding:8px 12px;border:1px solid var(--success-line);border-radius:8px;background:var(--success-bg);color:var(--success-text);font-weight:600}
+.collect-past-balances{margin:0 0 12px}.collect-past-balances>summary{cursor:pointer;color:var(--accent)}
+[data-collect-availability]:empty{display:none}
 .collect-encounters{margin:0 0 12px;padding:8px 12px;border:1px solid var(--line);border-radius:8px;display:grid;gap:2px;min-width:0}
 .collect-encounters legend{padding:0 4px;color:var(--muted);font-size:var(--fs-sm)}
 .collect-encounters .collect-encounter{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:10px;align-items:center;min-height:36px;cursor:pointer;font-weight:inherit}
@@ -758,6 +756,8 @@ label.claim-field-correction small#practice-npi-correction{color:var(--warning-t
 #signed-note-record>summary{font-weight:600;cursor:pointer}
 #signed-note-record[open]>summary{margin-bottom:10px}
 [data-encounter-codes-heading]{margin:20px 0 6px}
+[data-encounter-codes-heading] .actions{margin:0}
+.note-field-needed{color:var(--error-text);font-weight:600}
 [data-encounter-codes-summary].encounter-codes-strip{grid-template-columns:repeat(2,minmax(0,1fr));margin:0}
 [data-previous-procedure-choices][hidden]{display:none}
 [data-encounter-codes-summary][hidden],[data-encounter-codes-heading][hidden]{display:none}
@@ -793,6 +793,8 @@ dialog.encounter-codes-dialog[open]{display:flex;flex-direction:column}
 .signed-claim-person{font-size:var(--fs-xl);font-weight:700;line-height:1.3}
 .signed-claim-meta,.signed-claim-stage-facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,130px),1fr));gap:8px 16px;margin:12px 0}
 .signed-claim-meta dt,.signed-claim-stage-facts dt{font-size:var(--fs-sm);color:var(--muted)}
+.signed-claim-meta dt label{display:inline;font:inherit}
+.signed-claim-meta [data-signed-claim-auth-status]:empty{display:none}
 .signed-claim-meta dd,.signed-claim-stage-facts dd{font-weight:600;margin:0}
 .signed-claim-box-number{white-space:nowrap}
 .signed-claim-stage{margin:16px 0 20px;padding:16px;border:1px solid var(--line);border-radius:10px;background:var(--surface-soft)}
