@@ -685,12 +685,13 @@ async function run(browser, viewport, reducedMotion, failures, scenario = 'blank
       });
       assert.deepEqual(layout,{signAfterCodes:true,combinedHidden:true,saveBelongsToNote:true,claimOutsideNote:true});
       assert.doesNotMatch(await page.$eval('[data-note-actions]',actions=>actions.innerText),/signing locks the note/i);
-      await page.locator('#note-form [data-action="sign"]:not([data-review-after-sign])').click();
+      await page.locator(next).click();
       await page.waitForSelector('#note-form',{hidden:true});
+      await page.waitForSelector('dialog[data-signed-claim-details][open]',{visible:true});
       assert.equal(signatures,1);
       assert.equal(await page.$('[role=alertdialog]'),null);
-      assert.deepEqual(errors,[],'Signing alone does not post charges or transmit a claim');
-      console.log('PASS insured visit: one next action signs the note after coding; the claim has its own review.');
+      assert.deepEqual(errors,[],'Opening review after a signature does not post charges or transmit a claim');
+      console.log('PASS insured visit: one next action signs the note after coding and opens claim review.');
       return;
     }
     if(scenario==='early-copay'){

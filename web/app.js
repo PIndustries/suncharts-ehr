@@ -1942,8 +1942,10 @@ if(typeof document!=='undefined'&&document.addEventListener)document.addEventLis
         if(button.dataset.action==='sign-bill')await visitNoteBill();else notice(signNextPlan().done);
       }finally{restorePosition?.();}
       if(reviewAfterSign&&selected===patient&&activeVisit?.id===visitId&&me===signer){
-        encounterStepOpen('claim',{focus:true});
-        $('visit-page-host')?.querySelector('[data-encounter-claim-status]:not([hidden]) [data-open-signed-claim-details]')?.click();
+        await loadEncounterRevenueStatus(encounterChargeAccount(),false,{prepare:false});
+        if(selected!==patient||activeVisit?.id!==visitId||me!==signer||chartSection!=='visits'||inRecordArea())return;
+        encounterStepsSync();
+        visitReviewOpen();
       }
     }
   });
