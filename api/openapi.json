@@ -6801,6 +6801,150 @@
         }
       }
     },
+    "/api/v1/patients/{p}/billing/accounts/{id}/coverage": {
+      "get": {
+        "operationId": "postedBillingCoverageOptions",
+        "description": "Read compatible insurance choices and current correction restrictions for the specified posted charge account. The acting staff member must have billing edit permission.",
+        "parameters": [
+          {
+            "name": "p",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "security": [
+          {
+            "oauth2": [
+              "billing.read"
+            ]
+          },
+          {
+            "browserSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Current posted account, eligible coverage choices and any reason it is blocked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PostedBillingCoverageOptions"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Sign in required"
+          },
+          "403": {
+            "description": "Role or billing scope denied"
+          },
+          "404": {
+            "description": "Tenant/patient scoped record not found"
+          }
+        }
+      },
+      "post": {
+        "operationId": "applyPostedBillingCoverage",
+        "description": "Apply active insurance to eligible posted self-pay charges. Preserve existing codes, charges and payment records. Requires the current posted account version and an idempotency request ID. It does not send a claim.",
+        "parameters": [
+          {
+            "name": "p",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^\"[1-9][0-9]*\"$"
+            },
+            "description": "Quoted current resource version"
+          }
+        ],
+        "security": [
+          {
+            "oauth2": [
+              "billing.write"
+            ]
+          },
+          {
+            "browserSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BillingAccount"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request or coverage"
+          },
+          "401": {
+            "description": "Sign in required"
+          },
+          "403": {
+            "description": "Role or billing scope denied"
+          },
+          "404": {
+            "description": "Tenant/patient scoped record not found"
+          },
+          "409": {
+            "description": "The account, selected coverage, or related billing activity no longer permits the correction"
+          },
+          "428": {
+            "description": "Current quoted If-Match required"
+          },
+          "500": {
+            "description": "Database/audit failure; no partial mutation committed"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApplyPostedBillingCoverage"
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/patients/{p}/billing/accounts/{id}/history": {
       "get": {
         "operationId": "billingAccountHistory",
@@ -46524,6 +46668,102 @@
         "required": [
           "request_id",
           "content"
+        ]
+      },
+      "ApplyPostedBillingCoverage": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "request_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "coverage_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "coverage_version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          }
+        },
+        "required": [
+          "request_id",
+          "coverage_id",
+          "coverage_version",
+          "reason"
+        ]
+      },
+      "PostedBillingCoverageOptions": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "account_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "account_version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "service_date": {
+            "type": "string",
+            "format": "date"
+          },
+          "choices": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "version": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "payer_name": {
+                  "type": "string"
+                },
+                "plan_name": {
+                  "type": "string"
+                },
+                "priority": {
+                  "type": "string"
+                },
+                "member_id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "id",
+                "version",
+                "payer_name",
+                "plan_name",
+                "priority",
+                "member_id"
+              ]
+            }
+          },
+          "blocked_reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "account_id",
+          "account_version",
+          "service_date",
+          "choices"
         ]
       },
       "BillingAccount": {

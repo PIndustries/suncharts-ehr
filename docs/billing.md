@@ -72,6 +72,18 @@ an existing signed visit offers **Review signed encounter**. Coverage
 verification is a staff attestation, separate from an eligibility check with the
 insurer.
 
+### Applying coverage to posted self-pay charges
+
+On a signed encounter with posted self-pay charges, use **Apply insurance** to
+select a saved policy active on the service date. The coverage correction keeps
+the posted diagnosis and procedure codes, prices, and payments. Review the new
+insurance and patient balances, then open claim review to check and send the
+claim. The coverage correction itself keeps a separate audit record.
+
+If the visit has claim history, a pending payment or refund, or an unresolved
+electronic invoice or payment plan, review that activity before changing
+billing coverage. The encounter shows the reason when it cannot apply a policy.
+
 ### Checking eligibility
 
 **Check eligibility** on a coverage asks the insurer through Claim.MD straight

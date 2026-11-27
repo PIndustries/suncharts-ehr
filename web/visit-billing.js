@@ -413,6 +413,7 @@ function visitBillingEventText(event){
  switch(event.code){
   case 'charges_added':return `Charges added: ${amount}`;
   case 'charges_changed':return 'Charges changed';
+  case 'coverage_applied':return 'Insurance applied to posted charges';
    case 'charges_posted':return `Charges posted: ${amount}. Charges are posted`;
   case 'charges_removed':return 'Charges removed';
   case 'payment_received':return `Payment taken: ${amount}${by}`;

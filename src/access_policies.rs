@@ -360,6 +360,9 @@ fn action(method: &Method, path: &str) -> Option<Action> {
             {
                 return Some(Action::Edit);
             }
+            if path == "/api/v1/patients/{}/billing/accounts/{}/coverage" {
+                return Some(Action::Edit);
+            }
             if path.starts_with("/api/v1/patients/") && path.ends_with("/denial") {
                 return Some(Action::Edit);
             }

@@ -254,6 +254,10 @@ class DeploymentArtifactsTest(unittest.TestCase):
 
     def test_release_manifest_binds_digest_source_and_schema(self):
         version = (ROOT / "BUILD_VERSION").read_text().strip()
+        expected_schema = max(
+            int(path.name.split("_", 1)[0])
+            for path in (ROOT / "migrations").glob("[0-9][0-9][0-9][0-9]_*.sql")
+        )
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "release.json"
             result = subprocess.run(
@@ -274,7 +278,7 @@ class DeploymentArtifactsTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             manifest = json.loads(output.read_text())
             self.assertEqual(manifest["version"], version)
-            self.assertEqual(manifest["database"]["schema_revision"], 131)
+            self.assertEqual(manifest["database"]["schema_revision"], expected_schema)
             self.assertEqual(manifest["database"]["rollback_mode"], "restore_pre_update_backup")
             self.assertTrue(manifest["image_reference"].endswith("b" * 64))
 

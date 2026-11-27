@@ -160,6 +160,21 @@ async fn send_statement(
         }
         return Ok(Json(json!({"sent":true,"channel":"portal"})));
     }
+    let superseded: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM billing_account_coverage_applications c
+             JOIN patient_invoice_snapshots i ON i.tenant_id=c.tenant_id AND i.account_id=c.account_id
+             WHERE c.tenant_id=$1 AND i.id=$2 AND i.patient_id=$3 AND i.account_version<c.account_version)",
+    )
+    .bind(a.tenant_id)
+    .bind(id)
+    .bind(p)
+    .fetch_one(&mut *tx)
+    .await?;
+    if superseded {
+        return Err(Error::Conflict(
+            "Insurance was applied after this statement. Review the current patient balance before sending a new statement.",
+        ));
+    }
     let portal:Uuid=sqlx::query_scalar("SELECT id FROM patient_portal_accounts WHERE tenant_id=$1 AND patient_id=$2 AND status='active' FOR SHARE").bind(a.tenant_id).bind(p).fetch_optional(&mut *tx).await?.ok_or(Error::Conflict("No sending channel is configured"))?;
     let thread = Uuid::new_v4();
     // The portal statement route authenticates the patient and reads only a delivered snapshot.

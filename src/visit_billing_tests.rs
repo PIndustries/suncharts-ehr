@@ -3026,6 +3026,434 @@ fn synthetic_lines(code: &str, cents: i64) -> Value {
     json!([{"code_system":"CPT","code":code,"description":"Synthetic service","modifiers":"","units":1,"amount_cents":cents,"diagnosis_codes":["Z00.00 - Synthetic exam"]}])
 }
 
+fn posted_coverage_path(patient: Uuid, account: &Value) -> String {
+    format!(
+        "/api/v1/patients/{patient}/billing/accounts/{}/coverage",
+        id(account)
+    )
+}
+
+fn coverage_application(coverage: &Value) -> Value {
+    json!({
+        "request_id": Uuid::new_v4(),
+        "coverage_id": id(coverage),
+        "coverage_version": version(coverage),
+        "reason": "Synthetic insurance entered after charges posted"
+    })
+}
+
+#[tokio::test]
+async fn posted_coverage_applies_without_replacing_codes_receipts_or_invoice_history() {
+    let f = setup().await;
+    let (p, appointment, visit) = f.visit(true).await;
+    let draft = f.charges(p, visit, None, 45000).await;
+    let mut content = draft["content"].clone();
+    content["lines"] = json!([
+        {"code_system":"CPT","code":"99204","description":"Synthetic new visit","modifiers":"25","units":1,"amount_cents":35000,"diagnosis_codes":["Z00.00"]},
+        {"code_system":"CPT","code":"97110","description":"Synthetic therapeutic exercise","modifiers":"GP","units":2,"amount_cents":10000,"diagnosis_codes":["M62.81"]}
+    ]);
+    let draft = f
+        .ok(
+            "PUT",
+            &format!("/api/v1/patients/{p}/billing/accounts/{}", id(&draft)),
+            json!({"content":content,"reason":"Record synthetic codes before insurance"}),
+            Some(version(&draft)),
+        )
+        .await;
+    f.copay(p, appointment, 1000).await;
+    let posted = f.post(p, &draft).await;
+    let account = id(&posted);
+    let invoice_path = format!("/api/v1/patients/{p}/billing/accounts/{account}/invoices");
+    let invoice = f
+        .ok(
+            "POST",
+            &invoice_path,
+            json!({"request_id":Uuid::new_v4(),"responsibility_cents":45000,"reason":"Reviewed synthetic self-pay invoice"}),
+            Some(version(&posted)),
+        )
+        .await;
+    assert_eq!(invoice["snapshot"]["amount_due_cents"], 44000);
+    assert_eq!(f.banner(p).await, 44000);
+    assert!(posted["coverage_snapshot"].is_null());
+
+    // Insurance is entered after the services were coded, posted, and documented on an invoice.
+    let (_, policy) = f.coverage(p, "primary", "SYN-POSTED", Some(2500)).await;
+    let path = posted_coverage_path(p, &posted);
+    let options = f.ok("GET", &path, json!(null), None).await;
+    assert_eq!(options["account_id"], json!(account));
+    assert_eq!(options["account_version"], posted["version"]);
+    assert_eq!(options["service_date"], "2026-10-25");
+    assert_eq!(options["choices"][0]["id"], policy["id"]);
+    assert_eq!(options["choices"][0]["version"], policy["version"]);
+    assert!(options["blocked_reason"].is_null());
+    let request = coverage_application(&policy);
+    let applied = f
+        .ok("POST", &path, request.clone(), Some(version(&posted)))
+        .await;
+    assert_eq!(applied["id"], posted["id"]);
+    assert_eq!(applied["status"], "posted");
+    assert_eq!(applied["total_cents"], 45000);
+    assert_eq!(version(&applied), version(&posted) + 1);
+    let mut expected = posted["content"].clone();
+    expected["coverage_id"] = policy["id"].clone();
+    assert_eq!(applied["content"], expected);
+    assert_eq!(applied["diagnosis_snapshot"], posted["diagnosis_snapshot"]);
+    assert_eq!(applied["coverage_snapshot"]["coverage"]["id"], policy["id"]);
+    assert_eq!(
+        applied["coverage_snapshot"]["payer"]["content"]["payer_code"],
+        "SYN-POSTED"
+    );
+
+    // Repeating the exact request after a lost response must not create another change.
+    let replay = f
+        .ok("POST", &path, request.clone(), Some(version(&posted)))
+        .await;
+    assert_eq!(replay, applied);
+    let mut conflicting_replay = request;
+    conflicting_replay["reason"] = json!("Changed reason under an already used request ID");
+    assert_eq!(
+        f.call(
+            &f.owner,
+            "POST",
+            &path,
+            conflicting_replay,
+            Some(version(&applied))
+        )
+        .await
+        .0,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(f.action_count("billing.coverage_applied", account).await, 1);
+    let history = f
+        .ok(
+            "GET",
+            &format!("/api/v1/patients/{p}/billing/accounts/{account}/history"),
+            json!(null),
+            None,
+        )
+        .await;
+    assert_eq!(
+        history["items"][0]["snapshot"]["coverage_snapshot"],
+        applied["coverage_snapshot"]
+    );
+    assert_eq!(history["items"][0]["actor_id"], json!(f.owner.sub));
+    assert!(history["items"][1]["snapshot"]["coverage_snapshot"].is_null());
+    assert_eq!(
+        history["items"][1]["snapshot"]["content"],
+        posted["content"]
+    );
+
+    let s = f.summary(&f.owner, p, visit).await;
+    adds_up(&s);
+    assert_eq!(s["charges_cents"], 45000);
+    assert_eq!(s["balance_cents"], 44000);
+    assert_eq!(s["insurance"]["insured"], true);
+    assert_eq!(s["insurance"]["pending_cents"], 42500);
+    assert_eq!(s["patient"]["receipts_applied_cents"], 1000);
+    assert_eq!(s["patient"]["responsibility_source"], "plan_copay");
+    assert_eq!(s["patient"]["owes_now_cents"], 1500);
+    assert!(s["timeline"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|event| event["code"] == "coverage_applied"));
+    assert_eq!(f.banner(p).await, 1500);
+    assert_eq!(
+        f.ok("GET", &invoice_path, json!(null), None).await["items"][0],
+        invoice
+    );
+    let (status, error) = f
+        .call(
+            &f.owner,
+            "POST",
+            &format!(
+                "/api/v1/patients/{p}/billing/statements/{}/deliveries",
+                id(&invoice)
+            ),
+            json!({"request_id":Uuid::new_v4()}),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert!(error["message"]
+        .as_str()
+        .unwrap()
+        .contains("Insurance was applied"));
+    assert_eq!(
+        f.count("SELECT count(*) FROM billing_copay_allocations WHERE tenant_id=$1")
+            .await,
+        1
+    );
+
+    // The same posted account supplies a claim draft, and nothing has been sent.
+    let (status, prepared) = f.prepare(&f.owner, p, account, json!({})).await;
+    assert_eq!(status, StatusCode::OK, "{prepared}");
+    let claim = f.claim(&prepared["claim_id"]).await;
+    assert_eq!(claim["status"], "draft");
+    assert_eq!(
+        claim["snapshot"]["account"]["content"]["lines"],
+        posted["content"]["lines"]
+    );
+    assert_eq!(
+        claim["snapshot"]["account"]["coverage_snapshot"],
+        applied["coverage_snapshot"]
+    );
+    assert_eq!(
+        f.count("SELECT count(*) FROM ehr_claims WHERE tenant_id=$1")
+            .await,
+        1
+    );
+    assert_eq!(
+        f.count("SELECT count(*) FROM edi_delivery_jobs WHERE tenant_id=$1")
+            .await,
+        0
+    );
+}
+
+#[tokio::test]
+async fn posted_coverage_requires_current_account_authority_and_service_date() {
+    let f = setup().await;
+    let (p, _, visit) = f.visit(true).await;
+    let (other_patient, _, _) = f.visit(true).await;
+    let (_, other_policy) = f
+        .coverage(other_patient, "primary", "SYN-OTHER", None)
+        .await;
+    let (_, current) = f.coverage(p, "primary", "SYN-CURRENT", None).await;
+    let (_, future) = f.coverage(p, "secondary", "SYN-FUTURE", None).await;
+    let mut future_content = future["content"].clone();
+    future_content["effective_date"] = json!("2026-11-01");
+    let future = f
+        .ok(
+            "PUT",
+            &format!("/api/v1/patients/{p}/coverages/{}", id(&future)),
+            json!({"content":future_content,"reason":"Synthetic policy began after the visit"}),
+            Some(version(&future)),
+        )
+        .await;
+    let draft = f.charges(p, visit, None, 45000).await;
+    let path = posted_coverage_path(p, &draft);
+    let request = coverage_application(&current);
+    assert_eq!(
+        f.call(
+            &f.owner,
+            "POST",
+            &path,
+            request.clone(),
+            Some(version(&draft))
+        )
+        .await
+        .0,
+        StatusCode::CONFLICT
+    );
+    let posted = f.post(p, &draft).await;
+    let options = f.ok("GET", &path, json!(null), None).await;
+    let choices = options["choices"].as_array().unwrap();
+    assert_eq!(choices.len(), 1);
+    assert_eq!(choices[0]["id"], current["id"]);
+    assert_eq!(
+        f.call(&f.owner, "POST", &path, request.clone(), None)
+            .await
+            .0,
+        StatusCode::PRECONDITION_REQUIRED
+    );
+    assert_eq!(
+        f.call(
+            &f.owner,
+            "POST",
+            &path,
+            request.clone(),
+            Some(version(&draft))
+        )
+        .await
+        .0,
+        StatusCode::CONFLICT
+    );
+    let read_only = f.staff(Role::ReadOnly, "read_only").await;
+    let stale_policy = json!({
+        "request_id": Uuid::new_v4(),
+        "coverage_id": id(&current),
+        "coverage_version": version(&current) + 1,
+        "reason": "Synthetic wrong policy revision"
+    });
+    assert_eq!(
+        f.call(
+            &f.owner,
+            "POST",
+            &path,
+            stale_policy,
+            Some(version(&posted))
+        )
+        .await
+        .0,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        f.call(&read_only, "POST", &path, request, Some(version(&posted)))
+            .await
+            .0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        f.call(
+            &f.owner,
+            "POST",
+            &posted_coverage_path(other_patient, &posted),
+            coverage_application(&current),
+            Some(version(&posted)),
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    for invalid in [future, other_policy] {
+        let (status, result) = f
+            .call(
+                &f.owner,
+                "POST",
+                &path,
+                coverage_application(&invalid),
+                Some(version(&posted)),
+            )
+            .await;
+        assert!(
+            matches!(
+                status,
+                StatusCode::BAD_REQUEST | StatusCode::NOT_FOUND | StatusCode::CONFLICT
+            ),
+            "{status}: {result}"
+        );
+    }
+    assert_eq!(f.banner(p).await, 45000);
+    assert_eq!(
+        f.action_count("billing.coverage_applied", id(&posted))
+            .await,
+        0
+    );
+}
+
+#[tokio::test]
+async fn posted_coverage_waits_for_pending_payment_and_serializes_conflicting_changes() {
+    let f = setup().await;
+    let (p, _, visit) = f.visit(true).await;
+    let posted = f.post(p, &f.charges(p, visit, None, 45000).await).await;
+    let account = id(&posted);
+    let (_, policy) = f.coverage(p, "primary", "SYN-PENDING", None).await;
+    let setting = Uuid::new_v4();
+    let payment = Uuid::new_v4();
+    sqlx::query("INSERT INTO payment_settings (tenant_id,id,mode) VALUES($1,$2,'own_stripe')")
+        .bind(f.owner.tenant_id)
+        .bind(setting)
+        .execute(&f.db)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO payment_credentials (tenant_id,setting_id,revision,encrypted_config) VALUES($1,$2,1,'z'::bytea)")
+        .bind(f.owner.tenant_id)
+        .bind(setting)
+        .execute(&f.db)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO payment_attempts (tenant_id,id,account_id,setting_id,credential_revision,request_id,creation_hash,requested_by,amount_cents,status,provider_mode,provider_account_id) VALUES($1,$2,$3,$4,1,$5,'synthetic',$6,45000,'creating','own_stripe','acct_synthetic')")
+        .bind(f.owner.tenant_id)
+        .bind(payment)
+        .bind(account)
+        .bind(setting)
+        .bind(Uuid::new_v4())
+        .bind(f.owner.sub)
+        .execute(&f.db)
+        .await
+        .unwrap();
+    let path = posted_coverage_path(p, &posted);
+    let options = f.ok("GET", &path, json!(null), None).await;
+    assert_eq!(options["choices"], json!([]));
+    assert!(options["blocked_reason"]
+        .as_str()
+        .unwrap()
+        .contains("in progress"));
+    assert_eq!(
+        f.call(
+            &f.owner,
+            "POST",
+            &path,
+            coverage_application(&policy),
+            Some(version(&posted)),
+        )
+        .await
+        .0,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(f.action_count("billing.coverage_applied", account).await, 0);
+    sqlx::query("UPDATE payment_attempts SET status='expired' WHERE tenant_id=$1 AND id=$2")
+        .bind(f.owner.tenant_id)
+        .bind(payment)
+        .execute(&f.db)
+        .await
+        .unwrap();
+    let (first, second) = tokio::join!(
+        f.call(
+            &f.owner,
+            "POST",
+            &path,
+            coverage_application(&policy),
+            Some(version(&posted))
+        ),
+        f.call(
+            &f.owner,
+            "POST",
+            &path,
+            coverage_application(&policy),
+            Some(version(&posted))
+        ),
+    );
+    let mut statuses = [first.0, second.0];
+    statuses.sort();
+    assert_eq!(statuses, [StatusCode::OK, StatusCode::CONFLICT]);
+    assert_eq!(f.action_count("billing.coverage_applied", account).await, 1);
+}
+
+#[tokio::test]
+async fn posted_coverage_rolls_back_when_its_audit_cannot_be_written() {
+    let f = setup().await;
+    let (p, _, visit) = f.visit(true).await;
+    let posted = f.post(p, &f.charges(p, visit, None, 45000).await).await;
+    let (_, policy) = f.coverage(p, "primary", "SYN-AUDIT", None).await;
+    sqlx::query("CREATE FUNCTION reject_test_coverage_audit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.action='billing.coverage_applied' THEN RAISE EXCEPTION 'synthetic coverage audit failure'; END IF; RETURN NEW; END $$").execute(&f.db).await.unwrap();
+    sqlx::query("CREATE TRIGGER reject_test_coverage_audit BEFORE INSERT ON audit_events FOR EACH ROW EXECUTE FUNCTION reject_test_coverage_audit()").execute(&f.db).await.unwrap();
+    let path = posted_coverage_path(p, &posted);
+    let request = coverage_application(&policy);
+    assert_eq!(
+        f.call(
+            &f.owner,
+            "POST",
+            &path,
+            request.clone(),
+            Some(version(&posted))
+        )
+        .await
+        .0,
+        StatusCode::INTERNAL_SERVER_ERROR
+    );
+    let account: (i64, Option<Uuid>, Option<Value>) = sqlx::query_as(
+        "SELECT version,coverage_id,coverage_snapshot FROM billing_accounts WHERE tenant_id=$1 AND id=$2",
+    )
+    .bind(f.owner.tenant_id)
+    .bind(id(&posted))
+    .fetch_one(&f.db)
+    .await
+    .unwrap();
+    assert_eq!(account, (version(&posted), None, None));
+    sqlx::query("DROP TRIGGER reject_test_coverage_audit ON audit_events")
+        .execute(&f.db)
+        .await
+        .unwrap();
+    let applied = f.ok("POST", &path, request, Some(version(&posted))).await;
+    assert_eq!(applied["coverage_snapshot"]["coverage"]["id"], policy["id"]);
+    assert_eq!(
+        f.action_count("billing.coverage_applied", id(&posted))
+            .await,
+        1
+    );
+}
+
 #[tokio::test]
 async fn charge_correction_void_exposes_the_current_account_for_one_new_review() {
     let f = setup().await;

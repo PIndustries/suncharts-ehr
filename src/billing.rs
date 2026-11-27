@@ -18,6 +18,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
+#[path = "billing/coverage_application.rs"]
+mod coverage_application;
 #[path = "billing/dead_ends.rs"]
 mod dead_ends;
 #[path = "billing/overview.rs"]
@@ -878,6 +880,7 @@ pub fn router() -> Router<State> {
             "/api/v1/patients/{p}/billing/accounts/{id}/copays/apply",
             post(apply_recorded_copays),
         )
+        .merge(coverage_application::router())
         .route("/api/v1/patients/{p}/billing/accounts", post(new_account))
         .route(
             "/api/v1/patients/{p}/billing/accounts/{id}",
