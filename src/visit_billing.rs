@@ -250,7 +250,9 @@ const BALANCES: &str = r#"WITH acct AS (
   CASE WHEN jsonb_typeof(m.snapshot->'responsibility_cents')='number' THEN (m.snapshot->>'responsibility_cents')::bigint END AS statement_responsibility
  FROM acct a LEFT JOIN ledger l ON l.account_id=a.id LEFT JOIN desk d ON d.appointment_id=a.appointment_id
  LEFT JOIN LATERAL (SELECT i.id,i.snapshot FROM patient_invoice_snapshots i WHERE i.tenant_id=a.tenant_id AND i.account_id=a.id ORDER BY i.created_at DESC,i.id DESC LIMIT 1) i ON true
- LEFT JOIN LATERAL (SELECT i.id,i.account_version,i.created_at,i.snapshot FROM patient_invoice_snapshots i WHERE i.tenant_id=a.tenant_id AND i.account_id=a.id AND a.posted AND i.snapshot->>'reason' IS DISTINCT FROM $7 ORDER BY i.created_at DESC,i.id DESC LIMIT 1) m ON true
+ LEFT JOIN LATERAL (SELECT i.id,i.account_version,i.created_at,i.snapshot FROM patient_invoice_snapshots i WHERE i.tenant_id=a.tenant_id AND i.account_id=a.id AND a.posted AND i.snapshot->>'reason' IS DISTINCT FROM $7
+   AND NOT EXISTS(SELECT 1 FROM billing_account_coverage_applications c WHERE c.tenant_id=a.tenant_id AND c.account_id=a.id AND i.account_version<c.account_version)
+   ORDER BY i.created_at DESC,i.id DESC LIMIT 1) m ON true
  LEFT JOIN LATERAL (SELECT c.id,c.status,h.remittance_id IS NOT NULL AS answered,coalesce(r.document->'claims'->h.row_index->>'status'='4',false) AS denied,
    CASE WHEN $6 THEN NULL ELSE (SELECT s.id FROM era_remittances s WHERE s.tenant_id=c.tenant_id AND s.status IN ('staged','reconciled') AND (s.matches @> jsonb_build_array(jsonb_build_object('claim_id',c.id)) OR EXISTS(SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(s.document->'claims')='array' THEN s.document->'claims' ELSE '[]'::jsonb END) q WHERE q->>'control_number'=c.control_number)) ORDER BY s.created_at LIMIT 1) END AS response_to_review
   FROM ehr_claims c LEFT JOIN era_claim_heads h ON h.tenant_id=c.tenant_id AND h.claim_id=c.id
@@ -1102,6 +1104,15 @@ async fn timeline(
         }
         prior = Some((status.as_str(), content));
     }
+    let coverage_application: Option<Value> = sqlx::query_scalar(
+        "SELECT jsonb_build_object('at',created_at,'group','insurance','code','coverage_applied','version',account_version)
+         FROM billing_account_coverage_applications WHERE tenant_id=$1 AND account_id=$2",
+    )
+    .bind(a.tenant_id)
+    .bind(b.id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    events.extend(coverage_application);
     for row in receipts {
         events.push(json!({"at":row["created_at"],"group":"payments","code":if row["voided"]==true {"receipt_voided"} else {"payment_received"},"amount_cents":row["amount_cents"],"method":if row["hosted_checkout"].is_object() { json!("card") } else { row["method"].clone() },"occurred_on":row["occurred_on"],"receipt_id":row["id"],"appointment_id":row["appointment_id"],"refunded_cents":cents(&row["hosted_checkout"]["refunded_cents"])+cents(&row["cash_refunded_cents"])}));
     }

@@ -2543,6 +2543,88 @@ function encounterQuickCodeFields(heading,summary,visit,saved,editDiagnosis,edit
 }
 function encounterPaymentLedger(s){return (workspace.billing?.entries||[]).filter(entry=>s.account?.id&&entry.account_id===s.account.id);}
 function encounterSelfPayCredits(s){return visitBillingSelfPayCredits(s,workspace.billing?.copays||[],encounterPaymentLedger(s));}
+function encounterPostedCoverageAccount(summary=encounterRevenueState.data?.summary){
+ const data=encounterRevenueState.data;
+ if(data?.stale||data?.error||summary?.account?.status!=='posted'||!summary.account.id||summary.insurance?.insured!==false||summary.claim?.id||
+  summary.patient_id!==selected||summary.visit?.id!==activeVisit?.id||typeof chartSection==='undefined'||chartSection!=='visits'||
+  !billingCan('edit')||workspace?.patient?.archived)return null;
+ const account=encounterChargeAccount();
+ if(account?.id!==summary.account.id||account.status!=='posted'||account.content.coverage_id||account.coverage_snapshot||account.source_history_id)return null;
+ const serviceDate=account.content.service_date;
+ return serviceDate&&billingEffectiveCoverages(serviceDate).length?account:null;
+}
+async function openEncounterPostedCoverage(button){
+ const account=encounterPostedCoverageAccount();
+ if(!account||account.id!==button.dataset.applyPostedCoverage)throw new Error('Refresh the encounter before applying insurance.');
+ if(document.querySelector('dialog[data-posted-coverage-sheet][open]'))return;
+ const patient=selected,visit=activeVisit.id,identity=me;
+ const path=`/api/v1/patients/${encodeURIComponent(patient)}/billing/accounts/${encodeURIComponent(account.id)}/coverage`;
+ const node=document.createElement('div');
+ node.innerHTML='<p role="status">Checking saved insurance for this service date…</p>';
+ const dialog=sheetOpen('Apply insurance to posted charges',node,{className:'chart-record-sheet',label:true});
+ dialog.dataset.postedCoverageSheet='';
+ const current=()=>selected===patient&&activeVisit?.id===visit&&me===identity&&chartSection==='visits'&&encounterChargeAccount()?.id===account.id;
+ const open=()=>current()&&dialog.isConnected&&dialog.open&&!dialog.dataset.closing;
+ let saving=false;
+ dialog.canCloseSheet=()=>!saving;
+ dialog.addEventListener('close',()=>{
+  if(!current())return;
+  const guide=$('visit-page-host')?.querySelector('[data-encounter-next]:not([hidden])');
+  (button.isConnected&&encounterPostedCoverageAccount()?button:guide)?.focus({preventScroll:true});
+ },{once:true});
+ const message=text=>{node.replaceChildren();const error=document.createElement('p');error.role='alert';error.textContent=text;node.append(error);};
+ let review;
+ try{review=await api(path);}catch(error){if(open())message(error.message);return;}
+ if(!open())return;
+ if(review?.account_id!==account.id||!Number.isSafeInteger(review.account_version)||review.service_date!==account.content.service_date||
+  review.account_version!==encounterChargeAccount().version){message('The posted charges changed. Refresh the encounter before applying insurance.');return;}
+ if(review.blocked_reason){message(review.blocked_reason);return;}
+ const choices=Array.isArray(review.choices)?review.choices.filter(choice=>choice?.id&&Number.isSafeInteger(choice.version)):[];
+ if(!choices.length){message('No saved insurance is active for this service date. Review Insurance & copay before applying coverage.');return;}
+ const option=choice=>{
+  const name=[choice.payer_name,choice.plan_name].filter(Boolean).join(' · ');
+  const details=[name,choice.priority&&human(choice.priority),choice.member_id&&`Member ${choice.member_id}`].filter(Boolean).join(' · ');
+  return `<option value="${esc(choice.id)}">${esc(details)}</option>`;
+ };
+ node.innerHTML=`<form data-posted-coverage-form><p>${esc(visitBillingDate(review.service_date))} · ${money(account.total_cents)} posted</p><p>Apply the policy that covers this service date. Your saved procedure and diagnosis codes stay on this encounter. Review the claim before sending it.</p><label>Billing coverage<select name="coverage_id" required>${choices.length===1?'':'<option value="">Choose insurance</option>'}${choices.map(option).join('')}</select></label><label>Reason<input name="reason" required maxlength="1000" value="Apply insurance to posted self-pay charges"></label><p role="alert" data-posted-coverage-error hidden></p><div class="actions"><button type="submit" class="primary">Apply insurance</button><button type="button" data-sheet-close>Cancel</button></div></form>`;
+ const form=node.querySelector('form'),submit=form.querySelector('button[type="submit"]'),errorLine=form.querySelector('[data-posted-coverage-error]');
+ const choiceField=form.elements.coverage_id,reasonField=form.elements.reason;
+ choiceField.focus({preventScroll:true});
+ let payload=null,unconfirmed=false;
+ form.addEventListener('submit',async event=>{
+  event.preventDefault();
+  if(saving||submit.disabled||!open()||!billingCan('edit'))return;
+  const choice=choices.find(row=>row.id===choiceField.value),reason=reasonField.value.trim();
+  if(!choice||!reason){errorLine.textContent='Choose insurance and enter a reason.';errorLine.hidden=false;return;}
+  saving=true;submit.disabled=true;errorLine.hidden=true;
+  let locked=false;
+  if(!payload||(!unconfirmed&&(payload.coverage_id!==choice.id||payload.reason!==reason)))
+   payload={request_id:crypto.randomUUID(),coverage_id:choice.id,coverage_version:choice.version,reason};
+  try{
+   const updated=await api(path,'POST',payload,review.account_version);
+   if(!open())return;
+   const currentAccount=encounterChargeAccount();
+   if(updated?.id!==account.id||updated.patient_id!==patient||updated.status!=='posted'||updated.content?.visit_id!==visit||
+    updated.content.coverage_id!==payload.coverage_id||!Number.isSafeInteger(updated.version)||updated.version<=review.account_version||updated.version<currentAccount.version){
+    locked=true;throw new Error('Insurance may have saved. Refresh this encounter to review the billing account.');
+   }
+   workspace.billing.accounts=workspace.billing.accounts.map(row=>row.id===updated.id?updated:row);
+   saving=false;sheetClose(dialog);
+   renderEncounterRevenue();
+   await encounterRevenueState.pending;
+   if(current())notice('Insurance applied. Review the claim before sending.');
+  }catch(error){
+   if(!open())return;
+   locked||=error.status===409;
+   if(!error.status&&!locked){
+    unconfirmed=true;choiceField.disabled=true;reasonField.disabled=true;
+    submit.textContent='Retry';
+   }
+   errorLine.textContent=unconfirmed&&!locked?'The response was interrupted. Retry with the same details to check whether insurance was applied.':error.message;
+   errorLine.hidden=false;
+  }finally{saving=false;if(open())submit.disabled=locked;}
+ });
+}
 function encounterPaymentHistory(body){
  let dialog=body.querySelector('dialog[data-step-payment-details]');
  if(!dialog){
@@ -2625,7 +2707,9 @@ function encounterStepPayments(body,revenue,status,s,model,locked){
  const write=(node,markup)=>{if(node.paymentMarkup!==markup){node.paymentMarkup=markup;node.innerHTML=markup;}};
  const history=!!(ledger||statements||s.receipts?.length||s.timeline?.length||posted||review);
  const unavailable=canRecord&&!canCollect?'<p class="muted">Taking a payment requires an active appointment linked to this visit.</p>':'';
- write(payment,`<div class="encounter-payment-summary" aria-live="polite"><p data-payment-summary>${esc(text)}</p>${unavailable}${insurer?`<p class="muted" data-insurer-payment-summary>${esc(insurer)}</p>`:''}</div>${retry}${remittance}${canCollect?'<button type="button" class="primary" data-visit-collect>Take payment</button>':''}${receipt}${history?'<button type="button" class="text-button" data-open-encounter-payment-history>Payment history</button>':''}`);
+ const correction=encounterPostedCoverageAccount(s);
+ const apply=correction?`<button type="button" class="primary" data-apply-posted-coverage="${esc(correction.id)}" aria-haspopup="dialog">Apply insurance</button>`:'';
+ write(payment,`<div class="encounter-payment-summary" aria-live="polite"><p data-payment-summary>${esc(text)}</p>${unavailable}${correction?'<p>Posted as self-pay. Insurance is on file for this service date.</p>':''}${insurer?`<p class="muted" data-insurer-payment-summary>${esc(insurer)}</p>`:''}</div>${retry}${remittance}${apply}${canCollect?`<button type="button" ${correction?'':'class="primary" '}data-visit-collect>Take payment</button>`:''}${receipt}${history?'<button type="button" class="text-button" data-open-encounter-payment-history>Payment history</button>':''}`);
  for(const button of ledger?.querySelectorAll('[data-visit-collect]')||[])button.hidden=true;
  let actions=destination.querySelector('[data-payment-detail-actions]');
  if(!actions){actions=document.createElement('div');actions.dataset.paymentDetailActions='';destination.append(actions);}
@@ -2703,6 +2787,8 @@ function encounterNextAction(page,summary,model){
   if(addCode)return addCode;
   if(post)return follow(post.textContent,post);
  }
+ const coverage=button('[data-step-payment] [data-apply-posted-coverage]');
+ if(coverage)return follow('Apply insurance',coverage);
  if(remit)return follow('Review insurer payment',remit);
  const response={claim_rejected:'Review returned claim',correct_claim:'Review corrected charges',denied:'Review payer decision',review_response:'Review insurer response'}[summary.state];
  if(summary.state==='claimmd_correction'&&(signedClaim||claim))return follow(signedClaim?.textContent||'Review clearinghouse hold',signedClaim||claim);
@@ -3139,6 +3225,8 @@ if(typeof document!=='undefined'&&document.addEventListener){
  for(const type of ['input','change'])document.addEventListener(type,event=>{if(event.target.closest?.('#rooming-form,#note-form'))encounterStepsSchedule();});
  document.addEventListener('click',event=>{
   const target=event.target;
+  const applyCoverage=target.closest?.('[data-apply-posted-coverage]');
+  if(applyCoverage){event.preventDefault();void openEncounterPostedCoverage(applyCoverage).catch(error=>notice(error.message,true));return;}
   const openCodes=target.closest?.('[data-open-encounter-codes],[data-encounter-codes-anchor]');
   if(openCodes){event.preventDefault();encounterOpenCodesDialog(openCodes,openCodes.dataset.encounterCodesArea);return;}
   const chip=target.closest?.('[data-encounter-step-open]');
