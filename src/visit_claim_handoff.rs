@@ -88,6 +88,7 @@ struct DeliveryEvidence {
     job_id: Option<Uuid>,
     delivery_status: Option<String>,
     route_key: Option<String>,
+    attempt_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 pub(crate) async fn evidence_for_claims(
@@ -109,7 +110,7 @@ pub(crate) async fn evidence_for_claims(
          LEFT JOIN LATERAL (
            SELECT s.id AS submission_id,s.status AS artifact_status,s.version AS submission_version,
                   s.claim_version,s.partner_id,s.partner_version,j.id AS job_id,
-                  j.status AS delivery_status,j.route_key
+                  j.status AS delivery_status,j.route_key,coalesce(j.created_at,s.created_at) AS attempt_at
            FROM edi_submissions s
            LEFT JOIN edi_delivery_jobs j ON j.tenant_id=s.tenant_id AND j.submission_id=s.id
            WHERE s.tenant_id=c.tenant_id AND s.claim_id=c.id
@@ -137,7 +138,8 @@ pub(crate) async fn evidence_for_claims(
                 "outcome":outcome,
                 "claim_id":row.claim_id, "submission_id":row.submission_id, "submission_version":row.submission_version,
                 "claim_version":row.claim_version, "partner_id":row.partner_id, "partner_version":row.partner_version,
-                "job_id":row.job_id, "delivery_status":row.delivery_status, "route_key":row.route_key
+                "job_id":row.job_id, "delivery_status":row.delivery_status, "route_key":row.route_key,
+                "attempt_at":row.attempt_at
             })))
         })
         .collect())

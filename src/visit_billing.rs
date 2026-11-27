@@ -984,6 +984,7 @@ pub(crate) async fn summarize(
                 "acknowledged": claimmd["acknowledged"] == true,
                 "message": claimmd["correction"]["message"].as_str().filter(|message| !message.trim().is_empty()),
                 "since": claimmd_since,
+                "correction": claimmd["correction"],
             })),
         },
         "patient": {

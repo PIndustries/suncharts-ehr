@@ -95,17 +95,26 @@ async function check(browser,viewport,variant){
  }catch(error){console.error(viewport.width,errors,writes,await page.evaluate(()=>({notice:document.getElementById('notice')?.textContent,claim:document.querySelector('[data-encounter-claim-status]')?.innerText.slice(0,420),dialog:document.querySelector('dialog[open]')?.innerText.slice(0,420)})));throw error;}
  finally{await context.close();}
 }
-async function checkClaimResponse(browser,viewport,returned=false){
+async function checkClaimResponse(browser,viewport,returned=false,held=false){
  const reason='Synthetic response: the procedure modifier does not match the billed service.';
  const ctx=await browser.createBrowserContext(),page=await ctx.newPage(),errors=[],writes=[];
  const currentVisit={...visit,status:'signed',signed_at:appointment.ends_at};
  const billing=fixture(patientPath+'/billing',currentVisit,'insured',null,{});
  const claim={...billing.claims[0],patient_id:patient.id,account_id:billing.accounts[0].id,
-  status:returned?'rejected':'adjudicated',control_number:returned?'SYN-RETURN':'SYN-APPEAL',
-  answer:returned?undefined:{denied:true,paid_cents:0},
+  status:held?'submitted':returned?'rejected':'adjudicated',control_number:held?'SYN-HELD':returned?'SYN-RETURN':'SYN-APPEAL',
+  answer:returned||held?undefined:{denied:true,paid_cents:0},
   snapshot:{account:billing.accounts[0],patient}};
  billing.claims=[claim];
- const summary={...billing.summary,claim,state:returned?'claim_rejected':'denied',insurance:{...billing.summary.insurance,status:returned?'rejected':'denied'}};
+ const source={report_id:id(860),submission_id:id(861),external_claim_id:'SYN-CLAIMMD-467',
+  message:'NCCI - Procedure Code [64405] requires an appropriate modifier when procedure [20553] present.',
+  line:{index:0,code:'64405',modifiers:'50',description:'Synthetic affected procedure'},
+  related_lines:[{index:1,code:'20553',modifiers:'',description:'Synthetic related procedure'}]};
+ const position={needs_correction:true,correction:source};
+ const correctionPath='/api/v1/billing/claims/'+claim.id+'/claimmd-correction';
+ let draft=null;
+ const correction=()=>({claim_version:claim.version,source,draft,portal_url:'https://www.claim.md/'});
+ const summary={...billing.summary,claim,state:held?'claimmd_correction':returned?'claim_rejected':'denied',
+  insurance:{...billing.summary.insurance,status:held?'submitted':returned?'rejected':'denied',...(held?{claimmd:position}:{})}};
  billing.summary=summary;
  await page.setViewport(viewport);page.setDefaultTimeout(12000);
  const theme=viewport.isMobile?'dark':'light';
@@ -114,12 +123,22 @@ async function checkClaimResponse(browser,viewport,returned=false){
  await page.setRequestInterception(true);
  page.on('request',r=>{const u=new URL(r.url()),path=u.pathname;
   if(u.origin!==origin)return r.abort();
-  if(r.method()!=='GET'){writes.push({path,body:JSON.parse(r.postData()||'{}')});if(path.endsWith('/denial'))return r.respond({status:200,contentType:'application/json',body:'{}'});return r.abort();}
+  if(r.method()!=='GET'){
+   const body=JSON.parse(r.postData()||'{}');
+   writes.push({path,body});
+   if(path.endsWith('/denial'))return r.respond({status:200,contentType:'application/json',body:'{}'});
+   if(held&&path===correctionPath){
+    draft={modifiers:body.modifiers,...(body.reviewed?{reviewed_at:appointment.ends_at}:{})};
+    return r.respond({status:200,contentType:'application/json',body:JSON.stringify(correction())});
+   }
+   return r.abort();
+  }
   let value;
   if(path===patientPath+'/billing')value=billing;
   else if(path===patientPath+'/billing/visit-summary')value=summary;
   else if(path==='/api/v1/billing/provider-settings')value={items:[{id:id(901),verified:true,enabled:true}]};
-  else if(path==='/api/v1/billing/claims/'+claim.id)value={claim,tracking:returned?{
+  else if(held&&path===correctionPath)value=correction();
+  else if(path==='/api/v1/billing/claims/'+claim.id)value={claim,...(held?{claimmd_position:position}:{}),tracking:returned?{
    submissions:[{status:'delivered'}],
    reports:[{received_at:appointment.ends_at,evidence:{senderid:'SYNPAYER',sender_name:'Synthetic PPO',
     status:'R',message:{status:'R',message:reason}}}]
@@ -136,6 +155,29 @@ async function checkClaimResponse(browser,viewport,returned=false){
   const summarySelector='[data-encounter-step-number="1"] [data-signed-claim-summary]';
   const trigger=summarySelector+' [data-open-signed-claim-details]',details='dialog[data-signed-claim-details][open]',editor='dialog[data-visit-denial-editor][open]';
   await page.waitForSelector(trigger,{visible:true});
+  if(held){
+   assert.match(await page.$eval(summarySelector,n=>n.innerText),/Fix 64405/);
+   await page.locator(trigger).click();
+   const field=details+' [data-held-modifiers]';
+   await page.waitForSelector(field,{visible:true});
+   assert.equal(await page.$eval(field,input=>input.value),'50');
+   assert.equal(await page.$(details+' [data-denial-action]'),null);
+   assert.match(await page.$eval(details,node=>node.innerText),/64405.*20553/s);
+   await page.locator(field).fill('50 XS');
+   await page.waitForFunction(()=>document.querySelector('[data-held-save-status]')?.textContent==='Saved');
+   assert.deepEqual(writes,[{path:correctionPath,body:{report_id:source.report_id,submission_id:source.submission_id,line_index:0,modifiers:['50','XS']}}]);
+   await page.locator(details+' [data-held-review]').click();
+   assert.match(await page.$eval(details,node=>node.innerText),/SYN-CLAIMMD-467.*50, XS/s);
+   await page.locator(details+' [data-held-confirm]').click();
+   const link=details+' a[href="https://www.claim.md/"]';
+   await page.waitForSelector(link,{visible:true});
+   assert.deepEqual(writes,[writes[0],{path:correctionPath,body:{...writes[0].body,reviewed:true}}]);
+   assert.match(await page.$eval(link,node=>node.textContent),/Continue in Claim.MD/);
+   assert.equal(await page.$(details+' [data-signed-claim-send]'),null);
+   assert.deepEqual(errors,[]);
+   console.log(viewport.width+'px PASS held claim: verified line focus, autosave, single confirmation and scoped Claim.MD portal handoff');
+   return;
+  }
   assert.match(await page.$eval(summarySelector,n=>n.innerText),returned?/Returned before payer acceptance.*Review returned claim/s:/Review payer decision/);
   assert.ok(!(await page.$(summarySelector+' [data-denial-action]')));
   if(returned){
@@ -359,7 +401,7 @@ async function checkReadyClaim(browser,viewport,delegated=false,canceled=false){
    await page.locator(review).click();
    await page.waitForSelector(form,{visible:true});
    assert.equal(await page.$$eval('dialog[open]',nodes=>nodes.length),1,'the existing consent form stays in the same review sheet');
-   assert.match(await page.$eval(form,node=>node.innerText),/Nothing is sent until you choose Send claim to the clearinghouse/);
+   assert.doesNotMatch(await page.$eval(form,node=>node.innerText),/Save claim file without sending/);
    assert.deepEqual(await page.$eval(form,(node,fields)=>fields.map(name=>[node.elements[name].required,node.elements[name].checked]),permissions),permissions.map(()=>[true,false]));
    assert.deepEqual(writes.map(item=>item.route),viewport.isMobile?[claimEndpoint+'/actions']:[],'opening consent only releases an explicitly selected draft to ready');
    if(viewport.isMobile){
@@ -377,9 +419,10 @@ async function checkReadyClaim(browser,viewport,delegated=false,canceled=false){
     assert.deepEqual(writes,[],'unchecked attestations block the final action');
     for(const name of permissions)await page.locator(form+' [name="'+name+'"]').click();
     await page.locator(queue).click();
-    await page.waitForFunction(()=>document.getElementById('notice')?.innerText.includes('on its way to the clearinghouse'));
+    await page.waitForFunction(()=>document.querySelector('.signed-claim-dialog .signed-claim-stage')?.innerText.includes('Queued for Claim.MD'));
+    assert.equal(await page.$(queue),null);
     assert.deepEqual(writes.map(item=>item.route),[claimEndpoint+'/837p',deliveryEndpoint]);
-    assert.match(writes[0].body.reason,/Send claim to the clearinghouse/);
+    assert.match(writes[0].body.reason,/Reviewed claim for electronic submission/);
     for(const name of permissions)assert.equal(writes[0].body.details[name],true);
    }
    assert.deepEqual(errors,[]);
@@ -472,7 +515,6 @@ async function checkReadyClaim(browser,viewport,delegated=false,canceled=false){
    assert.equal(await page.$(send),null);
    assert.equal(await page.$eval(place+' input',input=>document.activeElement===input),true);
    await page.locator(place+' input').fill('11');
-   await page.locator(place+' button[type="submit"]').click();
    await page.waitForSelector(send,{visible:true});
    assert.equal(await page.$(place),null);
    assert.equal(writes.length,5);
@@ -511,6 +553,8 @@ async function checkReadyClaim(browser,viewport,delegated=false,canceled=false){
  const browser=await puppeteer.launch({...target,headless:true,pipe:true,args:['--disable-background-networking','--disable-component-update','--no-first-run']});
  try{
   for(const viewport of [{width:1280,height:900},{width:390,height:844,isMobile:true,hasTouch:true}]){
+   await checkClaimResponse(browser,viewport,false,true);
+   if(process.env.HELD_CLAIM_ONLY==='1')continue;
    for(const variant of ['linked-clinician','several-groups','unmatched-clinician'])await check(browser,viewport,variant);
    await checkClaimResponse(browser,viewport);
    await checkClaimResponse(browser,viewport,true);

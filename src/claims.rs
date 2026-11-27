@@ -409,7 +409,7 @@ pub(crate) async fn claimmd_settle_correction(
     Ok(true)
 }
 
-/// The claim's position with Claim.MD, as one query per page of claims: whether Claim.MD holds
+/// The claim's position with Claim.MD, batched for each page of claims: whether Claim.MD holds
 /// the claim for correction (with the clearinghouse's own words and the day it said them), and
 /// whether Claim.MD has only ever acknowledged it. Both are derived from rows that already
 /// exist, so nothing here needs new schema: the corrections are the revision rows above, and a
@@ -431,7 +431,18 @@ pub(crate) async fn claim_md_positions(
         .bind(CLAIMMD_SETTLED_REASON)
         .fetch_all(&mut **tx)
         .await?;
-    Ok(rows.into_iter().collect())
+    let mut positions: std::collections::HashMap<_, _> = rows.into_iter().collect();
+    let held_ids: Vec<_> = positions
+        .iter()
+        .filter(|(_, position)| position["needs_correction"] == true)
+        .map(|(id, _)| *id)
+        .collect();
+    for (id, source) in crate::claimmd_correction::sources(tx, tenant, &held_ids).await? {
+        if let Some(position) = positions.get_mut(&id) {
+            source.add_list_hint(&mut position["correction"]);
+        }
+    }
+    Ok(positions)
 }
 
 /// Reason recorded on a refill revision and on the `claim.change` audit entry it writes. Kept
@@ -795,6 +806,12 @@ pub fn router() -> Router<State> {
             get(claim_detail).put(edit_claim),
         )
         .route("/api/v1/billing/claims/{id}/actions", post(claim_action))
+        .route(
+            "/api/v1/billing/claims/{id}/claimmd-correction",
+            get(crate::claimmd_correction::read)
+                .put(crate::claimmd_correction::save)
+                .post(crate::claimmd_correction::review),
+        )
         .route("/api/v1/billing/claims/{id}/packet", get(packet))
         .route("/api/v1/billing/claims/{id}/cms1500", get(cms1500))
         .route("/api/v1/billing/claims/{id}/history", get(claim_history))
@@ -831,6 +848,25 @@ pub fn router() -> Router<State> {
             get(claim_status_counts),
         )
 }
+fn claim_worklist_issue(claim: &Claim) -> Option<Value> {
+    let first = match preflight(claim) {
+        Ok(issues) => issues.into_iter().next(),
+        Err(_) => return Some(json!({"message":"Review the stored claim details."})),
+    };
+    let relationship = claim.snapshot["account"]["coverage_snapshot"]["coverage"]["content"]
+        ["relationship"]
+        .as_str();
+    if first.is_none()
+        && matches!(relationship, Some("spouse" | "child"))
+        && recorded_x12_address_missing_zip(&claim.content["subscriber_address"]).is_some()
+    {
+        return Some(
+            json!({"field":"subscriber_address","part":"postal_code","message":"Policyholder ZIP code is missing"}),
+        );
+    }
+    first.map(|message| json!({"message":message}))
+}
+
 async fn claims(
     a: Actor,
     ExtractState(s): ExtractState<State>,
@@ -838,16 +874,49 @@ async fn claims(
 ) -> Result<Json<Value>> {
     a.staff()?;
     let mut tx = db(&s)?.begin().await?;
-    let mut rows:Vec<Value>=sqlx::query_scalar(&format!("WITH en AS ({ENCOUNTER_NUMBERS}) SELECT (to_jsonb(c)-'tenant_id'-'creation_hash'-'request_id'-'content'-'snapshot')||jsonb_build_object('visit_id',x.visit_id,'encounter_number',n.encounter_number,'service_date',c.snapshot->'account'->'content'->>'service_date','patient_name',p.family_name||', '||p.given_name,'total_cents',c.snapshot->'account'->'total_cents','payer_name',c.snapshot->'account'->'coverage_snapshot'->'payer'->'content'->>'name','coverage_priority',c.snapshot->'account'->'coverage_snapshot'->'coverage'->'content'->>'priority','crossover_tracking_only',coalesce(jsonb_typeof(c.snapshot->'coordination_of_benefits'->'crossover')='object',false),'synthetic_test',coalesce((c.content->>'synthetic_test')::boolean,false)) FROM ehr_claims c JOIN patients p ON p.tenant_id=c.tenant_id AND p.id=c.patient_id LEFT JOIN billing_accounts b ON b.tenant_id=c.tenant_id AND b.id=c.account_id CROSS JOIN LATERAL (SELECT coalesce(b.visit_id,(NULLIF(c.snapshot->'account'->'content'->>'visit_id',''))::uuid) AS visit_id) x LEFT JOIN en n ON n.id=x.visit_id WHERE c.tenant_id=$1 AND ($2::uuid IS NULL OR c.id>$2) AND ($3::uuid IS NULL OR c.patient_id=$3) AND ($4::uuid IS NULL OR c.account_id=$4) ORDER BY c.id LIMIT 101")).bind(a.tenant_id).bind(q.after).bind(q.patient_id).bind(q.account_id).fetch_all(&mut *tx).await?;
+    let mut rows: Vec<Value> = sqlx::query_scalar(&format!(
+        "WITH en AS ({ENCOUNTER_NUMBERS})
+         SELECT (to_jsonb(c)-'tenant_id'-'creation_hash'-'request_id'-'content'-'snapshot') ||
+           CASE WHEN c.status IN ('draft','ready') THEN jsonb_build_object('content',c.content,'snapshot',c.snapshot)
+                ELSE '{{}}'::jsonb END || jsonb_build_object(
+           'visit_id',x.visit_id,'encounter_number',n.encounter_number,
+           'service_date',c.snapshot->'account'->'content'->>'service_date',
+           'patient_name',p.family_name||', '||p.given_name,
+           'total_cents',c.snapshot->'account'->'total_cents',
+           'payer_name',c.snapshot->'account'->'coverage_snapshot'->'payer'->'content'->>'name',
+           'coverage_priority',c.snapshot->'account'->'coverage_snapshot'->'coverage'->'content'->>'priority',
+           'crossover_tracking_only',coalesce(jsonb_typeof(c.snapshot->'coordination_of_benefits'->'crossover')='object',false),
+           'synthetic_test',coalesce((c.content->>'synthetic_test')::boolean,false),
+           'status_at',coalesce(st.at,c.created_at))
+         FROM ehr_claims c JOIN patients p ON p.tenant_id=c.tenant_id AND p.id=c.patient_id
+         LEFT JOIN billing_accounts b ON b.tenant_id=c.tenant_id AND b.id=c.account_id
+         CROSS JOIN LATERAL (SELECT coalesce(b.visit_id,(NULLIF(c.snapshot->'account'->'content'->>'visit_id',''))::uuid) AS visit_id) x
+         LEFT JOIN en n ON n.id=x.visit_id
+         LEFT JOIN LATERAL (
+           SELECT min(r.created_at) AS at FROM claim_revisions r
+           WHERE r.tenant_id=c.tenant_id AND r.claim_id=c.id AND r.snapshot->>'status'=c.status
+             AND r.version>coalesce((SELECT max(previous.version) FROM claim_revisions previous
+                 WHERE previous.tenant_id=c.tenant_id AND previous.claim_id=c.id
+                 AND previous.snapshot->>'status'<>c.status),0)
+         ) st ON true
+         WHERE c.tenant_id=$1 AND ($2::uuid IS NULL OR c.id>$2)
+           AND ($3::uuid IS NULL OR c.patient_id=$3) AND ($4::uuid IS NULL OR c.account_id=$4)
+         ORDER BY c.id LIMIT 101"
+    ))
+    .bind(a.tenant_id)
+    .bind(q.after)
+    .bind(q.patient_id)
+    .bind(q.account_id)
+    .fetch_all(&mut *tx)
+    .await?;
     let next = if rows.len() > 100 {
         rows.truncate(100);
         rows.last().map(|r| r["id"].clone())
     } else {
         None
     };
-    // A claim Claim.MD is holding for correction is named as such in the list, whatever the
-    // claim row's own status still says, so staff sort and filter their work by what they
-    // actually have to do. Read provider and delivery evidence for the current page in batches.
+    // Read status and remittance evidence in batches. The list carries a narrow fix
+    // hint for drafts, while claim review checks the complete current packet.
     let ids: Vec<Uuid> = rows
         .iter()
         .filter_map(|row| Uuid::parse_str(row["id"].as_str()?).ok())
@@ -857,13 +926,44 @@ async fn claims(
         crate::visit_claim_handoff::evidence_for_claims(&mut tx, a.tenant_id, &ids).await?;
     let mut remittances =
         crate::retrieval::claim_remittance_dispositions(&mut tx, a.tenant_id, &ids).await?;
+    let unposted: Vec<(Uuid, Value)> = sqlx::query_as(
+        "SELECT DISTINCT ON (c.id) c.id,
+           jsonb_build_object('id',r.id,'at',r.created_at,'row_index',m->'row_index')
+         FROM era_remittances r
+         CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(r.matches)='array' THEN r.matches ELSE '[]'::jsonb END) m
+         JOIN ehr_claims c ON c.tenant_id=r.tenant_id AND c.payer_id=r.payer_id AND c.id::text=m->>'claim_id'
+         WHERE r.tenant_id=$1 AND c.id=ANY($2) AND r.status IN ('staged','reconciled')
+           AND c.status IN ('submitted','accepted','adjudicated') AND jsonb_typeof(m->'row_index')='number'
+         ORDER BY c.id,r.created_at,r.id,m->'row_index'",
+    )
+    .bind(a.tenant_id)
+    .bind(&ids)
+    .fetch_all(&mut *tx)
+    .await?;
+    let mut unposted = unposted
+        .into_iter()
+        .collect::<std::collections::HashMap<_, _>>();
     for row in &mut rows {
+        if matches!(row["status"].as_str(), Some("draft" | "ready")) {
+            if let Ok(claim) = serde_json::from_value::<Claim>(row.clone()) {
+                if let Some(issue) = claim_worklist_issue(&claim) {
+                    row["worklist_issue"] = issue;
+                }
+            }
+        }
+        if let Some(record) = row.as_object_mut() {
+            record.remove("content");
+            record.remove("snapshot");
+        }
         if let Some(id) = row["id"].as_str().and_then(|id| Uuid::parse_str(id).ok()) {
             if let Some(position) = positions.remove(&id) {
                 row["claimmd_position"] = position;
             }
             if let Some(handoff) = handoffs.remove(&id) {
                 row["claim_handoff"] = handoff;
+            }
+            if let Some(review) = unposted.remove(&id) {
+                row["worklist_remittance"] = review;
             }
             let remittance = remittances.remove(&id);
             row["remittance_posted"] = json!(remittance.is_some());
@@ -1271,8 +1371,7 @@ fn structured_x12_address(content: Option<&Value>) -> Value {
     })
 }
 
-fn recorded_x12_address(value: &Value) -> Option<Value> {
-    // Only map explicit comma-separated address parts. An ambiguous address needs review.
+fn recorded_address_parts(value: &Value) -> Option<Vec<&str>> {
     let mut parts = value
         .as_str()?
         .split(',')
@@ -1285,18 +1384,44 @@ fn recorded_x12_address(value: &Value) -> Option<Value> {
     }) {
         parts.pop();
     }
+    Some(parts)
+}
+
+fn recorded_x12_address(value: &Value) -> Option<Value> {
+    // Only map explicit comma-separated address parts. An ambiguous address needs review.
+    let mut parts = recorded_address_parts(value)?;
     let last = parts.pop()?;
     let (state, zip) = match last.split_once(char::is_whitespace) {
         Some(pair) => pair,
         None => (parts.pop()?, last),
     };
+    let address = x12_address_from_parts(parts, state, zip)?;
+    address.validate().ok()?;
+    serde_json::to_value(address).ok()
+}
+
+fn recorded_x12_address_missing_zip(value: &Value) -> Option<Value> {
+    let mut parts = recorded_address_parts(value)?;
+    let state = parts.pop()?;
+    // Validate all the recorded parts together. The temporary ZIP is used only for validation.
+    let mut address = x12_address_from_parts(parts, state, "00000")?;
+    address.validate().ok()?;
+    address.postal_code.clear();
+    serde_json::to_value(address).ok()
+}
+
+fn x12_address_from_parts(
+    mut parts: Vec<&str>,
+    state: &str,
+    zip: &str,
+) -> Option<crate::x12::Address> {
     let city = parts.pop()?;
     let (line1, line2) = match parts.as_slice() {
         [line1] => (*line1, ""),
         [line1, line2] => (*line1, *line2),
         _ => return None,
     };
-    let address = crate::x12::Address {
+    Some(crate::x12::Address {
         line1: line1.to_string(),
         line2: line2.to_string(),
         city: city.to_string(),
@@ -1311,9 +1436,7 @@ fn recorded_x12_address(value: &Value) -> Option<Value> {
             }
             value => std::str::from_utf8(value).ok()?.to_string(),
         },
-    };
-    address.validate().ok()?;
-    serde_json::to_value(address).ok()
+    })
 }
 
 fn valid_x12_address(value: &Value) -> bool {
@@ -1352,6 +1475,13 @@ fn claim_submission_issues(defaults: &Value) -> Vec<Value> {
         let locality = json!({"line1":"1 Example Way","line2":"","city":"Example",
             "state":address["state"],"postal_code":address["postal_code"]});
         if !valid_x12_address(&locality) {
+            let known_locality = json!({"line1":"1 Example Way","line2":"","city":"Example",
+                "state":address["state"],"postal_code":"00000"});
+            if needed.is_empty() && valid_x12_address(&known_locality) {
+                issues.push(json!({"field":field,"part":"postal_code",
+                    "message":format!("{label} needs a valid ZIP code for electronic submission.")}));
+                continue;
+            }
             needed.push("US state and ZIP");
         }
         issues.push(json!({"field":field,"message":format!("{label} needs valid {} for electronic submission.", needed.join(", "))}));
@@ -1625,6 +1755,7 @@ pub(crate) async fn claim_submission_defaults(
         patient_address.clone()
     } else {
         recorded_x12_address(&claim.content["subscriber_address"])
+            .or_else(|| recorded_x12_address_missing_zip(&claim.content["subscriber_address"]))
             .unwrap_or_else(|| structured_x12_address(None))
     };
     let filing = filing_indicator(
@@ -3061,6 +3192,22 @@ mod submission_default_tests {
         let mut defaults = json!({"patient_address":address,"subscriber_address":address,"billing_address":address,
             "subscriber_given_name":"Synthetic","subscriber_family_name":"Subscriber","rendering_given_name":"Synthetic","rendering_family_name":"Provider","billing_taxonomy":"207Q00000X"});
         assert!(claim_submission_issues(&defaults).is_empty());
+        defaults["subscriber_address"] =
+            recorded_x12_address_missing_zip(&json!("21 Example Ln, Unit 2, Portland, OR"))
+                .unwrap();
+        assert_eq!(defaults["subscriber_address"]["line1"], "21 Example Ln");
+        assert_eq!(defaults["subscriber_address"]["line2"], "Unit 2");
+        assert_eq!(defaults["subscriber_address"]["city"], "Portland");
+        assert_eq!(defaults["subscriber_address"]["state"], "OR");
+        assert_eq!(defaults["subscriber_address"]["postal_code"], "");
+        assert_eq!(
+            claim_submission_issues(&defaults),
+            vec![
+                json!({"field":"subscriber_address","part":"postal_code","message":"Policy holder’s address needs a valid ZIP code for electronic submission."})
+            ]
+        );
+        assert!(recorded_x12_address_missing_zip(&json!("21 Example Ln Portland OR")).is_none());
+        defaults["subscriber_address"]["postal_code"] = json!("97204");
         defaults["subscriber_address"]["city"] = json!("");
         assert_eq!(
             claim_submission_issues(&defaults),

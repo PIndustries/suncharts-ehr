@@ -175,7 +175,7 @@ const reset=()=>{vmAccount();sent.length=0;ctx.failed=null;ctx.noticed=null;ctx.
  assert.doesNotMatch(rendered,/data-signed-claim-fix="billing_npi"/,'staff choose the billing organization before editing its NPI');
  const oneGroup={...ambiguous,practice_directory:{...multiDirectory,billing_organizations:[organizations[0]]}};
  const oneGroupRendered=ctx.visitSignedClaimDetailBody(oneGroup,{canWrite:true,claimsAllowed:true},false);
- assert.match(oneGroupRendered,/data-signed-claim-fix="billing_npi"[\s\S]*Update Billing NPI/,'a specific missing NPI is editable in the review sheet');
+ assert.match(oneGroupRendered,/data-signed-claim-fix="billing_npi"[\s\S]*Retry saving/,'a specific missing NPI is editable in the review sheet');
  const missingSharedAddress={...claim,snapshot:{...claim.snapshot,account:{...claim.snapshot.account,
   coverage_snapshot:{...claim.snapshot.account.coverage_snapshot,coverage:{content:{relationship:'self'}}}}},
   preflight_issues:[],submission_issues:[
@@ -189,6 +189,13 @@ const reset=()=>{vmAccount();sent.length=0;ctx.failed=null;ctx.noticed=null;ctx.
  missingSharedAddress.snapshot.account.coverage_snapshot.coverage.content.relationship='spouse';
  const spouseAddressRendered=ctx.visitSignedClaimDetailBody({...oneGroup,claim:missingSharedAddress},{canWrite:true,claimsAllowed:true},false);
  assert.match(spouseAddressRendered,/data-signed-claim-fix="subscriber_address"[\s\S]*Street, city, ST ZIP/,'a separate subscriber address is editable with a usable structure hint');
+ const missingZip={...missingSharedAddress,content:{...missingSharedAddress.content,subscriber_address:'21 Example Ln, Unit 2, Portland, OR'},
+  preflight_issues:[],submission_issues:[{field:'subscriber_address',part:'postal_code',message:'Policy holder’s address needs a valid ZIP code for electronic submission.'}],
+  submission_defaults:{subscriber_address:{line1:'21 Example Ln',line2:'Unit 2',city:'Portland',state:'OR',postal_code:''}}};
+ const zipSheet=ctx.visitSignedClaimDetailBody({...oneGroup,claim:missingZip},{canWrite:true,claimsAllowed:true},false);
+ assert.match(zipSheet,/21 Example Ln, Unit 2, Portland, OR/);
+ assert.match(zipSheet,/data-signed-claim-fix="subscriber_address" data-claim-fix-part="postal_code"[\s\S]*Policyholder ZIP code/);
+ assert.doesNotMatch(zipSheet,/Update Policy holder address|Street, city, ST ZIP/);
  const corrected=review({...ambiguous,claim:{...ambiguous.claim,content:{...ambiguous.claim.content,billing_provider_name:'Synthetic Billing Group Two',billing_npi:'1548469802',tax_id:'000000018'},issues:[]}});
  assert.ok(!corrected.some(row=>['practice-billing_npi','practice-rendering_npi','practice-tax'].includes(row.key)),'the reviewed billing identity resolves the claim checks');
  ctx.billingPayers.pop();ctx.workspace.billing.coverages.pop();delete ctx.workspace.patient.birth_date;delete ctx.activeVisit.clinician_id;

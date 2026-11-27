@@ -4,7 +4,7 @@
 // note being written. The earlier note is only read. Loaded text and undo steps live in
 // this tab only and are dropped when the signed-in person changes.
 const visitNoteSources=new Map(),visitNoteUndo=new Map(),visitNotePeople=new Map();
-function clearVisitNoteSession(){if(visitNoteCopySheet?.dialog.open)sheetClose(visitNoteCopySheet.dialog);visitNoteSources.clear();visitNoteUndo.clear();visitNotePeople.clear();clearTimeout(visitNoteSaveTimer);clearTimeout(visitNoteSearchTimer);visitNoteSearches.clear();}
+function clearVisitNoteSession(){if(visitNoteCopySheet?.dialog.open)sheetClose(visitNoteCopySheet.dialog);visitNoteSources.clear();visitNoteUndo.clear();visitNotePeople.clear();clearTimeout(visitNoteSaveTimer);for(const timer of visitNoteSearchTimers.values())clearTimeout(timer);visitNoteSearchTimers.clear();visitNoteSearches.clear();}
 function visitNoteSaved(visit){
  if(!visit)return;
  visitNoteUndo.delete(visit.id);visitNoteBar(visit.id);
@@ -220,7 +220,7 @@ function visitNoteEnableAutosave(form){
 }
 function queueVisitNoteAutosave(event){
  const form=event.target?.closest?.('#note-form,#vitals-form,#rooming-form');
- if(!form||event.isComposing||event.target.readOnly||event.target.disabled||activeVisit?.status==='signed')return;
+ if(!form||event.isComposing||event.target.readOnly||event.target.disabled||event.target.matches?.('[data-note-code-search]')||activeVisit?.status==='signed')return;
  if(form.id==='note-form'&&Object.hasOwn(form.dataset||{},'noteSignChecked'))visitNoteMarkMissing(form,noteMissingForSign(form));
  else if(form.id==='note-form'&&event.target.value?.trim()){event.target.removeAttribute?.('aria-invalid');if($('note-message')?.classList?.contains('note-sign-error')){const missing=noteMissingForSign(form);if(missing.length)showVisitNoteMessage(`Add ${visitNoteNames(missing)} before signing.`);else{$('note-message').classList.remove('note-sign-error');hideVisitNoteMessage();}}}
  if(form.id==='vitals-form'&&typeof visitVitalsFeedback==='function')visitVitalsFeedback(form);
@@ -323,7 +323,7 @@ function visitNoteFlush({signing=false,focusVitals=false}={}){
 function visitNoteInlineDiagnosesMarkup(){return '<section data-note-inline="diagnoses"><h4>Diagnoses</h4><div id="note-diagnosis-chips" class="actions"></div><label>ICD-10 search<input data-note-code-search="diagnosis" autocomplete="off" placeholder="Search, then Enter to add"></label><div id="note-diagnosis-results" class="actions" role="status"></div><button type="button" data-note-suggest hidden>Suggest diagnoses</button><span data-note-suggest-status role="status"></span><div id="note-diagnosis-suggestions" class="actions"></div></section>';}
 function visitNoteInlineProceduresMarkup(){return '<section data-note-inline="procedures"><h4>Procedures</h4><div id="note-bundles" class="actions"></div><label>Practice code search<input data-note-code-search="procedure" autocomplete="off" placeholder="Search, then Enter to add"></label><div id="note-procedure-results" class="actions" role="status"></div><div id="note-procedure-chips"></div><p class="muted">From the last encounter — choose to add:</p><div id="note-previous-procedures" class="actions"></div></section>';}
 const visitNoteSearches=new Map();
-let visitNoteSearchTimer=null;
+const visitNoteSearchTimers=new Map();
 async function visitNoteInlineMount(){
  const id=activeVisit?.id,identity=me;
  if(typeof chargeBundlesLoad==='function')await chargeBundlesLoad();
@@ -353,38 +353,84 @@ async function visitNoteAddProcedures(lines){
  if(encounterChargeAccount()?.status==='posted')throw new Error('Charges are posted. Add a correction from Billing.');
  if(!$('billing-account-form'))encounterChargeTableInline();
  const form=$('billing-account-form');if(!form)throw new Error('Open Charges & claim to add procedures.');
+ const visit=activeVisit?.id,patient=selected,identity=me;
+ const current=()=>form.isConnected&&activeVisit?.id===visit&&selected===patient&&me===identity;
  const added=chargeLinesAppend(lines);
  if(!added.length)throw new Error('These charges could not be added. Review Charges & claim.');
  await loadChargeEncounterDiagnoses(form);
+ if(!current())return;
  if(typeof loadFeeContext==='function')await loadFeeContext(form);
- for(const row of added)if(typeof checkFee==='function')await checkFee(form,row,true);
- visitNoteInlinePaint();
+ for(const row of added)if(current()&&typeof checkFee==='function')await checkFee(form,row,true);
+ if(current())visitNoteInlinePaint();
+}
+function visitNoteCodeResults(input){
+ return input.closest?.('[data-note-quick-code]')?.querySelector('[data-note-quick-results]')||$(`note-${input.dataset.noteCodeSearch}-results`);
 }
 async function visitNoteSearch(input){
- const kind=input.dataset.noteCodeSearch,id=activeVisit?.id,identity=me,query=input.value.trim();
- if(!query)return;
- const params=kind==='diagnosis'?new URLSearchParams({system:'ICD-10-CM',q:query,service_date:terminologyServiceDate('diagnosis',$('note-form')),billable:'true',active:'true',limit:'12'}):new URLSearchParams({q:query});
- const result=await api(kind==='diagnosis'?`/api/v1/terminology/codes?${params}`:`/api/v1/patients/${encodeURIComponent(selected)}/procedure-codes?${params}`);
- if(activeVisit?.id!==id||identity!==me||!input.isConnected||input.value.trim()!==query)return;
- visitNoteSearches.set(kind,{id,identity,input,query,items:result.items||[]});
- const host=$(`note-${kind}-results`);if(host)host.innerHTML=(result.items||[]).map((item,i)=>`<button type="button" data-note-search-pick="${kind}" data-note-search-index="${i}">+ ${esc(item.code)}${kind==='diagnosis'?' · '+esc(item.display||''):''}</button>`).join('')||'No matching codes.';
+ const kind=input.dataset.noteCodeSearch,id=activeVisit?.id,patient=selected,identity=me,query=input.value.trim();
+ const host=visitNoteCodeResults(input);
+ if(!query||!host||input.closest('[hidden]'))return;
+ const dated=terminologyServiceDate(kind,$('billing-account-form')||$('note-form'));
+ const params=new URLSearchParams({system:'ICD-10-CM',q:query,service_date:dated,billable:'true',active:'true',limit:'12'});
+ const result=kind==='diagnosis'?await api(`/api/v1/terminology/codes?${params}`):
+  await terminologyProcedureOptions({query,serviceDate:dated},patient);
+ if(activeVisit?.id!==id||selected!==patient||identity!==me||!input.isConnected||input.closest('[hidden]')||input.value.trim()!==query)return;
+ const items=(result.items||[]).map(item=>{
+  const pricing=result.mine?.items?.find(row=>row.practice_code&&row.code===item.code&&row.system===item.system);
+  return pricing?{...item,price_cents:pricing.price_cents,default_units:pricing.default_units,modifiers:pricing.modifiers}:item;
+ });
+ const state={id,patient,identity,input,host,query,items,busy:false};
+ visitNoteSearches.set(kind,state);
+ host.innerHTML=items.slice(0,12).map((item,i)=>`<button type="button" data-note-search-pick="${kind}" data-note-search-index="${i}"><b>${esc(item.code)}</b> ${esc(item.display||item.description||'')}${item.price_cents!=null?` · ${money(item.price_cents)}`:''}</button>`).join('')||'No matching codes.';
+ return state;
 }
-async function visitNoteSearchPick(kind,index=0){
+async function visitNoteSearchPick(kind,index=0,from=null){
  const state=visitNoteSearches.get(kind),item=state?.items[index];
- if(!item||state.id!==activeVisit?.id||state.identity!==me||state.query!==state.input.value.trim())return;
- if(kind==='diagnosis')await visitDiagnosisInlineChange(item);
- else await visitNoteAddProcedures([{...item,code_system:item.code_system||item.system||chargeCodeSystem(item),description:item.display||item.description||item.code,units:item.default_units||item.units||1,...(item.price_cents!=null?{amount_cents:item.price_cents*(item.default_units||item.units||1)}:{}),diagnosis_codes:[]}]);
- state.input.value='';$(`note-${kind}-results`).replaceChildren();visitNoteSearches.delete(kind);
+ if(!item||state.busy||state.id!==activeVisit?.id||state.patient!==selected||state.identity!==me||
+  !state.input.isConnected||state.input.closest('[hidden]')||state.query!==state.input.value.trim()||
+  from&&(!from.isConnected||!state.host.contains(from)))return;
+ state.busy=true;
+ try{
+  if(kind==='diagnosis')await visitDiagnosisInlineChange(item);
+  else{
+   const units=item.default_units||item.units||1;
+   await visitNoteAddProcedures([{code:item.code,code_system:item.code_system||item.system||chargeCodeSystem(item),
+    description:item.display||item.description||item.code,units,modifiers:item.modifiers||'',
+    ...(item.catalog_release_id||item.release_id?{catalog_release_id:item.catalog_release_id||item.release_id}:{}),
+    ...(item.price_cents!=null?{amount_cents:item.price_cents*units}:{}),diagnosis_codes:[]}]);
+  }
+  if(visitNoteSearches.get(kind)===state&&state.input.value.trim()===state.query){
+   state.input.value='';state.host.replaceChildren();visitNoteSearches.delete(kind);
+   if(typeof encounterStepsSchedule==='function')encounterStepsSchedule();
+  }
+ }finally{state.busy=false;}
 }
 document.addEventListener('input',event=>{
- const input=event.target;
- if(!input.dataset?.noteCodeSearch)return;
- clearTimeout(visitNoteSearchTimer);visitNoteSearchTimer=setTimeout(()=>void visitNoteSearch(input).catch(error=>showVisitNoteMessage(error.message)),250);
+ const input=event.target,kind=input.dataset?.noteCodeSearch;
+ if(!kind||event.isComposing)return;
+ const host=visitNoteCodeResults(input);
+ const previous=visitNoteSearches.get(kind);
+ if(previous?.input===input&&!previous.busy)visitNoteSearches.delete(kind);
+ host?.replaceChildren();
+ clearTimeout(visitNoteSearchTimers.get(input));
+ visitNoteSearchTimers.delete(input);
+ if(input.value.trim())visitNoteSearchTimers.set(input,setTimeout(()=>{
+  visitNoteSearchTimers.delete(input);
+  void visitNoteSearch(input).catch(error=>{if(input.isConnected&&!input.closest('[hidden]'))showVisitNoteMessage(error.message);});
+ },250));
 });
 document.addEventListener('keydown',event=>{
  if(event.key!=='Enter'||!event.target.dataset?.noteCodeSearch)return;
- event.preventDefault();clearTimeout(visitNoteSearchTimer);
- void visitNoteEnqueue(async()=>{await visitNoteSearch(event.target);await visitNoteSearchPick(event.target.dataset.noteCodeSearch);}).catch(error=>showVisitNoteMessage(error.message));
+ event.preventDefault();
+ const input=event.target,kind=input.dataset.noteCodeSearch;
+ clearTimeout(visitNoteSearchTimers.get(input));
+ visitNoteSearchTimers.delete(input);
+ void visitNoteEnqueue(async()=>{
+  const state=await visitNoteSearch(input);
+  if(!state)return;
+  const index=input.closest('[data-note-quick-code]')?state.items.findIndex(item=>item.code.toUpperCase()===state.query.toUpperCase()):0;
+  if(index>=0)await visitNoteSearchPick(kind,index);
+ }).catch(error=>showVisitNoteMessage(error.message));
 });
 document.addEventListener('change',event=>{
  const input=event.target,index=input.dataset?.noteChargeIndex;if(index==null)return;
@@ -397,7 +443,7 @@ document.addEventListener('click',event=>{
  let work=null;
  if(data.noteBundle)work=()=>visitNoteAddProcedures((chargeBundles||[]).find(bundle=>bundle.id===data.noteBundle)?.lines||[]);
  else if(data.notePreviousProcedure!=null)work=async()=>{await visitNoteAddProcedures([$('note-previous-procedures').noteLines[Number(data.notePreviousProcedure)]]);button.disabled=true;};
- else if(data.noteSearchPick)work=()=>visitNoteSearchPick(data.noteSearchPick,Number(data.noteSearchIndex));
+ else if(data.noteSearchPick)work=()=>visitNoteSearchPick(data.noteSearchPick,Number(data.noteSearchIndex),button);
  else if(data.noteRemoveDiagnosis)work=()=>visitDiagnosisInlineChange(null,data.noteRemoveDiagnosis);
  else if(data.noteRemoveProcedure!=null)work=()=>{const form=$('billing-account-form'),row=chargeLiveRows(form)[Number(data.noteRemoveProcedure)];row?.querySelector('[data-remove-charge]')?.click();visitNoteInlinePaint();};
  if(work){event.preventDefault();void visitNoteEnqueue(work).catch(error=>showVisitNoteMessage(error.message));}

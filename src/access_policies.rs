@@ -301,6 +301,10 @@ fn action(method: &Method, path: &str) -> Option<Action> {
         Method::PUT | Method::PATCH => Some(Action::Edit),
         Method::DELETE => Some(Action::Delete),
         Method::POST => {
+            if path.starts_with("/api/v1/billing/claims/") && path.ends_with("/claimmd-correction")
+            {
+                return Some(Action::Edit);
+            }
             if path.starts_with("/api/v1/billing/patients/")
                 && (path.ends_with("/payment-setups")
                     || path.ends_with("/installment-plans")

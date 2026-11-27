@@ -17,7 +17,7 @@ assert.match(native,/Nothing was sent to the clearinghouse/);
 // produce real markup, so the form can be inspected as clinic staff see it.
 const vm=require('node:vm');
 const escape=value=>String(value??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;');
-function render(defaults){
+function render(defaults,compact=false){
  const pane={html:''};
  // The screen builds its inputs through ediField (web/clearinghouse.js), which
  // passes the field's max length through to the app's billingField in its place.
@@ -25,7 +25,7 @@ function render(defaults){
  const selectField=(name,label,options,value)=>`<label>${escape(label)}<select name="${name}">${options.map(option=>`<option value="${escape(option)}" ${option===value?'selected':''}>${escape(option)}</option>`).join('')}</select></label>`;
  const context={console,crypto:{randomUUID:()=>'request'},document:{addEventListener:()=>{}},esc:escape,human:String,date:String,
   billingField:ediField,ediField,selectField,claimPane:html=>{pane.html=html;},
-  claimContextSnapshot:()=>null,
+  claimContextSnapshot:()=>compact?{reviewSheet:{}}:null,requireClaimContext:()=>{},money:String,
   claimsBase:'/api/v1/billing/claims',$:()=>null,api:async()=>({items:[]}),notice:()=>{},run:fn=>{fn();}};
  vm.createContext(context);
  vm.runInContext(native+'\nclaimMdConnectionState={connected:true,active:{usage:"T"}};',context);
@@ -44,6 +44,18 @@ const filledDefaults={billing_taxonomy:'207Q00000X',filing_indicator:'MB',billin
 // The markup ends each input with `required>` or a bare `>`, so the ending decides.
 const attributeOf=(html,name)=>{const match=new RegExp(`<input name="${name}"[^>]*>`).exec(html);return match?match[0]:'';};
 const isRequired=(html,name)=>/\srequired(?=>|\s)/.test(attributeOf(html,name));
+
+(function compactReviewShowsOnlyMissingFields(){
+ const html=render({...filledDefaults,patient_address:fullAddress,subscriber_address:{...fullAddress,postal_code:''}},true);
+ assert.match(html,/Policy holder address<\/dt><dd>123 Synthetic St, Suite 4, Syntheticton, CA/);
+ assert.match(html,/<input type="hidden" name="billing_postal_code" value="90001">/);
+ assert.match(html,/<input type="hidden" name="subscriber_city" value="Syntheticton">/);
+ assert.equal(isRequired(html,'subscriber_postal_code'),true);
+ assert.equal((html.match(/<fieldset class="edi-address">/g)||[]).length,1);
+ assert.doesNotMatch(html,/Save claim file without sending|Subscriber first name|Rendering provider first name/);
+ assert.match(html,/name="routine_professional_reviewed" type="checkbox" required/);
+})();
+
 
 (function filledDefaultsRender(){
  const html=render(filledDefaults);

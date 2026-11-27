@@ -32,7 +32,7 @@
  const sectionAliases={summary:'overview',profile:'profile',problems:'clinical',allergies:'clinical',medications:'clinical'};
  const billingTabs=['overview','invoices','payments','methods','subscriptions'];
  const missingContactFilters=['address','phone'];
- const claimWorklistFilters=['wait','fix','remittance-review','posted'];
+ const claimWorklistFilters=['send','wait','fix','remittance-review','posted'];
  const uuid=value=>typeof value==='string'&&/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
  const invert=(map,value)=>Object.keys(map).find(key=>map[key]===value);
  const knownQueueKind=kind=>typeof workQueueKinds!=='undefined'&&workQueueKinds.some(([key])=>key===kind);

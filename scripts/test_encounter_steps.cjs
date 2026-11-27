@@ -53,7 +53,7 @@ for(const options of [{},{selfPay:true},{signed:true},{signed:true,sent:true},{s
  const f=fixture(options),w=f.w,frame=w.document.querySelector('.frame-content');
  visible(f);
  assert.deepEqual([...f.page.querySelectorAll('[data-encounter-label] > span:first-child')].map(n=>n.textContent),['Rooming & vitals','Note','Payment']);
- assert.deepEqual([...f.page.querySelectorAll('[data-encounter-step-open]')].map(chip=>chip.textContent.replace(/^✓ /,'')),['Visit','Payment']);
+ assert.deepEqual([...f.page.querySelectorAll('[data-encounter-step-open]')].map(chip=>chip.textContent.replace(/^✓ /,'')),options.selfPay?['Visit','Codes','Payment']:['Visit','Codes','Claim','Payment']);
  assert.equal(f.page.querySelector('[data-step-claim]'),null);
  assert.equal(f.page.querySelector('[data-encounter-claim-status]').hidden,Boolean(options.selfPay));
  assert(f.page.querySelector('#encounter-documentation [data-encounter-claim-status] #visit-billing-review'));
@@ -61,7 +61,7 @@ for(const options of [{},{selfPay:true},{signed:true},{signed:true,sent:true},{s
  const note=w.$('note-form');frame.scrollTop=420;
  for(const chip of f.page.querySelectorAll('[data-encounter-step-open]')){chip.click();visible(f);}
  assert.equal(w.$('note-form'),note);
- assert.deepEqual(frame.scrollCalls.map(call=>call.behavior),Array(2).fill('smooth'));
+ assert.deepEqual(frame.scrollCalls.map(call=>call.behavior),Array(options.selfPay?3:4).fill('smooth'));
  const payment=f.page.querySelector('[data-encounter-step-number="2"] [data-encounter-label]');
  assert.equal(w.document.activeElement,payment);
  f.sync();assert.equal(w.document.activeElement,payment);assert.equal(frame.scrollTop,420);
@@ -122,7 +122,7 @@ for(const options of [{},{selfPay:true},{signed:true},{signed:true,sent:true},{s
 (async()=>{
  const f=fixture(),w=f.w;
  const editor=w.$('encounter-billing-editor');
- editor.innerHTML='<form id="billing-account-form"><input name="amount" value="180.00"><select name="diagnoses"><option>A</option></select><input name="ndc"></form>';
+ editor.innerHTML='<form id="billing-account-form" data-mode="draft"><input name="amount" value="180.00"><select name="diagnoses"><option>A</option></select><input name="ndc"></form>';
  const diagnosisEditor=w.document.createElement('section');diagnosisEditor.id='encounter-diagnoses';
  diagnosisEditor.innerHTML='<form id="visit-diagnoses-form"><button type="submit">Save</button></form>';
  w.$('encounter-revenue').append(diagnosisEditor);
@@ -130,12 +130,18 @@ for(const options of [{},{selfPay:true},{signed:true},{signed:true,sent:true},{s
  f.sync();
  const codeLauncher=f.page.querySelector('[data-open-encounter-codes]');
  assert.equal(editor.closest('dialog[data-encounter-codes-dialog]').open,false);
- assert.equal(codeLauncher.textContent,'Add diagnosis');
- assert.deepEqual([...f.page.querySelectorAll('.encounter-code-needed')].map(node=>node.textContent),['Add a diagnosis to bill this visit.','Add a procedure to bill this visit.']);
+ assert.equal(codeLauncher.textContent,'Edit codes');
+ assert.deepEqual([...f.page.querySelectorAll('[data-note-quick-code]:not([hidden]) label')].map(node=>node.textContent),['Primary diagnosis','Procedure']);
+ assert.equal(f.page.querySelector('[data-encounter-codes-summary]').hidden,true,'the inline fields replace duplicate empty-code warnings');
+ f.page.querySelector('[data-encounter-next]').click();
+ assert.equal(w.document.activeElement.dataset.noteCodeSearch,'diagnosis');
+ assert.equal(editor.closest('dialog').open,false);
  w.activeVisit.diagnoses=[{code:'R51.9',display:'Headache'}];
  f.sync();
- assert.equal(codeLauncher.textContent,'Add procedure');
- assert.equal(f.page.querySelectorAll('.encounter-code-needed').length,1);
+ assert.equal(codeLauncher.textContent,'Edit codes');
+ assert.equal(f.page.querySelector('[data-note-quick-code="diagnosis"]').hidden,true);
+ f.page.querySelector('[data-encounter-next]').click();
+ assert.equal(w.document.activeElement.dataset.noteCodeSearch,'procedure');
  w.encounterRevenueState.data.summary.account.content={lines:[{code:'99213',description:'Office visit',units:1,amount_cents:18000}]};
  f.sync();
  const panel=f.page.querySelector('dialog[data-encounter-codes-dialog]');
@@ -144,6 +150,7 @@ for(const options of [{},{selfPay:true},{signed:true},{signed:true,sent:true},{s
  assert.match(f.page.querySelector('[data-encounter-codes-summary]').textContent,/R51.9.*99213/);
  assert.equal(f.page.querySelector('[data-open-encounter-codes]').textContent,'Edit codes');
  assert.equal(f.page.querySelectorAll('.encounter-code-needed').length,0);
+ assert.equal(f.page.querySelector('[data-encounter-quick-codes]').hidden,true);
  assert.equal(panel.querySelector('#billing-account-form'),editor.firstElementChild);
  f.page.querySelector('[data-open-encounter-codes]').click();
  const amount=editor.querySelector('input');amount.focus();amount.value='192.00';
@@ -242,7 +249,7 @@ for(const options of [{},{selfPay:true},{signed:true},{signed:true,sent:true},{s
  frame.scrollTop=200;seeVisit();clickPayment();
  assert.equal(viewed(),'1');
  frame.scrollTop=300;frame.dispatchEvent(new w.Event('scroll'));
- assert.equal(viewed(),'2');assert.equal(current(),'1');
+ assert.equal(viewed(),'2');assert.equal(current(),'codes');
  f.sync();seeVisit();assert.equal(viewed(),'2');
  scrollHeight=1082;frame.scrollTop=275;f.sync();seeVisit();frame.dispatchEvent(new w.Event('scroll'));
  assert.equal(viewed(),'2');
@@ -254,7 +261,7 @@ for(const options of [{},{selfPay:true},{signed:true},{signed:true,sent:true},{s
 (async()=>{
  const f=fixture(),w=f.w,observer=w.scrollObserver;
  assert.equal(observer.options.root,w.document.querySelector('.frame-content'));
- assert.equal(observer.targets.length,3);
+ assert.equal(observer.targets.length,5);
  const before=[...f.page.querySelectorAll('[data-step-state]')].map(n=>n.dataset.stepState);
  const visit=f.page.querySelector('[data-encounter-step-number="1"]');
  observer.callback([{target:visit,isIntersecting:true,boundingClientRect:{top:240}}]);

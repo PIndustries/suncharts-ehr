@@ -146,21 +146,24 @@ async function frequentProcedureCombobox(state,request,values){
  state.search=values;state.items=items.slice(0,8);state.active=-1;state.more=null;
  state.status.textContent='Codes your practice uses most. Type to search every code.';renderTerminologyCombobox(state);
 }
+async function terminologyProcedureOptions(values,patient){
+ const dated=/^\d{4}-\d{2}-\d{2}$/.test(values.serviceDate),list=system=>dated?api(`/api/v1/terminology/codes?${new URLSearchParams({system,q:values.query,service_date:values.serviceDate,billable:'true',active:'true',limit:'25'})}`).catch(()=>null):Promise.resolve(null);
+ const own=patient?api(`/api/v1/patients/${encodeURIComponent(patient)}/procedure-codes?${new URLSearchParams({q:values.query})}`).catch(()=>null):Promise.resolve(null);
+ const [mine,cpt,hcpcs]=await Promise.all([own,list('CPT'),list('HCPCS')]);
+ const search={...values,procedure:true},seen=new Map();
+ // Keep the practice's result order and prefer the installed catalog for code evidence.
+ const practice=(items,source)=>{for(const raw of items||[]){const item={...raw,practice:source==='practice',source};if(!terminologyComboboxEligible(item,search))continue;const key=item.code.toUpperCase(),known=seen.get(key);if(!known||(source==='catalog'&&known.source!=='catalog'))seen.set(key,item);}};
+ practice(mine?.items,'practice');
+ practice([...(cpt?.items||[]),...(hcpcs?.items||[])],'catalog');
+ const query=values.query.toUpperCase();
+ // What was typed head-on first, then the practice's own order; nothing else outranks it.
+ return {mine,items:[...seen.entries()].map(([key,item],index)=>({item,index,lead:key.startsWith(query)?1:0})).sort((a,b)=>b.lead-a.lead||a.index-b.index).map(entry=>entry.item).slice(0,25)};
+}
 async function searchProcedureCombobox(state,request,values){
  if(!terminologyComboboxCurrent(state,request,values))return;
- const dated=/^\d{4}-\d{2}-\d{2}$/.test(values.serviceDate),list=system=>dated?api(`/api/v1/terminology/codes?${new URLSearchParams({system,q:values.query,service_date:values.serviceDate,billable:'true',active:'true',limit:'25'})}`).catch(()=>null):Promise.resolve(null);
- const own=selected?api(`/api/v1/patients/${encodeURIComponent(selected)}/procedure-codes?${new URLSearchParams({q:values.query})}`).catch(()=>null):Promise.resolve(null);
- const [mine,cpt,hcpcs]=await Promise.all([own,list('CPT'),list('HCPCS')]);
+ const {mine,items}=await terminologyProcedureOptions(values,state.patient);
  if(!terminologyComboboxCurrent(state,request,values))return;
-  const search={...values,procedure:true},seen=new Map();state.search=values;
-  // The practice's own codes come first, in the order the practice's list answers them; a code
-  // list only fills a gap the practice list leaves, and never overwrites a code already there.
-  const practice=(items,source)=>{for(const raw of items||[]){const item={...raw,practice:source==='practice',source};if(!terminologyComboboxEligible(item,search))continue;const key=item.code.toUpperCase(),known=seen.get(key);if(!known||(source==='catalog'&&known.source!=='catalog'))seen.set(key,item);}};
-  practice(mine?.items,'practice');
-  practice([...(cpt?.items||[]),...(hcpcs?.items||[])],'catalog');
-  const query=values.query.toUpperCase();
-  // What was typed head-on first, then the practice's own order; nothing else outranks it.
-  state.input.removeAttribute('aria-busy');state.items=[...seen.entries()].map(([key,item],index)=>({item,index,lead:key.startsWith(query)?1:0})).sort((a,b)=>b.lead-a.lead||a.index-b.index).map(entry=>entry.item).slice(0,25);state.active=-1;state.more=null;renderTerminologyCombobox(state);
+ state.search=values;state.input.removeAttribute('aria-busy');state.items=items;state.active=-1;state.more=null;renderTerminologyCombobox(state);
   terminologyComboboxStatus(state,state.items.length?'':mine&&mine.disabled===true?'Procedure codes are turned off for this practice. Type the code by hand.':/^[0-9]{4}[0-9A-TV-Z]$|^[A-Z][0-9]{4}$/i.test(values.query.trim())?`${values.query.trim().toUpperCase()} is not on your code list yet. Press Tab to use it as typed, then add its name and amount. You can save it with its price for next time.`:'No match. Keep typing, or type the code and leave the box to use it as typed.');
   if(state.items.length)terminologyComboboxStatus(state,`${state.items.length} match${state.items.length===1?'':'es'}. Scroll the list, or keep typing to narrow it.`);
 }
