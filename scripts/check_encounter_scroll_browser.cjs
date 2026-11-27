@@ -40,6 +40,7 @@ const procedure = {code: '99213', description: 'Established patient office visit
 function encounterBilling(currentVisit, scenario, correction) {
   if (scenario === 'handoff') {
     const b=encounterBilling(currentVisit,'draft-insured',correction);
+    b.coverages[0].content.relationship='self';
     b.accounts[0].content.lines=[procedure];
     if(currentVisit.status==='signed'){
       b.accounts[0].status='posted';
@@ -337,7 +338,7 @@ async function checkBillingSections(page, scenario, refreshBilling, screenshotPr
     const paidSummary = payment.section + ' [data-step-payment] [data-payment-summary]';
     await page.waitForSelector(paidSummary, {visible: true});
     const summary = await page.$eval(paidSummary, node => node.innerText.replace(/\s+/g, ' '));
-    assert.match(summary, scenario === 'paid' ? /Amount due \$0\.00/ : /Balance available after charges are posted/i);
+    assert.match(summary, scenario === 'paid' ? /No patient amount due/ : /Balance available after charges are posted/i);
     assert.equal(await page.$eval(paymentDetails, details => details.open), false, 'Detailed payment tools remain folded');
   } else {
     const paymentTotals = payment.section + ' .visit-billing-totals';
@@ -780,12 +781,12 @@ async function run(browser, viewport, reducedMotion, failures, scenario = 'blank
       const compact=await page.$eval('[data-step-payment]',node=>node.innerText);
       assert.doesNotMatch(compact,/test receipts|Correct receipt/);
       assert.deepEqual((await encounterSections(page)).map(section=>section.label),['Visit','Payment']);
-      await page.locator(claim+' [data-open-signed-claim-details]').click();
-      const drugFix='dialog[data-signed-claim-details][open] [data-review-field="ndc_code"]';
-      await page.waitForSelector(drugFix,{visible:true});
-      await page.locator(drugFix).click();
-      await page.waitForFunction(()=>document.activeElement?.name==='ndc_code'&&!!document.activeElement.closest('dialog[open]'));
-      assert.equal(await page.evaluate(()=>document.activeElement.closest('.billing-charge-row').querySelector('[name="code"]').value),'J0585');
+      assert.match(await page.$eval(claim,node=>node.innerText),/Needs clinician signature/);
+      assert.equal(await page.$(claim+' [data-open-signed-claim-details]'),null);
+      await page.locator('#encounter-documentation [data-open-encounter-codes]').click();
+      const ndcField=codesDialog+' .billing-charge-row [name="ndc_code"]';
+      await page.waitForSelector(ndcField,{visible:true});
+      assert.equal(await page.$eval(ndcField,field=>field.closest('.billing-charge-row').querySelector('[name="code"]').value),'J0585');
       await page.keyboard.press('Escape');
       await page.locator('[data-step-payment] [data-open-encounter-payment-history]').click();
       await page.waitForFunction(()=>document.querySelectorAll('[data-step-payment-details][open] #visit-billing-ledger [data-copay-receipt]').length===5);
@@ -796,8 +797,8 @@ async function run(browser, viewport, reducedMotion, failures, scenario = 'blank
       assert.equal(await page.$(payment+' [data-copay-void]'),null);
       await page.evaluate(()=>loadEncounterRevenueStatus(encounterChargeAccount(), true));
       assert(await page.$eval(payment,node=>node.open));
-      assert.deepEqual(errors, [], 'Draft claim and receipt details open without writes or browser errors');
-      console.log('PASS unsigned insured browser visit: counts and test credit, five distinct receipts, claim details and payment history');
+      assert.deepEqual(errors, [], 'Coding and receipt details open without writes or browser errors');
+      console.log('PASS unsigned insured browser visit: counts and test credit, five distinct receipts, coding details and payment history');
       return;
     }
     if (scenario !== 'blank') {

@@ -18,6 +18,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sqlx::{PgPool, Postgres, Transaction};
+use std::collections::HashMap;
 use uuid::Uuid;
 fn core() -> String {
     stedi::CORE.into()
@@ -638,6 +639,45 @@ async fn control_number_candidates(
         .bind(a.tenant_id).bind(key).bind(controls).fetch_all(&mut **tx).await?)
 }
 
+pub(crate) struct ClaimRemittanceDisposition {
+    pub payer_denied: Option<bool>,
+    pub paid_cents: Option<i64>,
+}
+
+pub(crate) async fn claim_remittance_dispositions(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    claims: &[Uuid],
+) -> Result<HashMap<Uuid, ClaimRemittanceDisposition>> {
+    if claims.is_empty() {
+        return Ok(HashMap::new());
+    }
+    // Only the current posted row for each claim speaks for its payer disposition.
+    let rows: Vec<(Uuid, Option<String>, Option<Value>)> = sqlx::query_as(
+        "SELECT h.claim_id,r.document->'claims'->h.row_index->>'status',
+                r.document->'claims'->h.row_index->'paid_cents'
+         FROM era_claim_heads h
+         JOIN era_remittances r ON r.tenant_id=h.tenant_id AND r.id=h.remittance_id
+         WHERE h.tenant_id=$1 AND h.claim_id=ANY($2) AND r.status='posted'",
+    )
+    .bind(tenant)
+    .bind(claims)
+    .fetch_all(&mut **tx)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(id, status, paid)| {
+            (
+                id,
+                ClaimRemittanceDisposition {
+                    payer_denied: status.map(|status| status == "4"),
+                    paid_cents: paid.and_then(|amount| amount.as_i64()),
+                },
+            )
+        })
+        .collect())
+}
+
 pub(crate) async fn claim_tracking(
     tx: &mut Transaction<'_, Postgres>,
     a: &Actor,
@@ -653,9 +693,15 @@ pub(crate) async fn claim_tracking(
     let eligibility: Option<Value> = sqlx::query_scalar("SELECT jsonb_build_object('status',status,'created_at',created_at,'completed_at',completed_at,'service_date',request_snapshot->'request'->>'service_date') FROM claimmd_eligibility_checks WHERE tenant_id=$1 AND patient_id=$2 AND coverage_id::text=$3 AND request_snapshot->'request'->>'service_date'=$4 AND request_snapshot->>'member_id'=$5 AND request_snapshot->>'payerid'=$6 ORDER BY created_at DESC,id DESC LIMIT 1")
         .bind(a.tenant_id).bind(claim.patient_id).bind(claim.snapshot["account"]["coverage_snapshot"]["coverage"]["id"].as_str()).bind(claim.snapshot["account"]["content"]["service_date"].as_str()).bind(claim.snapshot["account"]["coverage_snapshot"]["coverage"]["content"]["member_id"].as_str()).bind(claim.snapshot["account"]["coverage_snapshot"]["payer"]["content"]["payer_code"].as_str()).fetch_optional(&mut **tx).await?;
     let external_submission: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM claim_revisions WHERE tenant_id=$1 AND claim_id=$2 AND evidence->>'action'='record_submission')").bind(a.tenant_id).bind(claim.id).fetch_one(&mut **tx).await?;
-    let remittance = crate::era_chains::head(tx, a, claim.id).await?;
+    let remittance = claim_remittance_dispositions(tx, a.tenant_id, &[claim.id])
+        .await?
+        .remove(&claim.id);
     Ok(
-        json!({"submissions":submissions,"reports":reports,"connections":connections,"eligibility":eligibility,"remittance_posted":remittance.is_some(),"external_submission_recorded":external_submission}),
+        json!({"submissions":submissions,"reports":reports,"connections":connections,
+        "eligibility":eligibility,"remittance_posted":remittance.is_some(),
+        "payer_denied":remittance.as_ref().and_then(|row| row.payer_denied),
+        "paid_cents":remittance.as_ref().and_then(|row| row.paid_cents),
+        "external_submission_recorded":external_submission}),
     )
 }
 

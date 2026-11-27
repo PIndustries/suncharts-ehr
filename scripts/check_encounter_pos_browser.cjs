@@ -63,7 +63,7 @@ async function check(browser,viewport,scenario){
   const retry=payment+' [data-refresh-revenue]';
   if(scenario==='failed'||scenario==='stale'){
    if(scenario==='stale'){
-    await page.waitForFunction(selector=>document.querySelector(selector)?.textContent==='Amount due $65.00',{},amount);
+    await page.waitForFunction(selector=>document.querySelector(selector)?.textContent==='Patient amount due $65.00',{},amount);
     failBalance=true;
     await page.evaluate(()=>loadEncounterRevenueStatus(encounterChargeAccount(),true));
    }
@@ -72,11 +72,11 @@ async function check(browser,viewport,scenario){
    assert.equal(await page.$(take),null);
    failBalance=false;
    await page.locator(retry).click();
-   await page.waitForFunction(selector=>document.querySelector(selector)?.textContent==='Amount due $65.00',{},amount);
+   await page.waitForFunction(selector=>document.querySelector(selector)?.textContent==='Patient amount due $65.00',{},amount);
    assert.equal(await page.$(retry),null);assert.ok(await page.$(take));assert.deepEqual(writes,[]);assert.deepEqual(errors,[]);
    console.log('PASS '+scenario+' balance recovers from a direct, read-only Retry');return;
   }
-  const expected=insured?'Copay due $25.00':paid?'Amount due $0.00':unknown?'Balance pending':'Amount due $65.00';
+  const expected=insured?'Copay due $25.00':paid?'No patient amount due':unknown?'Balance pending':'Patient amount due $65.00';
   await page.waitForFunction((selector,text)=>document.querySelector(selector)?.textContent===text,{},amount,expected);
   assert.equal(await page.$(payment+' details'),null);
   if(paid||unknown||restricted){
@@ -116,7 +116,7 @@ async function check(browser,viewport,scenario){
   assert.equal(writes.length,1);
   assert.equal(await page.evaluate(()=>localStorage.getItem('suncharts.collectMethod')),'reader','A temporary cash fallback preserves the saved reader preference');
   await page.keyboard.press('Escape');await page.waitForSelector(pos,{hidden:true});
-  await page.waitForFunction((selector,text)=>document.querySelector(selector)?.textContent===text,{},amount,insured?'Copay due $0.00':'Amount due $0.00');
+  await page.waitForFunction((selector,text)=>document.querySelector(selector)?.textContent===text,{},amount,insured?'No copay due':'No patient amount due');
   await page.locator(payment+' [data-open-encounter-payment-history]').click();
   await page.waitForSelector(history+'[open]',{visible:true});
   await page.waitForSelector(history+' [data-copay-receipt="'+record+'"]',{visible:true});

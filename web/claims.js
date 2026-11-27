@@ -13,7 +13,11 @@ const claimMonitorSelectedRecords=['all',...claimRecordFilters,'payments'];
 function claimWorkGroup(c){
  if(claimIsCrossover(c))return '';
  if(c.status==='rejected'||claimMdNeedsCorrection(c,c))return 'fix';
- if(['draft','ready'].includes(c.status))return 'send';
+ if(['draft','ready'].includes(c.status)){
+  const outcome=c.claim_handoff?.outcome;
+  if(outcome==='blocked')return 'fix';
+  return ['queued','waiting','delivered','recorded_externally'].includes(outcome)?'wait':'send';
+ }
  if(['submitted','accepted'].includes(c.status))return 'wait';
  return '';
 }
@@ -27,7 +31,7 @@ function claimStatusChipsHtml(){
  return `<nav class="practice-status-strip claims-status-strip" aria-label="Filter claims and remittances">${Object.entries(claimMonitorStages).map(([status,label])=>`<button type="button" data-claim-status="${status}" aria-pressed="false">${label} <span></span></button>`).join('')}<select id="billing-all-claims" aria-label="Other billing views"><option value="" disabled>Other views</option><option value="all">All claims</option><optgroup label="Claim status">${claimRecordFilters.map(status=>`<option value="${status}">${esc(displayStatus(status))}</option>`).join('')}</optgroup><option value="payments">All remittances</option></select></nav>`;
 }
 function claimRowMarkup(c){
- const group=claimWorkGroup(c),posted=c.status==='adjudicated'&&(c.tracking?.remittance_posted===true||c.remittance_posted===true);
+ const group=claimWorkGroup(c),posted=c.status==='adjudicated'&&c.remittance_posted===true&&c.paid_cents>0&&!c.payer_denied;
  const tone=posted?'paid':group||'other';
  return `<tr role="row"><td role="cell" class="monitor-record"><b>${esc(c.patient_name)}</b><small class="claim-control">Claim ${esc(c.control_number||'Not assigned')}${c.visit_id&&typeof encounterRowChip==='function'?' '+encounterRowChip(c):''}</small></td><td role="cell" class="monitor-date">${esc(displayDate(c.service_date)||'—')}</td><td role="cell" class="monitor-payer">${esc(c.payer_name||'—')}<small>${esc(displayStatus(c.frequency||''))}</small></td><td role="cell" class="money-cell monitor-amount">${money(c.total_cents)}</td><td role="cell" class="monitor-status"><span class="pill claim-status-${tone}">${esc(posted?'Payment posted':claimStatusLabel(c)||'Claim status unavailable')}</span></td><td role="cell" class="monitor-action"><button type="button" data-claim-open="${esc(c.id)}" data-claim-visit>Open claim</button></td></tr>`;
 }
@@ -345,12 +349,6 @@ async function loadClaimWorklist(context){
   const page=await api(claimWorklistPage(claimsBase,claims.next_cursor));
   claims.items.push(...page.items);claims.next_cursor=page.next_cursor;
  }
- if(!claimContextCurrent(context))return;
- // Adjudication means the insurer answered. Confirm a posted remittance before showing Paid.
- await Promise.all(claims.items.filter(row=>row.status==='adjudicated').map(async row=>{
-  const detail=await api(`${claimsBase}/${encodeURIComponent(row.id)}`).catch(()=>null);
-  if(detail?.claim?.id===row.id)row.tracking=detail.tracking;
- }));
  if(claimContextCurrent(context))return claims;
 }
 async function loadEraWorklist(context){
@@ -449,9 +447,7 @@ function claimStatusLabel(claim){
  return displayStatus(claim.status);
 }
 function claimIsCrossover(claim){return Boolean(claim?.crossover_tracking_only===true||claim?.snapshot?.coordination_of_benefits?.crossover);}
-// The one word on the claim page. The database holds more statuses than staff work with, so several
-// of them share a word: 'Paid' needs the posted insurance payment, and 'Denied' arrives as a
-// rejection, which is why neither is a claim status of its own.
+// 'Paid' needs a posted insurance payment. A return and a payer denial have separate evidence.
 const claimPlainWords={draft:'Not sent yet',ready:'Not sent yet',submitted:'Sent',accepted:'Accepted',rejected:'Rejected',void:'Voided',denied:'Denied',paid:'Paid'};
 // Claim.MD's two positions a claim row's own status cannot say, in the one word each screen uses.
 // A claim the clearinghouse holds for correction is worked on, not waited on; a claim it has only
@@ -470,11 +466,17 @@ function claimPlainStatus(claim,detail={}){
  if(!claim)return '';
  if(claimIsCrossover(claim))return 'Secondary payer answered';
  const status=String(claim.status||'').trim().toLowerCase();
+ if(status==='rejected'&&typeof visitBillingReturnTitle==='function')return visitBillingReturnTitle(claim);
  // The claim row lags the clearinghouse answer by however long the last check took. A file the
  // insurer has received means the claim is out, whatever the row still says, so the one word on the
  // page tells the truth about where the claim is rather than about which column was last written.
  if(['draft','ready'].includes(status)&&claimHasRecordedSubmission(detail))return claimPlainWords.submitted;
- if(status==='adjudicated')return detail?.tracking?.remittance_posted===true?'Paid':'Accepted';
+ if(status==='adjudicated'){
+  const tracking=detail.tracking||{};
+  if(tracking.payer_denied===true)return 'Payer denial';
+  if(tracking.remittance_posted===true)return tracking.paid_cents>0?'Payment posted':'Payer response posted';
+  return 'Payer response recorded';
+ }
  if(claimMdNeedsCorrection(claim,detail))return claimMdCorrectionWord;
  return claimPlainWords[status]||displayStatus(claim.status)||'Status unavailable';
 }
@@ -1217,9 +1219,8 @@ async function createCrossoverTracking(form,values){
 document.addEventListener('submit',event=>{const form=event.target;if(form.id!=='crossover-claim-review')return;event.preventDefault();run(()=>createCrossoverTracking(form,Object.fromEntries(new FormData(form))));});
 // The claim page's "Fix it here" form (registered last so the claim editor's own submit handler stays first).
 document.addEventListener('submit',event=>{if(event.target.id!=='claim-quick-fix')return;event.preventDefault();run(()=>saveClaimQuickFix(event.target));});
-// A claim is part of its visit: the encounter page is the invoice, and the claim is shown on it. Opens
-// the patient's visit with the claim below the invoice. A claim with no visit (an imported record)
-// answers false and stays on the claims page.
+// Open the encounter's claim dialog if the selected worklist claim is still current for that visit.
+// Older and imported claims open directly in the claims workspace.
 async function openClaimOnVisit(claimId){
  const context=claimContextSnapshot(),identity=context.identity;
  const request={kind:'visit-claim',id:claimId};context.detailRequest=request;
@@ -1230,8 +1231,13 @@ async function openClaimOnVisit(claimId){
  captureClaimDraft();await showClinical();if(me!==identity)return true;
  await selectPatient(claim.patient_id,visitId);if(me!==identity||selected!==claim.patient_id||activeVisit?.id!==visitId)return true;
  setEncounterSection('charges');
- await showEncounterClaim(claim.id,claim.account_id);
- $('encounter-claims')?.scrollIntoView({block:'start'});
+ if(typeof visitOpenCurrentEncounterClaim==='function'&&$('visit-page-host')){
+  if(await visitOpenCurrentEncounterClaim(claim.id,claim.account_id))return true;
+  if(await showClaimsWorkspace())await showClaim(claim.id);
+ }else{
+  await showEncounterClaim(claim.id,claim.account_id);
+  $('encounter-claims')?.scrollIntoView({block:'start'});
+ }
  return true;
 }
 // The claim's Fix here opens the boxes in a window over the page (a sheet), so nothing on the page

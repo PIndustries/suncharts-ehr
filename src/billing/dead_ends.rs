@@ -58,9 +58,12 @@ async fn resolve_denial(
     let rows =
         crate::visit_billing::balances(&mut tx, a.tenant_id, Some(&[p]), Some(&[id]), None).await?;
     let row = rows.first().ok_or(Error::NotFound)?;
-    if row["denied"] != true || row["claim_id"] != json!(v.claim_id) {
+    if claim.status != "adjudicated"
+        || row["denied"] != true
+        || row["claim_id"] != json!(v.claim_id)
+    {
         return Err(Error::Conflict(
-            "Review the current denied claim before continuing.",
+            "Only a current payer denial can be moved to the patient balance or written off.",
         ));
     }
     let balance = row["balance_cents"].as_i64().unwrap_or(0);

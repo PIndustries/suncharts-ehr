@@ -49,7 +49,7 @@ ctx.workspace.billing.copays=[{...receipt,amount_cents:5000,allocated_cents:2500
  const claim={id:'claim-current',status:'submitted'};
  const waiting=visitSummary({state:'waiting_insurer',waiting_on:'insurer',visit:{appointment_id:'appointment'},account:{id:'account-current',version:4},insurance:{status:'waiting',sent_on:'2026-10-25'},claim:{id:'claim-current',status:'submitted',sent_on:'2026-10-25'}});
  const pending=ctx.encounterRevenueStatusMarkup(posted,{summary:waiting});
- assert.match(pending,/Waiting on Synthetic Medicare PPO/);assert.match(pending,/Claim sent Oct 25, 2026\. Nothing to do until they answer/);assert.match(pending,/Waiting on the insurer’s answer/,'sending a claim is never shown as payment');assert.match(pending,/data-revenue-claim="claim-current"/);assert.doesNotMatch(pending,/data-new-claim|data-revenue-invoice/);
+ assert.match(pending,/Waiting on Synthetic Medicare PPO/);assert.match(pending,/Claim sent Oct 25, 2026\. Waiting for the payer’s decision\./);assert.match(pending,/Waiting on the insurer’s answer/,'sending a claim is never shown as payment');assert.match(pending,/data-revenue-claim="claim-current"/);assert.doesNotMatch(pending,/data-new-claim|data-revenue-invoice/);
  assert.doesNotMatch(ctx.encounterRevenueStatusMarkup(posted,{error:true}),/data-new-claim|data-visit-claim/);
  // One read-only request loads the encounter's billing; it never rebases the open chart or an unsaved draft.
  const originalLedger=ctx.workspace.billing.entries,originalAccounts=ctx.workspace.billing.accounts;node('encounter-billing-detail').innerHTML='UNSAVED CHARGE DRAFT';const calls=[];

@@ -16,6 +16,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sqlx::{PgPool, Postgres, Transaction};
+use std::collections::HashMap;
 use uuid::Uuid;
 
 #[derive(Deserialize, PartialEq)]
@@ -76,35 +77,80 @@ fn stage(artifact: &str, job: Option<&str>) -> &'static str {
 }
 #[derive(sqlx::FromRow)]
 struct DeliveryEvidence {
-    submission_id: Uuid,
-    artifact_status: String,
-    submission_version: i64,
-    claim_version: i64,
-    partner_id: Uuid,
-    partner_version: i64,
+    claim_id: Uuid,
+    manual_external_submission: bool,
+    submission_id: Option<Uuid>,
+    artifact_status: Option<String>,
+    submission_version: Option<i64>,
+    claim_version: Option<i64>,
+    partner_id: Option<Uuid>,
+    partner_version: Option<i64>,
     job_id: Option<Uuid>,
     delivery_status: Option<String>,
     route_key: Option<String>,
 }
+
+pub(crate) async fn evidence_for_claims(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    claims: &[Uuid],
+) -> Result<HashMap<Uuid, Value>> {
+    if claims.is_empty() {
+        return Ok(HashMap::new());
+    }
+    // A receipt or ambiguous in-flight attempt on an older file takes precedence over a later
+    // prepared file. Staff can also record an outside submission without making a file here.
+    let rows: Vec<DeliveryEvidence> = sqlx::query_as(
+        "SELECT c.id AS claim_id,
+         EXISTS(SELECT 1 FROM claim_revisions r WHERE r.tenant_id=c.tenant_id AND r.claim_id=c.id
+                AND r.evidence->>'action'='record_submission') AS manual_external_submission,
+         e.*
+         FROM ehr_claims c
+         LEFT JOIN LATERAL (
+           SELECT s.id AS submission_id,s.status AS artifact_status,s.version AS submission_version,
+                  s.claim_version,s.partner_id,s.partner_version,j.id AS job_id,
+                  j.status AS delivery_status,j.route_key
+           FROM edi_submissions s
+           LEFT JOIN edi_delivery_jobs j ON j.tenant_id=s.tenant_id AND j.submission_id=s.id
+           WHERE s.tenant_id=c.tenant_id AND s.claim_id=c.id
+           ORDER BY (s.status='delivered' OR COALESCE(j.status='delivered',false)) DESC,
+                    COALESCE(j.status IN ('unknown','leased','queued','retry','blocked'),false) DESC,
+                    s.created_at DESC,j.created_at DESC NULLS LAST,s.id DESC
+           LIMIT 1
+         ) e ON true
+         WHERE c.tenant_id=$1 AND c.id=ANY($2)",
+    )
+    .bind(tenant)
+    .bind(claims)
+    .fetch_all(&mut **tx)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|row| {
+            let delivery_status = row.delivery_status.as_deref();
+            let outcome = if row.manual_external_submission && delivery_status != Some("delivered") {
+                "recorded_externally"
+            } else {
+                stage(row.artifact_status.as_deref()?, delivery_status)
+            };
+            Some((row.claim_id, json!({
+                "outcome":outcome,
+                "claim_id":row.claim_id, "submission_id":row.submission_id, "submission_version":row.submission_version,
+                "claim_version":row.claim_version, "partner_id":row.partner_id, "partner_version":row.partner_version,
+                "job_id":row.job_id, "delivery_status":row.delivery_status, "route_key":row.route_key
+            })))
+        })
+        .collect())
+}
+
 pub(crate) async fn evidence(
     tx: &mut Transaction<'_, Postgres>,
     a: &Actor,
     claim: Uuid,
 ) -> Result<Option<Value>> {
-    // A receipt or ambiguous in-flight attempt on an older file takes precedence over a later draft.
-    let row: Option<DeliveryEvidence> = sqlx::query_as(
-        "SELECT s.id AS submission_id,s.status AS artifact_status,s.version AS submission_version,s.claim_version,s.partner_id,s.partner_version,j.id AS job_id,j.status AS delivery_status,j.route_key
-         FROM edi_submissions s LEFT JOIN edi_delivery_jobs j ON j.tenant_id=s.tenant_id AND j.submission_id=s.id
-         WHERE s.tenant_id=$1 AND s.claim_id=$2
-         ORDER BY (s.status='delivered' OR COALESCE(j.status='delivered',false)) DESC,
-         COALESCE(j.status IN ('unknown','leased','queued','retry','blocked'),false) DESC,s.created_at DESC,j.created_at DESC NULLS LAST,s.id DESC LIMIT 1")
-        .bind(a.tenant_id).bind(claim).fetch_optional(&mut **tx).await?;
-    Ok(row.map(|row|json!({
-        "outcome":stage(&row.artifact_status,row.delivery_status.as_deref()),
-        "claim_id":claim, "submission_id":row.submission_id, "submission_version":row.submission_version,
-        "claim_version":row.claim_version, "partner_id":row.partner_id, "partner_version":row.partner_version,
-        "job_id":row.job_id, "delivery_status":row.delivery_status, "route_key":row.route_key
-    })))
+    Ok(evidence_for_claims(tx, a.tenant_id, &[claim])
+        .await?
+        .remove(&claim))
 }
 
 pub(crate) async fn handoff(

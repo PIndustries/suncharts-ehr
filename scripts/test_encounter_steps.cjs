@@ -6,7 +6,7 @@ const source=fs.readFileSync('web/patient-revenue.js','utf8');
 new (require('node:vm').Script)(source); // Parse the full module as well as exercising its mounted steps.
 const codeStrip=source.slice(source.indexOf('function encounterCodesStripMarkup'),source.indexOf('// The claim form is offered'));
 function fixture({signed=false,selfPay=false,sent=false,paid=false,ready=true,closed=false,unposted=false,insuranceMessage=''}={}){
- const dom=new JSDOM(`<main class="frame-content"><section id="chart"><div id="patient-banner"></div><div id="visit-page-host"><div id="encounter-progress"></div><div id="visit-editor"><div id="encounter-intake"><div id="encounter-benefits"><details><summary>Synthetic Plan · Copay $25 · Active</summary>Coverage detail</details></div><section id="encounter-rooming-vitals"><h3 class="visit-section-label">Rooming &amp; vitals</h3><div class="section-head"><h3>Rooming</h3><span class="badge" data-rooming-status>Not started</span></div><form id="rooming-form"><select name="status"><option value="in_progress" ${ready?'':'selected'}>Rooming</option><option value="ready" ${ready?'selected':''}>Ready</option></select><textarea name="chief_complaint">${ready?'Synthetic concern':''}</textarea><input type="checkbox" name="medications_reviewed" ${ready?'checked':''}><input type="checkbox" name="allergies_reviewed" ${ready?'checked':''}></form></section></div><div id="encounter-documentation"><div id="encounter-billing-editor"><input name="code" value="SYN01"></div><h3 class="visit-section-label">Note</h3><form id="note-form"><button type="button" class="primary" data-action="sign-bill">Sign &amp; bill</button><button type="button" data-action="sign">Sign only</button></form></div></div><section id="encounter-revenue"><div id="encounter-revenue-status"><div class="visit-billing-card"><div class="visit-billing-totals">Money</div><section id="visit-billing-review"><button type="button" data-visit-review-send>Send claim</button></section></div></div><div id="visit-billing-payments">Receipt</div><details id="visit-billing-history"><summary>History</summary><div>Technical details</div></details></section><div id="visit-checkout"><form id="checkout-complete-form"><button type="submit">Finish encounter</button></form></div></div></section></main>`,{runScripts:'outside-only'});
+ const dom=new JSDOM(`<main class="frame-content"><section id="chart"><div id="patient-banner"></div><div id="visit-page-host"><div id="encounter-progress"></div><div id="visit-editor"><div id="encounter-intake"><div id="encounter-benefits"><details><summary>Synthetic Plan · Copay $25 · Active</summary>Coverage detail</details></div><section id="encounter-rooming-vitals"><h3 class="visit-section-label">Rooming &amp; vitals</h3><div class="section-head"><h3>Rooming</h3><span class="badge" data-rooming-status>Not started</span></div><form id="rooming-form"><select name="status"><option value="in_progress" ${ready?'':'selected'}>Rooming</option><option value="ready" ${ready?'selected':''}>Ready</option></select><textarea name="chief_complaint">${ready?'Synthetic concern':''}</textarea><input type="checkbox" name="medications_reviewed" ${ready?'checked':''}><input type="checkbox" name="allergies_reviewed" ${ready?'checked':''}></form></section></div><div id="encounter-documentation"><div id="encounter-billing-editor"><input name="code" value="SYN01"></div><h3 class="visit-section-label">Note</h3><form id="note-form"><button type="button" class="primary" data-action="sign-bill">Sign &amp; bill</button><button type="button" data-action="sign">Sign note</button></form></div></div><section id="encounter-revenue"><div id="encounter-revenue-status"><div class="visit-billing-card"><div class="visit-billing-totals">Money</div><section id="visit-billing-review"><button type="button" data-visit-review-send>Send claim</button></section></div></div><div id="visit-billing-payments">Receipt</div><details id="visit-billing-history"><summary>History</summary><div>Technical details</div></details></section><div id="visit-checkout"><form id="checkout-complete-form"><button type="submit">Finish encounter</button></form></div></div></section></main>`,{runScripts:'outside-only'});
  const w=dom.window;
  const style=w.document.createElement('style');style.textContent=fs.readFileSync('web/visit-billing.css','utf8');w.document.head.append(style);
  w.IntersectionObserver=class {
@@ -39,7 +39,10 @@ function fixture({signed=false,selfPay=false,sent=false,paid=false,ready=true,cl
  assert.equal(bar.querySelector('[data-step-primary]'),null,'rooming already shows the highlighted field');
  chief.focus();
  assert.equal(w.document.activeElement,chief);assert.equal(chief.value,'');
- assert(!note.querySelector('[data-action="sign-bill"]').hidden,'the note owns signing');
+ assert(note.querySelector('[data-action="sign-bill"]').hidden,'an encounter without claim preflight only offers standalone signing');
+ const sign=note.querySelector('[data-action="sign"]');
+ assert.equal(sign.hidden,false);
+ assert.equal(sign.textContent,'Sign note');
  f.dom.window.close();
 }
 const visible=f=>{for(const node of f.page.querySelectorAll('[data-encounter-step-number],[data-encounter-section]'))assert.equal(node.hidden,false);};
@@ -67,7 +70,7 @@ for(const options of [{},{selfPay:true},{signed:true},{signed:true,sent:true},{s
  assert.equal(w.$('encounter-stepper').querySelector('[data-step-primary]'),null);
  if(!options.signed){
   const payment=f.page.querySelector('[data-step-payment]');
-  assert.match(payment.textContent,options.selfPay?/Balance available after charges are posted/:/Copay due/);
+  assert.match(payment.textContent,options.selfPay?/Balance available after charges are posted/:/No copay due/);
   assert.equal(payment.querySelector('[data-encounter-charges]'),null);
   assert.equal(payment.querySelector('.visit-billing-totals'),null);
  }
@@ -260,10 +263,11 @@ for(const selfPay of [false,true]){
  const fixtureAction=label=>{const button=w.document.createElement('button');button.textContent=label;button.onclick=()=>presses++;w.document.body.append(button);button.click();button.remove();};
  for(const label of ['Book appointment','Check in','Start encounter'])fixtureAction(label);
  frame.scrollTop=410;
- w.$('note-form').querySelector('[data-action="sign-bill"]').onclick=()=>{w.activeVisit.status='signed';w.encounterRevenueState.data.summary.account.status='posted';f.sync();};
+ const sign=w.$('note-form').querySelector('[data-action="sign"]');
+ sign.onclick=()=>{w.activeVisit.status='signed';w.encounterRevenueState.data.summary.account.status='posted';f.sync();};
  w.$('visit-billing-review').querySelector('[data-visit-review-send]').onclick=()=>{w.encounterRevenueState.data.summary.insurance.status='waiting';f.sync();};
  w.run=action=>action();
- w.$('note-form').querySelector('[data-action="sign-bill"]').click();
+ sign.click();
  if(!selfPay)w.$('visit-billing-review').querySelector('[data-visit-review-send]').click();
  const take=f.page.querySelector('[data-step-payment] [data-visit-collect]');
  let collections=0;take.onclick=()=>collections++;take.click();
@@ -292,7 +296,7 @@ for(const selfPay of [false,true]){
  f.sync();
  const payment=f.page.querySelector('[data-step-payment]'),details=f.page.querySelector('[data-step-payment-details]');
  const amount=()=>payment.querySelector('[data-payment-summary]').textContent;
- assert.equal(amount(),'Amount due $0.00');
+ assert.equal(amount(),'No patient amount due');
  assert.equal(payment.querySelector('[data-copay-receipt]').dataset.copayReceipt,receipt.id);
  assert.equal(payment.querySelector('[data-visit-collect]'),null);
  assert.equal(details.open,false);
@@ -310,7 +314,7 @@ for(const selfPay of [false,true]){
  s.patient.received_cents=36000;s.patient.owes_now_cents=6500;s.balance_cents=6500;
  s.state='self_pay_collect';
  f.sync();
- assert.equal(amount(),'Amount due $65.00');
+ assert.equal(amount(),'Patient amount due $65.00');
  assert.equal(payment.querySelector('.primary').textContent,'Take payment');
  assert.match(details.textContent,/Unapplied credit \$180.00/,'an independent receipt can carry credit even when its amount equals the applied receipt');
  assert.equal(details.querySelector('[data-copay-void]').dataset.copayVoid,other.id);
@@ -320,7 +324,7 @@ for(const selfPay of [false,true]){
  w.billingCan=()=>false;f.sync();
  assert.equal(details.querySelector('[data-apply-copays],[data-copay-void]'),null);
  s.patient={received_cents:0,owes_now_cents:6500};s.receipts=[];f.sync();
- assert.equal(amount(),'Amount due $65.00');
+ assert.equal(amount(),'Patient amount due $65.00');
  assert.equal(payment.querySelector('[data-visit-collect]'),null);
  const split={...receipt,id:'split',appointment_id:'second-appointment',amount_cents:10000};
  const full={...receipt,id:split.id,amount_cents:30000,allocated_cents:10000,hosted_checkout:{status:'paid',refunded_unapplied_cents:10000,splits:[{...receipt,amount_cents:20000,allocated_cents:10000},{...split,allocated_cents:0}]}};
@@ -462,7 +466,7 @@ console.log('PASS continuous encounter: all sections visible, content-only ancho
  assert.equal(payment.querySelector('[data-visit-collect]'),null);
  assert.match(payment.textContent,/Copay not confirmed/);
  f.w.activeVisit.status='signed';summary.account.status='posted';summary.patient.owes_now_cents=0;f.sync();
- assert.match(payment.textContent,/Amount due \$0.00/);
+ assert.match(payment.textContent,/No patient amount due/);
  assert(details.open&&details.contains(ledger));
  f.dom.window.close();
 }

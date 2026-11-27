@@ -102,9 +102,10 @@ async function checkClaimResponse(browser,viewport,returned=false){
  const billing=fixture(patientPath+'/billing',currentVisit,'insured',null,{});
  const claim={...billing.claims[0],patient_id:patient.id,account_id:billing.accounts[0].id,
   status:returned?'rejected':'adjudicated',control_number:returned?'SYN-RETURN':'SYN-APPEAL',
+  answer:returned?undefined:{denied:true,paid_cents:0},
   snapshot:{account:billing.accounts[0],patient}};
  billing.claims=[claim];
- const summary={...billing.summary,claim,state:'denied',insurance:{...billing.summary.insurance,status:'denied'}};
+ const summary={...billing.summary,claim,state:returned?'claim_rejected':'denied',insurance:{...billing.summary.insurance,status:returned?'rejected':'denied'}};
  billing.summary=summary;
  await page.setViewport(viewport);page.setDefaultTimeout(12000);
  const theme=viewport.isMobile?'dark':'light';
@@ -135,7 +136,7 @@ async function checkClaimResponse(browser,viewport,returned=false){
   const summarySelector='[data-encounter-step-number="1"] [data-signed-claim-summary]';
   const trigger=summarySelector+' [data-open-signed-claim-details]',details='dialog[data-signed-claim-details][open]',editor='dialog[data-visit-denial-editor][open]';
   await page.waitForSelector(trigger,{visible:true});
-  assert.match(await page.$eval(summarySelector,n=>n.innerText),/Fix and resend claim/);
+  assert.match(await page.$eval(summarySelector,n=>n.innerText),returned?/Returned before payer acceptance.*Review returned claim/s:/Review payer decision/);
   assert.ok(!(await page.$(summarySelector+' [data-denial-action]')));
   if(returned){
    await page.locator(trigger).click();
@@ -149,6 +150,9 @@ async function checkClaimResponse(browser,viewport,returned=false){
    assert.match(status,/No payer acceptance on file/);
    assert.doesNotMatch(status,/Denied by|Rejected by the payer/);
    assert.ok(status.includes(reason));
+   assert.equal(await page.$(details+' [data-denial-action], '+details+' [data-denial-appeal]'),null);
+   assert.equal(await page.$eval('[data-encounter-step-open="2"]',node=>node.textContent.trim()),'Payment');
+   assert.equal(await page.$eval('[data-insurer-payment-summary]',node=>node.textContent),'Insurer payment pending claim correction');
    const activity=details+' [data-signed-claim-activity]';
    assert.equal(await page.$eval(activity,n=>n.open),false);
    assert.equal(await page.$eval(details+' [data-signed-claim-other]',n=>n.open),false);

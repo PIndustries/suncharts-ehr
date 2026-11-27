@@ -3,15 +3,21 @@
 // One billing card per visit. Every amount comes from the server's visit billing summary;
 // this file only words and lays it out. One vocabulary names an encounter's billing state here,
 // in the insurance claims list and on the patient billing page.
-const visitBillingStateNames={add_charges:'Add charges',sign_visit:'Sign the encounter',post_charges:'Post charges',self_pay_collect:'Self-pay: collect payment',prepare_claim:'Preparing claim',claim_cancelled:'Claim cancelled',fix_claim:'Claim needs details',send_claim:'Send claim',correct_claim:'Charges changed after the claim was sent',waiting_insurer:'Waiting on insurer',claimmd_correction:'Needs correcting',claimmd_received:'Received by the clearinghouse',post_response:'Insurer answered: review payment',denied:'Denied: fix and resend',review_response:'Review insurer answer',patient_owes:'Patient owes',review_balance:'Balance not on the statement',patient_credit:'Patient credit',paid_in_full:'Paid in full',insurance_outside:'Insurance billed outside SunCharts',claim_restricted:'Posted'};
+const visitBillingStateNames={add_charges:'Add charges',sign_visit:'Sign the encounter',post_charges:'Post charges',self_pay_collect:'Self-pay: collect payment',prepare_claim:'Preparing claim',claim_cancelled:'Claim cancelled',fix_claim:'Claim needs details',send_claim:'Ready for claim review',correct_claim:'Charges changed after the claim was sent',waiting_insurer:'Waiting on insurer',claimmd_correction:'Clearinghouse correction needed',claimmd_received:'Received by the clearinghouse',post_response:'Insurer answered: review payment',claim_rejected:'Claim returned for correction',denied:'Payer denial',review_response:'Review insurer answer',patient_owes:'Patient owes',review_balance:'Balance not on the statement',patient_credit:'Patient credit',paid_in_full:'Paid in full',insurance_outside:'Insurance billed outside SunCharts',claim_restricted:'Posted'};
 function visitBillingStateName(state){return visitBillingStateNames[state]||'Billing status unavailable';}
+function visitBillingReturnTitle(claim){
+ return claim?.payer_acceptance_recorded||String(claim?.payer_control_number||'').trim()?'Claim returned after payer acceptance':'Returned before payer acceptance';
+}
 // A claim row carries only its own status; name it with the same words the encounter card uses.
 function visitBillingClaimState(claim){
  if(!claim)return '';
  if((claim.crossover_tracking_only||claim.crossover)&&claim.status==='submitted')return 'Secondary insurer answered';
  if(['submitted','accepted'].includes(claim.status)&&claim.claimmd_position?.needs_correction===true)return visitBillingStateNames.claimmd_correction;
  if(claim.status==='submitted'&&claim.claimmd_position?.acknowledged===true)return visitBillingStateNames.claimmd_received;
- return ({draft:visitBillingStateNames.send_claim,ready:visitBillingStateNames.send_claim,submitted:visitBillingStateNames.waiting_insurer,accepted:visitBillingStateNames.waiting_insurer,rejected:visitBillingStateNames.denied,adjudicated:'Insurer answered',void:visitBillingStateNames.claim_cancelled})[claim.status]||'Claim status unavailable';
+ if(['draft','ready'].includes(claim.status)&&claim.claim_handoff&&typeof visitHandoffStatus==='function')return visitHandoffStatus(claim.claim_handoff);
+ if(claim.status==='rejected')return visitBillingReturnTitle(claim);
+ if(claim.status==='adjudicated'&&claim.payer_denied===true)return visitBillingStateNames.denied;
+ return ({draft:visitBillingStateNames.send_claim,ready:visitBillingStateNames.send_claim,submitted:visitBillingStateNames.waiting_insurer,accepted:'Accepted by the payer',adjudicated:'Insurer answered',void:visitBillingStateNames.claim_cancelled})[claim.status]||'Claim status unavailable';
 }
 function visitBillingDate(value){
  if(!value)return '';
@@ -40,7 +46,7 @@ function reviewButton(s,ctx){return typeof visitBillingReviewButton==='function'
 // from it says what it always said. encounterChargesProposed is the charge table's own answer.
 function visitBillingChargesFilled(){return typeof encounterChargesProposed==='function'&&encounterChargesProposed();}
 function visitBillingDenialActions(s,ctx){
- if(s.state!=='denied'||!s.claim?.id||!ctx.canWrite||ctx.claimsAllowed===false)return '';
+ if(s.state!=='denied'||s.claim?.status!=='adjudicated'||s.claim.answer?.denied!==true||!s.claim.id||!ctx.canWrite||ctx.claimsAllowed===false)return '';
  return `<button type="button" data-denial-action="patient_balance">Move to patient balance</button><button type="button" data-denial-action="write_off">Write off</button><button type="button" data-denial-appeal="${esc(s.claim.id)}">Start appeal</button>`;
 }
 // The status line: what is happening, who is waiting on whom, and the one next step.
@@ -65,10 +71,11 @@ function visitBillingStatus(s,ctx={}){
     case 'send_claim':return {headline:`Claim ready to send to ${insurer}`,detail:'Nothing has been sent yet.',action:visitBillingDirectSend(s,ctx)||reviewButton(s,ctx)||(write?button('Review and send claim',`data-visit-claim-send="${esc(claim)}"`):'')};
     case 'correct_claim':return {headline:'Charges changed after the claim was sent',detail:`Send a corrected claim to ${insurer}.`,action:button('Open claim',`data-revenue-claim="${esc(claim)}"`)};
    case 'claimmd_correction':return {headline:'The clearinghouse found a problem with this claim',detail:`${s.claimmd?.message?`The clearinghouse says: “${s.claimmd.message}” `:''}Nothing has reached ${insurer} yet. Fix it in Edit charges (for example, add the modifier it asks for) and resend, or if nothing needs to change, approve the claim in your clearinghouse account.`,action:button('Open claim',`data-revenue-claim="${esc(claim)}"`)};
-   case 'claimmd_received':return {headline:'Received by the clearinghouse',detail:`${insurer} has not answered yet. If the clearinghouse is holding it for approval, approve it in your clearinghouse account (in the clearinghouse: Manage Claims → Pending Approval).`,action:button('Check claim status',`data-revenue-claim="${esc(claim)}"`)};
-   case 'waiting_insurer':return {headline:`Waiting on ${insurer}`,detail:`${s.insurance.sent_on?`Claim sent ${visitBillingDate(s.insurance.sent_on)}. `:''}Nothing to do until they answer.`,action:button('Check claim status',`data-revenue-claim="${esc(claim)}"`)};
+   case 'claimmd_received':return {headline:'Received by the clearinghouse',detail:'Waiting for payer acceptance.',action:button('Check claim status',`data-revenue-claim="${esc(claim)}"`)};
+   case 'waiting_insurer':return {headline:s.claim?.status==='accepted'?'Accepted by the payer':`Waiting on ${insurer}`,detail:`${s.insurance.sent_on?`Claim sent ${visitBillingDate(s.insurance.sent_on)}. `:''}Waiting for the payer’s decision.`,action:button('Check claim status',`data-revenue-claim="${esc(claim)}"`)};
    case 'post_response':return {headline:`${insurer} answered`,detail:'Review their payment and post it to this encounter.',action:button('Review insurer payment',`data-revenue-remittance="${esc(s.claim?.response_to_review||'')}"`)};
-   case 'denied':return {headline:`Denied by ${insurer}`,detail:'Fix the claim and send it again.',action:button('Fix and resend claim',`data-revenue-claim="${esc(claim)}"`)};
+   case 'claim_rejected':return {headline:visitBillingReturnTitle(s.claim),detail:'Review the return reason and correct the claim before resubmitting.',action:button('Review returned claim',`data-revenue-claim="${esc(claim)}"`)};
+   case 'denied':return {headline:`Denied by ${insurer}`,detail:'Review the payer’s decision and any balance the payer assigned to the patient.',action:button('Review payer decision',`data-revenue-claim="${esc(claim)}"`)};
    case 'review_response':return {headline:`Insurance paid ${paid}`,detail:`${money(s.insurance.unassigned_cents)} is not paid, written off or assigned to the patient yet. Review the insurer’s answer.`,action:button('Review insurer answer',`data-revenue-claim="${esc(claim)}"`)};
    case 'review_balance':return {headline:`${money(s.insurance.unassigned_cents)} is not on the patient’s statement`,detail:'The latest statement is paid, but the encounter still has a balance. Write the rest off or adjust it; a new statement then shows what is left.',action:create?button('Write off or adjust','data-new-ledger'):''};
    case 'patient_owes':return {headline:`Patient owes ${owes}`,detail:`Insurance paid ${paid}. Waiting for the patient.`,action:create?button('Collect payment','data-visit-collect'):''};
@@ -209,10 +216,10 @@ function visitBillingBreakdown(s,ctx={}){
  let rows=row('Charges',s.charges_cents==null?'':posted?'Posted':'Charges can still be changed',s.charges_cents==null?'Not added yet':money(s.charges_cents));
  if(i.insured){
   rows+=group(`Insurance: ${esc(i.insurer||'insurer on file')}`);
-  const status={not_billed:'Billed after the charges are posted',not_sent:'Not sent yet',waiting:`Waiting${i.sent_on?` since ${esc(visitBillingDate(i.sent_on))}`:''}`,denied:'Denied',answered:s.claim?.answer?.payment_date?`Answered ${esc(visitBillingDate(s.claim.answer.payment_date))}`:'Answered',outside:'Billed outside SunCharts',restricted:'Handled by billing staff'}[i.status]||'';
+  const status={not_billed:'Billed after the charges are posted',not_sent:'Not sent yet',waiting:`Waiting${i.sent_on?` since ${esc(visitBillingDate(i.sent_on))}`:''}`,received:'Received by the clearinghouse',rejected:'Claim returned for correction',denied:'Payer denial',answered:s.claim?.answer?.payment_date?`Answered ${esc(visitBillingDate(s.claim.answer.payment_date))}`:'Answered',outside:'Billed outside SunCharts',restricted:'Handled by billing staff'}[i.status]||'';
   rows+=row('Insurance paid',status,posted?money(i.paid_cents):'');
   if(i.adjusted_cents)rows+=row('Insurance adjustments',i.adjusted_cents>0?'Written off, not owed by anyone':'Added back to the balance',money(Math.abs(i.adjusted_cents)));
-  if(i.pending_cents>0)rows+=row('Insurance pending',i.status==='denied'?'Denied. Fix and resend the claim':i.status==='not_sent'?'Not the patient’s to pay unless the insurer says so':'Waiting on the insurer’s answer',money(i.pending_cents));
+  if(i.pending_cents>0)rows+=row('Insurance pending',i.status==='rejected'?'Pending claim correction':i.status==='denied'?'Review the payer’s decision':i.status==='not_sent'?'Pending claim submission':'Waiting on the insurer’s answer',money(i.pending_cents));
   if(i.unassigned_cents>0)rows+=row('Not assigned yet','Review the insurer’s answer',money(i.unassigned_cents));
  }else if(posted&&i.unassigned_cents>0)rows+=row('Not on the statement','Write it off, adjust it or send a new statement',money(i.unassigned_cents));
  if(!i.insured&&posted&&i.adjusted_cents)rows+=row('Adjustments',i.adjusted_cents>0?'Taken off the charges':'Added to the charges',money(Math.abs(i.adjusted_cents)));
@@ -368,7 +375,8 @@ function visitBillingInsuranceWords(s){
  if(handoff)return visitHandoffStatus(handoff);
  const i=s.insurance||{};
  if(s.state==='fix_claim')return 'Claim needs details before it can be sent';
- if(s.state==='denied')return 'Denied. Fix the claim and send it again';
+ if(s.state==='claim_rejected')return visitBillingReturnTitle(s.claim);
+ if(s.state==='denied')return 'Payer denial. Review the decision';
  if(s.state==='post_response')return 'Answered. Review and post their payment';
  if(s.state==='claimmd_correction')return 'The clearinghouse found a problem';
  if(s.state==='claimmd_received')return 'Received by the clearinghouse';
@@ -426,7 +434,7 @@ function visitBillingEventText(event){
   case 'claim_ready':return 'Claim checked and ready to send';
   case 'claim_sent':return `Claim sent to ${insurer}`;
   case 'claim_accepted':return `${insurer} accepted the claim for processing`;
-  case 'claim_rejected':return `${insurer} rejected the claim`;
+  case 'claim_rejected':return 'Claim submission returned';
   case 'claim_answered':return `${insurer} answered${event.patient_responsibility_cents==null?'':`: patient owes ${money(event.patient_responsibility_cents)}`}`;
   case 'claim_cancelled':return 'Claim cancelled';
   case 'statement_sent':return `Statement sent · ${event.channel==='portal'?'Patient portal':event.channel} · ${event.actor_label||'Staff'}`;

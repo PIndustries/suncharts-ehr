@@ -55,9 +55,12 @@ const states=[
   [visitSummary({claim:{status:'ready'}}),'Claim ready to send to Synthetic Medicare PPO','Send claim to Synthetic Medicare PPO','data-visit-claim-direct-send="claim"',/Nothing has been sent yet\./],
   // A draft claim has not been checked yet, so the card still opens the review, which releases it.
   [visitSummary({claim:{status:'draft'}}),'Claim ready to send to Synthetic Medicare PPO','Review and send to the clearinghouse','data-visit-review-open="account"',/Nothing has been sent yet\./],
- [visitSummary({state:'waiting_insurer',waiting_on:'insurer',insurance:{status:'waiting',sent_on:'2026-11-12'},claim:{status:'submitted',sent_on:'2026-11-12'}}),'Waiting on Synthetic Medicare PPO','Check claim status','data-revenue-claim="claim"',/Claim sent Nov 12, 2026\. Nothing to do until they answer/],
+ [visitSummary({state:'waiting_insurer',waiting_on:'insurer',insurance:{status:'waiting',sent_on:'2026-11-12'},claim:{status:'submitted',sent_on:'2026-11-12'}}),'Waiting on Synthetic Medicare PPO','Check claim status','data-revenue-claim="claim"',/Claim sent Nov 12, 2026\. Waiting for the payer’s decision./],
+ [visitSummary({state:'claimmd_received',waiting_on:'insurer',insurance:{status:'received'},claim:{status:'submitted'}}),'Received by the clearinghouse','Check claim status','data-revenue-claim="claim"',/Waiting for payer acceptance\./],
+ [visitSummary({state:'waiting_insurer',waiting_on:'insurer',insurance:{status:'waiting'},claim:{status:'accepted'}}),'Accepted by the payer','Check claim status','data-revenue-claim="claim"',/Waiting for the payer’s decision\./],
  [visitSummary({state:'post_response',insurance:{status:'waiting'},claim:{status:'submitted',response_to_review:'era-1'}}),'Synthetic Medicare PPO answered','Review insurer payment','data-revenue-remittance="era-1"',/post it to this encounter/],
- [visitSummary({state:'denied',insurance:{status:'denied'},claim:{status:'adjudicated'}}),'Denied by Synthetic Medicare PPO','Fix and resend claim','data-revenue-claim="claim"',/Fix the claim and send it again/],
+ [visitSummary({state:'claim_rejected',insurance:{status:'rejected'},claim:{status:'rejected'}}),'Returned before payer acceptance','Review returned claim','data-revenue-claim="claim"',/Review the return reason and correct the claim before resubmitting/],
+ [visitSummary({state:'denied',insurance:{status:'denied'},claim:{status:'adjudicated',answer:{denied:true}}}),'Denied by Synthetic Medicare PPO','Review payer decision','data-revenue-claim="claim"',/Review the payer’s decision/],
   [visitSummary({state:'review_response',insurance:{status:'answered',paid_cents:20000,adjusted_cents:4000,pending_cents:0,unassigned_cents:7000},claim:{status:'adjudicated',answer:{payment_date:'2026-11-20'}}}),'Insurance paid $200.00','Review insurer answer','data-revenue-claim="claim"',/\$70\.00 is not paid, written off or assigned to the patient yet/],
   [visitSummary({state:'patient_owes',waiting_on:'patient',insurance:{status:'answered',paid_cents:20000,adjusted_cents:4000,pending_cents:0},patient:{copay_cents:null,copay_paid_cents:null,copay_due_cents:null,paid_above_copay_cents:null,received_cents:0,receipts_applied_cents:0,other_patient_payments_cents:0,adjustment_cents:0,unapplied_cents:0,overpaid_cents:0,credit_cents:0,receipt_needs_review:false,responsibility_cents:4000,responsibility_source:'insurer_response',owes_now_cents:3000},balance_cents:3000,claim:{status:'adjudicated',answer:{payment_date:'2026-11-20'}}}),'Patient owes $30.00','Collect payment','data-visit-collect',/Insurance paid \$200\.00\. Waiting for the patient/],
  [visitSummary({state:'insurance_outside',claim:null,insurance:{electronic:false,status:'outside'}}),'Synthetic Medicare PPO is billed outside SunCharts','Record insurer payment','data-new-ledger',/no claim is sent from SunCharts/],
@@ -83,6 +86,32 @@ for(const [summary,headline,label,attribute,detail,shown] of states){
  assert.ok(html.includes(`data-visit-billing-state="${summary.state}"`));
 }
 for(const [summary] of states){const html=card(summary).replace(/<[^>]*>/g,' ');assert.doesNotMatch(html,/Waiting on your office/,'the office is never named as the one who waits');assert.doesNotMatch(html,/Waiting on the patient|Waiting on the insurer(?!’s)/,'staff see "Waiting for" the patient or the insurer');if(summary.state==='sign_visit')assert.doesNotMatch(html,/must be signed[^\n]*Waiting on the clinician/,'a sentence that already says the note must be signed does not also say who it waits on');}
+// Combined signing is limited to one electronic account with complete claim preflight.
+{
+ const signingVisit={...ctx.activeVisit,status:'in_progress'};
+ const charges={...account,status:'draft',content:{...account.content,lines:[{code:'99213',units:1,amount_cents:28000,diagnosis_codes:['Z00.00']}]}};
+ const ready=visitSummary({state:'sign_visit',visit:signingVisit,account:{status:'draft'},
+  claim:{content:{billing_provider_name:'Synthetic practice',billing_address:'100 Synthetic Way',tax_id:'123456789',
+   billing_npi:'1234567893',rendering_npi:'1234567893',subscriber_address:'100 Synthetic Way',
+   subscriber_birth_date:'1990-01-01',place_of_service:'11',diagnosis_codes:['Z00.00']}}});
+ const saved={visit:ctx.activeVisit,accounts:ctx.workspace.billing.accounts};
+ ctx.activeVisit=signingVisit;
+ ctx.workspace.billing.accounts=[charges];
+ try{
+  assert.equal(ctx.visitEncounterCanSignAndSubmit(ready,charges),true,'the unsigned note is the only pending requirement');
+  assert.equal(ctx.visitEncounterCanSignAndSubmit(ready,{...charges,id:'other-account'}),false);
+  assert.equal(ctx.visitEncounterCanSignAndSubmit(ready,null),false);
+  assert.equal(ctx.visitEncounterCanSignAndSubmit(ready,{...charges,content:{...charges.content,lines:[{code:''}]}}),false);
+  assert.equal(ctx.visitEncounterCanSignAndSubmit({...ready,insurance:{...ready.insurance,electronic:false}},charges),false);
+  const needsAddress={...ready,claim:{...ready.claim,content:{...ready.claim.content,subscriber_address:''}}};
+  assert.equal(ctx.visitEncounterCanSignAndSubmit(needsAddress,charges),false,'a claim field failure keeps standalone signing available');
+  ctx.workspace.billing.accounts=[{...charges,content:{...charges.content,lines:[{...charges.content.lines[0],amount_cents:null}]}}];
+  assert.equal(ctx.visitEncounterCanSignAndSubmit(ready,ctx.workspace.billing.accounts[0]),false,'a pending charge amount keeps standalone signing available');
+ }finally{
+  ctx.activeVisit=saved.visit;
+  ctx.workspace.billing.accounts=saved.accounts;
+ }
+}
 // A delegated support session acts for the practice: it is given the same Prepare claim button.
 const support=card(visitSummary({state:'prepare_claim',claim:null}),{...all,delegated:true});assert.doesNotMatch(support,/A support session does not prepare claims/);assert.match(support,/data-visit-claim-prepare/);
 b0=ctx.visitBillingBreakdown(selfPay({state:'review_balance',insurance:{unassigned_cents:7000},patient:{owes_now_cents:0,responsibility_source:'reviewed_statement'}}),all);assert.match(b0,/<th scope="row">Not on the statement<\/th><td>Write it off, adjust it or send a new statement<\/td><td class="money-cell">\$70\.00/);assert.match(b0,/What the latest statement says, less what they paid/);
@@ -114,7 +143,7 @@ b=ctx.visitBillingBreakdown(answered,all);
 assert.deepEqual(cell(b,'Insurance paid'),['Answered Nov 20, 2026','$200.00']);assert.deepEqual(cell(b,'Insurance adjustments'),['Written off, not owed by anyone','$40.00']);assert.doesNotMatch(b,/Insurance pending/);
 assert.deepEqual(cell(b,'Patient owes now'),['What the insurer says the patient owes, less what they paid','$30.00']);
 b=ctx.visitBillingBreakdown(visitSummary({state:'denied',insurance:{status:'denied'}}),all);
-assert.deepEqual(cell(b,'Insurance paid'),['Denied','$0.00']);assert.deepEqual(cell(b,'Insurance pending'),['Denied. Fix and resend the claim','$270.00']);assert.equal(cell(b,'Patient owes now')[1],'$0.00','a denial is never handed to the patient');
+assert.deepEqual(cell(b,'Insurance paid'),['Payer denial','$0.00']);assert.deepEqual(cell(b,'Insurance pending'),['Review the payer’s decision','$270.00']);assert.equal(cell(b,'Patient owes now')[1],'$0.00','a denial is never handed to the patient');
 b=ctx.visitBillingBreakdown(visitSummary({state:'patient_credit',insurance:{status:'answered',paid_cents:27500,pending_cents:0},patient:{copay_cents:2500,copay_paid_cents:2500,received_cents:2500,overpaid_cents:2500,credit_cents:2500,responsibility_cents:0,responsibility_source:'insurer_response'},balance_cents:-2500}),all);
 assert.deepEqual(cell(b,'Paid more than owed'),['Refund it or keep it as a credit','$25.00']);assert.equal(cell(b,'Patient owes now')[1],'$0.00');
 b=ctx.visitBillingBreakdown(selfPay({patient:{unapplied_cents:1500,received_cents:1500},receipts:[{id:'r2',appointment_id:'appointment',amount_cents:1500,method:'card',occurred_on:'2026-11-12',voided:false}]}),all);
@@ -147,7 +176,7 @@ assert.doesNotMatch(options,/Check payment status|Card payment details|additiona
 assert.match(ctx.hostedCopayMarkup({...hostedState,items:[{id:'op',appointment_id:'appointment',amount_cents:1000,livemode:true,status:'open',created_at:'2026-11-12T15:00:00Z'}]},true),/Awaiting card payment[\s\S]*Check card payment status/);
 assert.match(ctx.hostedCopayMarkup({...hostedState,availability:{available:false,reason:'Card payments are not set up.'}},true),/Card payments aren’t set up yet\./);
 const more=ctx.visitBillingMore(answered,all);
-for(const expected of ['data-visit-statement>Patient statement','data-new-ledger>Record a payment, write-off or adjustment','data-visit-history="payments">Refunds and card payments','data-revenue-claim="claim">Open claim: correct, void or bill secondary insurance','/api/v1/billing/claims/claim/cms1500','data-chart-section="insurance">Insurance and eligibility'])assert.ok(more.includes(expected),expected);
+for(const expected of ['data-visit-statement>Patient statement','data-new-ledger>Record a payment, write-off or adjustment','data-visit-history="payments">Refunds and card payments','data-revenue-claim="claim">Open claim','/api/v1/billing/claims/claim/cms1500','data-chart-section="insurance">Insurance and eligibility'])assert.ok(more.includes(expected),expected);
 assert.equal(JSDOM.fragment(more).querySelector('details.visit-billing-more[data-revenue-disclosure="more"] > summary')?.textContent,'More actions');
 assert.doesNotMatch(ctx.visitBillingMore(visitSummary({claim:{secondary:true}}),all),/cms1500/,'no CMS-1500 for a secondary claim');
 assert.doesNotMatch(ctx.visitBillingMore(visitSummary(),{canCreate:false,canWrite:false,claimsAllowed:false}),/data-new-ledger|data-visit-statement|data-revenue-claim/);
@@ -213,7 +242,11 @@ assert.equal((nonClaimOnly.match(/data-visit-review-open/g)||[]).length,0,'no Re
 assert.equal((nonClaimOnly.match(/data-visit-claim-fix/g)||[]).length,1,'Fix claim details is the one main action');
 // Dates and vocabulary.
 assert.equal(ctx.visitBillingDate('2026-11-12'),'Nov 12, 2026');assert.equal(ctx.visitBillingDate(''),'');assert.equal(ctx.visitBillingDate('not a date'),'');
-assert.equal(ctx.visitBillingClaimState({status:'ready'}),'Send claim');assert.equal(ctx.visitBillingClaimState({status:'accepted'}),'Waiting on insurer');assert.equal(ctx.visitBillingClaimState({status:'rejected'}),'Denied: fix and resend');assert.equal(ctx.visitBillingClaimState({status:'submitted',crossover_tracking_only:true}),'Secondary insurer answered');
+assert.equal(ctx.visitBillingClaimState({status:'ready'}),'Ready for claim review');assert.equal(ctx.visitBillingClaimState({status:'accepted'}),'Accepted by the payer');
+assert.equal(ctx.visitBillingClaimState({status:'rejected'}),'Returned before payer acceptance');
+assert.equal(ctx.visitBillingClaimState({status:'rejected',payer_acceptance_recorded:true}),'Claim returned after payer acceptance');
+assert.equal(ctx.visitBillingClaimState({status:'adjudicated',payer_denied:true}),'Payer denial');
+assert.equal(ctx.visitBillingClaimState({status:'adjudicated'}),'Insurer answered');assert.equal(ctx.visitBillingClaimState({status:'submitted',crossover_tracking_only:true}),'Secondary insurer answered');
 assert.equal(ctx.visitBillingStateName('waiting_insurer'),'Waiting on insurer');assert.equal(ctx.visitBillingStateName('send_claim'),ctx.visitBillingClaimState({status:'draft'}),'one vocabulary for the card and the claims list');
 // A posted visit's charge status says "Posted", never "Charges are final", in the card, its
 // breakdown, the state name list and the history line.

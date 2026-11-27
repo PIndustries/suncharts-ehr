@@ -19,7 +19,7 @@ const payment=(n,status)=>({
 const claims=[
  claim(1,'draft'),claim(2,'ready'),claim(3,'submitted',{claimmd_position:{acknowledged:true}}),
  claim(4,'accepted'),claim(5,'submitted',{claimmd_position:{needs_correction:true}}),
- claim(6,'rejected'),claim(7,'adjudicated'),claim(8,'adjudicated'),
+ claim(6,'rejected'),claim(7,'adjudicated',{remittance_posted:true,payer_denied:false,paid_cents:2000}),claim(8,'adjudicated'),
  claim(9,'submitted',{crossover_tracking_only:true}),
  claim(10,'void',{claimmd_position:{needs_correction:true}}),claim(11,'paid')
 ];
@@ -59,7 +59,7 @@ function fixture({write=true,claimRows=claims,remittanceRows=remittances,history
     if(path.endsWith('/history'))return {items:[]};
     const key=path.slice(claimsBase.length+1),row=[...pageClaims,...afterClaims].find(c=>c.id===key);
     assert.ok(row,`Fixture claim ${key} must exist`);
-    return {claim:row,tracking:{remittance_posted:key===id(7)}};
+    return {claim:row,tracking:{remittance_posted:row.remittance_posted===true}};
    }
    if(path.startsWith(eraBase+'/')){
     if(path.endsWith('/history'))return {items:[]};
@@ -108,6 +108,7 @@ const waitFor=async test=>{
  assert.equal(f.$('nav-claims').getAttribute('aria-current'),'page');
  assert.ok(f.paths().includes(claimsBase+'?after=claims%20cursor'));
  assert.ok(!f.paths().includes(claimsBase+'/status-counts'));
+ assert.ok(!f.paths().some(path=>path.startsWith(claimsBase+'/')),'worklist payment state comes from the list response');
  hasIds(f,'claim',[1,2]);hasIds(f,'era',[]);
  const queries=f.calls.length;
  f.stage('wait').focus();f.stage('wait').click();
