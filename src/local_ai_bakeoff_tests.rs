@@ -193,10 +193,17 @@ async fn model_bakeoff() {
         let extract: Slot = Arc::default();
         let slot = extract.clone();
         let (c, b, m) = (client.clone(), base.clone(), model.clone());
-        let queued = request(&db, &owner, visit, request_id, move |body| async move {
-            *slot.lock().unwrap() = Some(chat(&c, &b, &m, &body).await);
-            Ok(json!({"request_id":request_id,"status":"queued","position":0}))
-        })
+        let queued = request(
+            &db,
+            &owner,
+            visit,
+            request_id,
+            None,
+            move |body| async move {
+                *slot.lock().unwrap() = Some(chat(&c, &b, &m, &body).await);
+                Ok(json!({"request_id":request_id,"status":"queued","position":0}))
+            },
+        )
         .await;
         if let Err(e) = queued {
             line["status"] = json!("request_refused");

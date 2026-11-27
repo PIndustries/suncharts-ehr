@@ -528,12 +528,17 @@ function showSavedNoteCopy(){
 function keepNoteDraft(){
  const draft=visitDrafts.get(activeVisit?.id),form=$('note-form');if(!draft?.note||form?.dataset?.visitId!==activeVisit.id)return;
  draft.note.version=activeVisit.version;draft.note.base=noteSavedText(activeVisit.note);form.dataset.version=String(activeVisit.version);updateDraftStatus();
- notice('Your text is kept. Save note to replace the saved note with it.');
+ const retry=form.querySelector?.('[data-note-autosave-retry]');
+ if(retry){retry.hidden=false;retry.textContent='Save my text';}
+ notice(retry?'Choose Save my text to keep your version.':'Your text is kept. Save note to replace the saved note with it.');
 }
 // Saves the note. If the encounter moved on, the current record is loaded first: a change that left the note text alone is retried once, a change to the note itself is shown and never overwritten.
 async function saveVisitNote(form,data){
  // A draft is kept with any section filled; a note with nothing in it says so beside the buttons.
- if(!hasVisitNoteText(form)){showVisitNoteMessage('Write something in the note before saving.');return;}
+ if(!hasVisitNoteText(form)){
+  if(form.querySelector?.('[data-note-autosave-retry]'))visitNoteSaveStatus('Not saved');
+  showVisitNoteMessage('Write something in the note before saving.');return;
+ }
  hideVisitNoteMessage();
  const id=activeVisit.id,identity=me;
  for(let attempt=0;;attempt++){
@@ -551,6 +556,7 @@ async function saveVisitNote(form,data){
   }
  }
  if(typeof visitNoteSaved==='function')visitNoteSaved(activeVisit);
+ if(typeof diagnosisSuggestCheck==='function')diagnosisSuggestCheck();
 }
 
 let me, patients = [], cursor, selected, workspace, activeVisit, startupRequest, busy = false;
@@ -1810,7 +1816,13 @@ if(typeof document!=='undefined'&&document.addEventListener)document.addEventLis
       if(!Object.values(data).some(value=>value!=='')&&!Object.keys(activeVisit.vitals||{}).length)return;
       await visitNoteFlush({focusVitals:true});notice('Vitals saved.');return;
     }
-    if(form.id==='note-form'){await visitNoteEnqueue(()=>saveVisitNote(form,formData(form)));return;}
+    if(form.id==='note-form'){
+      const automatic=form.querySelector?.('[data-note-autosave-retry]');
+      if(automatic)visitNoteSaveStatus('Saving…');
+      try{await visitNoteEnqueue(()=>saveVisitNote(form,formData(form)));}
+      catch(error){if(automatic&&$('note-form')===form)visitNoteSaveStatus('Not saved');throw error;}
+      return;
+    }
     if(form.id==='amendment-form'){await submitVisitAmendment(form);}
   });
 });

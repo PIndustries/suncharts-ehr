@@ -1253,7 +1253,7 @@ function sheetOpen(title,node,{className='',label=false}={}){
  dialog.showModal();return dialog;
 }
 function sheetClose(dialog,after){
- if(!dialog||dialog.dataset.closing)return;dialog.dataset.closing='1';dialog.classList.add('closing');
+ if(!dialog||dialog.dataset.closing||dialog.canCloseSheet?.()===false)return;dialog.dataset.closing='1';dialog.classList.add('closing');
  const done=()=>{dialog.close();after?.();dialog.remove();};
  if(matchMedia('(prefers-reduced-motion: reduce)').matches)done();else setTimeout(done,180);
 }

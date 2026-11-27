@@ -85,10 +85,11 @@ async function check(browser,viewport,scenario){
   }
   await page.locator('[data-encounter-step-open="2"]').click();
   await page.locator(take).click();
-  const pos='dialog.collect-sheet[open]',target=pos+' [data-collect-target]';
-  await page.waitForSelector(pos+' [data-collect-encounter="'+other+'"]',{visible:true});
-  assert.equal(await page.$eval(target,el=>el.value),insured?'25.00':'65.00');
-  assert.equal(await page.$eval(pos+' [data-collect-encounter="'+other+'"]',el=>el.checked),false);
+  const pos='dialog.collect-sheet[open]',past=pos+' [data-collect-past-balances]';
+  await page.waitForSelector(past+' > summary',{visible:true});
+  assert.equal(await page.$eval(past,el=>el.open),false);
+  assert.equal(await page.$(pos+' [data-collect-target]'),null);
+  assert.equal(await page.$eval(past+' [data-collect-encounter="'+other+'"]',el=>el.checked),false);
   assert.equal(await page.$$eval(pos+' [data-collect-method]',els=>els.length),5);
   if(readerCase){
    if(scenario==='manual-choice'){
@@ -110,7 +111,8 @@ async function check(browser,viewport,scenario){
   assert.deepEqual(writes,[],'Opening POS never charges a saved card or records a tender');
   await page.waitForSelector(pos+' [data-collect-method="cash"][aria-selected="true"]',{visible:true});
   assert.equal(await page.$eval(pos+' #collect-cash-form [name=amount]',el=>el.value),insured?'25.00':'65.00');
-  assert.equal(await page.$eval(target,el=>el.checkVisibility()),false,'One editable cash amount before a split tender');
+  assert.equal(await page.$$eval(pos+' form input:not([type=hidden])',inputs=>inputs.filter(input=>input.checkVisibility()).length),1,'Cash uses one editable field');
+  assert.equal(await page.$eval(pos+' [data-collect-submit]',button=>button.textContent),'Record '+(insured?'$25.00':'$65.00')+' cash');
   await page.locator(pos+' #collect-cash-form [type=submit]').click();
   await page.waitForSelector(pos+' .collect-done',{visible:true});
   assert.equal(writes.length,1);

@@ -125,7 +125,7 @@ function visitBillingChargeStep(s,ctx={}){
    case 'sign_visit':return {text:'Sign the encounter note to send these charges.',label:'Open the encounter note',attribute:'data-revenue-documentation'};
    case 'post_charges':{
     const flow=write&&directFlowPostSend(s,ctx),need=write?visitBillingBeforePosting(s):null;
-    return {text:need?need.note:write?flow?'Check and post the charges, then review the claim before sending.':'Check the charges, then post them.':'Check the charges; someone who can change them posts them.',label:flow?'Post charges and send claim':write?'Post charges':'Review charges',attribute:flow?`data-visit-review-open="account" data-post-and-send="account"`:`data-visit-post-charges="${esc(s.account?.id||'')}"`};
+    return {text:need?need.note:write?flow?'Check and post the charges, then review the claim before sending.':'Check the charges, then post them.':'Check the charges; someone who can change them posts them.',label:flow?'Post charges and review claim':write?'Post charges':'Review charges',attribute:flow?`data-visit-review-open="account" data-post-and-send="account"`:`data-visit-post-charges="${esc(s.account?.id||'')}"`};
    }
     case 'send_claim':case 'fix_claim':{
      // The card's own one-click send is the button here too, with the same small review link

@@ -357,7 +357,7 @@ const settle=async()=>{for(let step=0;step<40;step++)await new Promise(resolve=>
   ctx.activeVisit={id:'visit',appointment_id:'appointment',status:'signed',version:3};
   await openCharges(post);
   line1=nextLine();
-  assert.equal(line1.label,'Post charges and send claim');assert.equal(line1.attribute,'data-visit-review-open="account" data-post-and-send="account"');
+  assert.equal(line1.label,'Post charges and review claim');assert.equal(line1.attribute,'data-visit-review-open="account" data-post-and-send="account"');
   assert.equal(stepAttributes(cardButton().attribute),'data-visit-post-charges="account"','the card still asks for its own post; the line under the table does the whole chain');
   // Pressing it is one press that does the whole job: the same confirm the card's own post asks,
   // with the send named in it, then exactly the post the lower form would send. The claim the
