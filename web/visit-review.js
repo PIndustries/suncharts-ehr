@@ -1032,6 +1032,9 @@ function visitOpenSignedClaimDetails(button,intent={}){
  const applyDelivery=result=>{
   if(!current()||!visitSignedClaimHasAttempt(result))return false;
   deliveryAttempt=result;
+  visitHandoffLast={patient:person,visit,identity,result};
+  visitReviewPaint();
+  if(typeof encounterStepsSchedule==='function')encounterStepsSchedule();
   renderDelivery(null,true);
   trackDelivery();
   return true;
@@ -1046,6 +1049,9 @@ function visitOpenSignedClaimDetails(button,intent={}){
    const detail=await api(`${visitReviewClaimsBase()}/${encodeURIComponent(claimId)}`);
    if(!matched(detail?.claim))return;
    deliveryAttempt=typeof claimMdDeliveryAttempt==='function'?claimMdDeliveryAttempt(detail,deliveryAttempt):deliveryAttempt;
+   if(visitHandoffLast?.result?.claim_id===claimId&&visitHandoffLast?.identity===identity&&deliveryAttempt){
+    visitHandoffLast={patient:person,visit,identity,result:deliveryAttempt};
+   }
    renderDelivery(detail);
    if(deliveryAttempt?.outcome==='unconfirmed')showReviewError('A delivery receipt is not yet recorded for this attempt.');
    if(deliveryAttempt?.outcome!=='queued')void loadEncounterRevenueStatus(encounterChargeAccount(),true);

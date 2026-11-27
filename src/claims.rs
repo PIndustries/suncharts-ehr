@@ -3097,7 +3097,7 @@ pub(crate) async fn post_rows(
 mod submission_default_tests {
     use super::{
         claim_submission_issues, new_control_number, preflight, recorded_x12_address,
-        split_person_name, structured_x12_address, x12_sex,
+        recorded_x12_address_missing_zip, split_person_name, structured_x12_address, x12_sex,
     };
     use serde_json::json;
 

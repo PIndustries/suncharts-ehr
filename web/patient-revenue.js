@@ -1715,7 +1715,7 @@ function collectPartTaken(amount,label,receipt,appointment,detail){
  const left=collectLeftCents(),slot=collectPanelTarget();if(!slot)return;
  const receiptButton=receipt?.id&&collectSession.group?`<button type="button" data-collect-receipt="${esc(collectSession.group)}" data-appointment="${esc(appointment||'')}" class="primary">View receipt</button>`:'';
  if(left>0){slot.innerHTML=`<section class="collect-step-done" role="status"><p><b>✓ ${money(amount)} ${esc(label)} taken.</b> ${money(left)} left to pay. Choose how to take the rest above.</p></section>`;return;}
- const restoreFocus=slot.contains(document.activeElement);
+ const restoreFocus=slot.contains?.(document.activeElement);
  slot.innerHTML=collectDoneMarkup(amount,label,receiptButton);
  if(restoreFocus)slot.querySelector('.collect-done button')?.focus({preventScroll:true});
 }

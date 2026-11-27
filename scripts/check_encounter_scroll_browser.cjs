@@ -744,7 +744,11 @@ async function run(browser, viewport, reducedMotion, failures, scenario = 'blank
       assert.equal(currentVisit.diagnoses?.[0].code,diagnosis.code);
       const summary = '#encounter-documentation [data-encounter-codes-summary]';
       await page.waitForFunction(selector => document.querySelector(selector)?.innerText.includes('J30.9'), {}, summary);
-      assert.equal(await page.$eval(launcher, button => button.innerText), 'Add procedure');
+      const procedure='[data-note-quick-code="procedure"] [data-note-code-search="procedure"]';
+      await page.waitForSelector(procedure,{visible:true});
+      await page.waitForFunction(selector=>document.querySelector(selector)?.innerText==='Add procedure',{},next);
+      await page.locator(next).click();
+      assert.equal(await page.$eval(procedure,input=>document.activeElement===input),true);
       assert.deepEqual(errors, []);
       console.log('Add diagnosis starts with the first ICD field and advances to Add procedure after saving.');
       return;
