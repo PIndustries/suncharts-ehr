@@ -526,7 +526,16 @@ function coverageEditor(c,m,options={}){
  present(`<form id="coverage-form" data-patient="${esc(options.patient?.id||selected)}" data-id="${c?.id||''}" data-version="${c?.version||''}" data-request="${crypto.randomUUID()}" data-source="${m?.source_history_id||''}"><h3>${c?'Edit insurance':imported?'Add coverage from previous system':m?'Reconcile source coverage':'Add insurance'}</h3>${imported?importedCoverageNotice(imported,v):sourceNotice(m)}<div class="form-grid">${payerPickerMarkup('payer','Insurance company',{payerId:v.payer_id,id:'coverage-payer-name'})}${selectField('priority','Order',['primary','secondary','tertiary'],v.priority,insuranceOptionLabels(['primary','secondary','tertiary']))}${adding?'':selectField('status','Status',['active','inactive','entered_in_error'],v.status,insuranceOptionLabels(['active','inactive','entered_in_error']))}${billingField('member_id','Member ID',v.member_id,'text',150,true)}${billingField('group_number','Group number',v.group_number,'text',150)}${billingField('plan_name','Plan name',v.plan_name)}${billingField('subscriber_name','Policy holder name',v.subscriber_name,'text',200,true)}${billingField('subscriber_birth_date','Policy holder date of birth',v.subscriber_birth_date||'','date')}${selectField('relationship',"Patient is the policy holder's",['self','spouse','child','other'],v.relationship,insuranceOptionLabels(['self','spouse','child','other']))}${billingField('effective_date','Effective date',effective,'date',0,true)}${billingField('end_date','End date',v.end_date||'','date')}${billingField('copay','Copay (optional)',dollars(v.copay_cents))}${selectField('verification','Checked by staff',['unverified','manually_verified'],v.verification,insuranceOptionLabels(['unverified','manually_verified']))}</div><p class="muted">Two active plans cannot share the same order.</p><label>Notes<textarea name="notes" maxlength="2000">${esc(v.notes)}</textarea></label>${imported?'<input type="hidden" name="reason" value="Added from previous system insurance record">':billingField('reason','Reason / evidence for change','','text',1000,true)}${m&&!imported?'<label class="review-ack"><input type="checkbox" required> I verified source patient, payer, subscriber, dates and coordination priority.</label>':''}<div class="actions"><button class="primary" type="submit" ${billingPayers.length?'':'disabled'}>Save insurance</button><button type="button" data-cancel-billing>Cancel</button></div></form><div id="coverage-payer-setup">${coveragePayerSetup()}</div>`);
  const form=$('coverage-form');if(options.sheet){form.dataset.insuranceSheet='1';form.patient=options.patient;}typeaheadInit(form);if(!c){patientSelfPolicyHolder(form);form?.addEventListener('change',e=>{if(e.target?.name==='relationship')patientSelfPolicyHolder(form);});}
 }
-function openInvalidChargeOptions(form){const box=form.querySelector?.('[data-visit-charge-options]');if(!box)return;const bad=Array.from(box.querySelectorAll('input,select,textarea')).some(f=>typeof f.checkValidity==='function'&&!f.checkValidity());if(bad)box.open=true;}
+function revealInvalidChargeField(field,form){
+ for(let parent=field?.parentElement;parent&&parent!==form;parent=parent.parentElement){
+  if(parent.tagName==='DETAILS')parent.open=true;
+ }
+}
+function openInvalidChargeOptions(form){
+ for(const field of form.querySelectorAll?.('input,select,textarea')||[]){
+  if(field.validity?.valid===false)revealInvalidChargeField(field,form);
+ }
+}
 // Drug given on a charge line: an injected drug (a J-code such as botulinum
 // toxin) can carry its NDC code, the amount given and its unit.
 const ndcUnits=[['',''],['UN','units'],['ML','milliliters'],['GR','grams'],['F2','international units'],['ME','milligrams']];
@@ -610,7 +619,7 @@ function chargeRowAmountCents(row){
 function chargeRowExtras(l,compact){
  if(!compact)return '';
  const dated=l.service_from||l.service_to;
- return `<details class="charge-more charge-line-dates"${dated?' open':''}><summary>${dated?'Dates for this line':'Different dates for this line'}</summary><label>From<input type="date" name="service_from" value="${esc(l.service_from||'')}"></label><label>To<input type="date" name="service_to" value="${esc(l.service_to||'')}"></label></details><details class="charge-more"><summary>Code list this came from</summary><div data-terminology-source>${typeof terminologyLookupButton==='function'?terminologyLookupButton('procedure'):''}${typeof terminologySnapshotMarkup==='function'?terminologySnapshotMarkup(l.catalog_snapshot):''}</div></details>`;
+ return `<details class="charge-more charge-line-dates" data-inline${dated?' open':''}><summary>${dated?'Dates for this line':'Different dates for this line'}</summary><label>From<input type="date" name="service_from" value="${esc(l.service_from||'')}"></label><label>To<input type="date" name="service_to" value="${esc(l.service_to||'')}"></label></details><details class="charge-more" data-inline><summary>Code list this came from</summary><div data-terminology-source>${typeof terminologyLookupButton==='function'?terminologyLookupButton('procedure'):''}${typeof terminologySnapshotMarkup==='function'?terminologySnapshotMarkup(l.catalog_snapshot):''}</div></details>`;
 }
 // The table holds the columns; anything a line carries beyond them rides on the row element
 // between a save and the next one, so nothing recorded is dropped by a re-render.
@@ -743,7 +752,9 @@ function chargeTableNextPaint(button,label='Nothing has been sent yet.'){
 // Each box is headed with its column, which doubles as the row's only label on a narrow screen;
 // the description a code carries rides on the line unseen, and
 // what the lines come to is totalled once in the row underneath them.
-function chargeLinesMarkup(lines,compact){return `<div class="billing-table-wrap charge-table-wrap"><table class="billing-table charge-table" id="billing-charge-lines"><caption class="sr-only">Procedures on this encounter</caption><thead><tr><th>Procedure</th><th>Modifiers</th><th>Units</th><th>Diagnoses</th><th>Amount</th><th></th></tr></thead><tbody>${lines.map((l,index)=>chargeRow(l,compact,chargeLineKey(l,index))).join('')}</tbody></table><div class="charge-lines-totals" data-charge-line-totals><span>Total charges <b data-charge-total>${money(0)}</b></span><span data-charge-copay>Copay</span><span class="charge-table-hint" data-charge-pays></span></div></div>`;}
+function chargeLinesMarkup(lines,compact){
+ return `<div class="billing-table-wrap charge-table-wrap"><table class="billing-table charge-table${compact?' charge-table-compact':''}" id="billing-charge-lines"><caption class="sr-only">Procedures on this encounter</caption><thead><tr><th scope="col">Procedure</th>${compact?'':'<th scope="col">Modifiers</th>'}<th scope="col">Units</th><th scope="col">Diagnoses</th><th scope="col">Amount</th><th scope="col"><span class="sr-only">Line actions</span></th></tr></thead><tbody>${lines.map((l,index)=>chargeRow(l,compact,chargeLineKey(l,index))).join('')}</tbody></table><div class="charge-lines-totals" data-charge-line-totals><span>Total charges <b data-charge-total>${money(0)}</b></span><span data-charge-copay>Copay</span><span class="charge-table-hint" data-charge-pays></span></div></div>`;
+}
 // Each line keeps one identity for as long as it is on screen, so what it remembers — the amount
 // last typed, the code list chosen, a line waiting to be removed, and whether the practice
 // filled it in from an earlier visit — is found again after that row is drawn again.
@@ -891,7 +902,10 @@ function duplicateChargeRow(form,row){
  row.insertAdjacentHTML('afterend',chargeRow(line,form.dataset.compact==='true',chargeLineKey(null,chargeLiveRows(form).length)));
  const copy=row.nextElementSibling;copy?.classList?.add('charge-row-new');
  chargeTableTotals(form);renderChargeRowProblems(form);captureBillingChargeDraft();scheduleChargeAutosave(form);
- (copy?.querySelector?.('input[name="modifiers"]')||copy?.querySelector?.('input[name="procedure"]'))?.focus?.();
+ const modifier=copy?.querySelector('input[name="modifiers"]');
+ const options=modifier?.closest('[data-charge-line-options]');
+ if(options&&!options.open)options.querySelector('summary')?.focus();
+ else (modifier||copy?.querySelector('input[name="procedure"]'))?.focus?.();
 }
 function removeChargeRow(form,row){
  chargeRowCapture(row);
@@ -1258,12 +1272,12 @@ function encounterCodeFindings(form){
  const others=rows.filter(r=>!encounterEmCodes.test(r.code));
  const insured=form.elements.coverage_id?!!form.elements.coverage_id.value:form.dataset.selfPay!=='true';
  for(const r of rows){
-  const fix=(text,fieldProblem=false)=>out.push({level:'fix',text,row:r.row,fieldProblem});
+  const fix=(text,fieldProblem=false,field='')=>out.push({level:'fix',text,row:r.row,fieldProblem,field});
   const review=text=>out.push({level:'review',text,row:r.row,code:r.code});
   if(!r.diagnoses)fix('Choose the diagnoses this service was for.',true);
   if(r.units<1)fix('Add how many units were done.',true);
   if(!insured)continue;
-  if(r.modifiers.length>4)fix(`Use at most four modifiers on a claim line.`);
+  if(r.modifiers.length>4)fix('Use at most four modifiers on a claim line.',false,'modifiers');
   if(encounterEmCodes.test(r.code)&&others.length&&!r.modifiers.includes('25'))review(`An office visit billed with a procedure on the same day usually needs modifier 25.`);
   if(encounterToxinCodes.test(r.code)){
    if(!r.ndc)fix(`Add the drug's NDC code, quantity and unit.`);
@@ -1271,11 +1285,11 @@ function encounterCodeFindings(form){
    // discarded with JW. Only a drug with neither JZ nor a JW line for it is flagged.
    const same=rows.filter(x=>x.code===r.code),hasJW=same.some(x=>x.modifiers.includes('JW')),hasJZ=same.some(x=>x.modifiers.includes('JZ'));
    if(!hasJW&&!hasJZ&&r===same[0])review(`Medicare needs JZ when no drug was discarded, or a separate JW line for the amount discarded.`);
-   if(hasJW&&hasJZ&&r===same[0])fix(`Use JZ (nothing discarded) or a JW line (amount discarded), not both.`);
+   if(hasJW&&hasJZ&&r===same[0])fix('Use JZ (nothing discarded) or a JW line (amount discarded), not both.',false,'modifiers');
   }
   if(encounterChemodenervation.test(r.code)&&!codes.some(c=>encounterToxinCodes.test(c)))review(`No botulinum toxin line (J0585 to J0588) was entered for this injection.`);
   if(encounterGuidance.test(r.code)&&!codes.some(c=>encounterChemodenervation.test(c)))fix(`Guidance is an add-on and is billed with a chemodenervation code.`);
-  if(/^6464[2-7]$/.test(r.code)&&r.modifiers.includes('50'))fix(`Do not use modifier 50; bill the extra-extremity add-on (64643 or 64645) instead.`);
+  if(/^6464[2-7]$/.test(r.code)&&r.modifiers.includes('50'))fix('Do not use modifier 50; bill the extra-extremity add-on (64643 or 64645) instead.',false,'modifiers');
   if(r.code==='J0587'&&r.units>10)review('J0587 is billed per 100 units: check the units are the dose divided by 100.');
  }
  const fix=text=>out.push({level:'fix',text}),review=text=>out.push({level:'review',text});
@@ -1298,7 +1312,10 @@ function renderEncounterCodeChecks(form,findings){
  if(!summary)return;
  findings??=encounterCodeFindings(form);
  for(const row of chargeLiveRows(form)){
-  paintCodeFindings(row.querySelector('[data-line-code-check]'),findings.filter(f=>f.row===row&&!f.fieldProblem));
+  const rowFindings=findings.filter(f=>f.row===row&&!f.fieldProblem);
+  paintCodeFindings(row.querySelector('[data-line-code-check]'),rowFindings);
+  const options=row.querySelector('[data-charge-line-options]');
+  if(options&&rowFindings.some(finding=>finding.level==='fix'&&finding.field==='modifiers'))options.open=true;
  }
  paintCodeFindings(summary,findings.filter(f=>!f.row));
 }
@@ -1325,6 +1342,8 @@ function modifierOptionsRender(row){
  const host=row?.querySelector?.('[data-modifier-options]'),input=row?.querySelector?.('[name="modifiers"]');if(!host||!input)return;
  const code=chargeRowCodeNow(row),chosen=String(input.value||'').toUpperCase().split(/[,\s]+/).filter(Boolean);
  const fit=modifierChoicesFor(code),key=code+'|'+chosen.join(',');if(host.dataset.key===key)return;host.dataset.key=key;
+ const selected=row.querySelector('[data-line-modifier-summary]');
+ if(selected){selected.textContent=chosen.join(', ');selected.hidden=!chosen.length;}
  const chip=m=>`<button type="button" class="modifier-chip${chosen.includes(m)?' is-on':''}" data-modifier-toggle="${m}" aria-pressed="${chosen.includes(m)}" title="${esc(modifierWords[m]||m)}">${m}<small>${esc(modifierWords[m]||'')}</small></button>`;
  const others=Object.keys(modifierWords).filter(m=>!fit.includes(m));
  host.innerHTML=`${code?fit.map(chip).join(''):'<small class="muted">Enter the code to see its modifiers</small>'}${chosen.filter(m=>!fit.includes(m)).map(chip).join('')}<select data-modifier-more aria-label="More modifiers"><option value="">More modifiers…</option>${others.filter(m=>!chosen.includes(m)).map(m=>`<option value="${m}">${m} · ${esc(modifierWords[m])}</option>`).join('')}</select>`;
@@ -1387,10 +1406,23 @@ function restoreChargeTyping(form,typing){
  chargeTableTotals(form);
 }
 function chargeRow(l={},compact=false,key=''){
- return `<tr class="billing-charge-row"${key?` data-charge-key="${key}"`:''} ${(l.fromEarlierVisit||(!l.code&&l.amount_cents==null))&&!(l.diagnosis_codes||[]).length?'data-diagnoses-default="pending"':''} data-catalog-release-id="${esc(l.catalog_release_id||'')}" data-catalog-code="${esc(l.code||'')}" data-catalog-display="${esc(l.description||'')}" data-catalog-system="${esc(l.code_system||chargeCodeSystem(l))}" data-charge-system="${esc(l.code_system||chargeCodeSystem(l))}"${l.amount_cents==null?'':' data-charge-amount="'+l.amount_cents+'"'}${l.fee_schedule_id?` data-fee-schedule="${esc(l.fee_schedule_id)}"`:''}${l.fee_entry_key?` data-fee-entry="${esc(l.fee_entry_key)}"`:''}><td class="charge-cell-code">${chargeCodeCell(l)}${chargeDescriptionCell(l)}${chargeRowExtras(l,compact)}${compact?'<div data-line-code-check role="status" hidden></div>':''}</td><td class="charge-cell-modifiers">${compact?`<label>Modifiers<input name="modifiers" type="text" value="${esc(l.modifiers||'')}" maxlength="100" readonly placeholder="None"></label><div class="modifier-options" data-modifier-options></div>`:chargeMiniField('modifiers','Modifiers',l.modifiers||'',100)+'<div class="modifier-options" data-modifier-options></div>'}</td><td class="charge-cell-units"><label>Units<input name="units" type="number" min="1" max="1000" step="1" value="${l.units===undefined?1:l.units}" required></label></td><td class="charge-cell-diagnoses">${chargeDiagnosisCell(l)}</td><td class="charge-cell-amount">${chargeMiniField('amount','Amount',dollars(l.amount_cents),30,true)}${typeof feeLineMarkup==='function'?feeLineMarkup(l):''}${l.source_fee!==undefined?`<p class="mapping-notice">Source fee: ${esc(l.source_fee)} · Check whether that was the whole line or one unit, then enter the amount for the whole line.</p>`:''}</td><td class="charge-cell-remove"><button type="button" data-remove-charge>Remove</button><button type="button" data-duplicate-charge>Duplicate</button></td>${chargeLineTail(l)}</tr>`;
+ const modifiers=compact?`<label>Modifiers<input name="modifiers" type="text" value="${esc(l.modifiers||'')}" maxlength="100" readonly placeholder="None"></label>`:chargeMiniField('modifiers','Modifiers',l.modifiers||'',100);
+ const modifierFields=`${modifiers}<div class="modifier-options" data-modifier-options></div>`;
+ const fee=typeof feeLineMarkup==='function'?feeLineMarkup(l):'';
+ const lineOptions=compact?`<details class="charge-line-options" data-inline data-charge-line-options><summary>Line options <span class="muted" data-line-modifier-summary${l.modifiers?'':' hidden'}>${esc(l.modifiers||'')}</span></summary>${modifierFields}${chargeRowExtras(l,true)}${fee}</details>`:'';
+ return `<tr class="billing-charge-row"${key?` data-charge-key="${key}"`:''} ${(l.fromEarlierVisit||(!l.code&&l.amount_cents==null))&&!(l.diagnosis_codes||[]).length?'data-diagnoses-default="pending"':''} data-catalog-release-id="${esc(l.catalog_release_id||'')}" data-catalog-code="${esc(l.code||'')}" data-catalog-display="${esc(l.description||'')}" data-catalog-system="${esc(l.code_system||chargeCodeSystem(l))}" data-charge-system="${esc(l.code_system||chargeCodeSystem(l))}"${l.amount_cents==null?'':' data-charge-amount="'+l.amount_cents+'"'}${l.fee_schedule_id?` data-fee-schedule="${esc(l.fee_schedule_id)}"`:''}${l.fee_entry_key?` data-fee-entry="${esc(l.fee_entry_key)}"`:''}>
+  <td class="charge-cell-code">${chargeCodeCell(l)}${compact?lineOptions:chargeDescriptionCell(l)}${compact?'<div data-line-code-check role="status" hidden></div>':''}</td>
+  ${compact?'':`<td class="charge-cell-modifiers">${modifierFields}</td>`}
+  <td class="charge-cell-units"><label>Units<input name="units" type="number" min="1" max="1000" step="1" value="${l.units===undefined?1:l.units}" required></label></td>
+  <td class="charge-cell-diagnoses">${chargeDiagnosisCell(l)}</td>
+  <td class="charge-cell-amount">${chargeMiniField('amount','Amount',dollars(l.amount_cents),30,true)}${compact?'':fee}${l.source_fee!==undefined?`<p class="mapping-notice">Source fee: ${esc(l.source_fee)} · Check whether that was the whole line or one unit, then enter the amount for the whole line.</p>`:''}</td>
+  <td class="charge-cell-remove"><button type="button" data-remove-charge>Remove</button><button type="button" data-duplicate-charge>Duplicate</button></td>${chargeLineTail(l)}</tr>`;
 }
-// The browser can only point at an invalid control that is visible, so the tucked-away visit,
-// insurance and fee fields are opened before validation runs whenever one of them fails.
+// Reveal layered controls before the browser points to a required field.
+document.addEventListener('invalid',event=>{
+ const field=event.target,form=field?.form;
+ if(form?.id==='billing-account-form')revealInvalidChargeField(field,form);
+},true);
 document.addEventListener('submit',event=>{if(event.target?.id==='billing-account-form')openInvalidChargeOptions(event.target);},true);
 // Charges filled in from the last visit. Nobody should have to press a button and retype what
 // the practice already did: opening the charges step of an encounter that has no charge account yet
@@ -1630,7 +1662,7 @@ function chargeProposalStartBlank(form){
  (form.querySelector('input[name="procedure"]')||form.querySelector('[name="code"]'))?.focus?.({preventScroll:true});
 }
 function chargeInsuranceDisclosure(title,contents,selfPay){
- return `<details data-charge-insurance-detail${selfPay?'':' open'}><summary>${esc(title)}</summary>${contents}</details>`;
+ return `<details data-inline data-charge-insurance-detail${selfPay?'':' open'}><summary>${esc(title)}</summary>${contents}</details>`;
 }
 function accountEditor(a,m,encounterContext=false,options={}){
  captureBillingChargeDraft();
@@ -1643,11 +1675,18 @@ function accountEditor(a,m,encounterContext=false,options={}){
  if(a&&!a.source_history_id)chargeProposalTouched(typeof activeVisit!=='undefined'?activeVisit:null);
  if(!encounterContext&&!(typeof chartSection!=='undefined'&&chartSection==='visits'))showChartSection('billing');const source=m?.source_data||{},rows=Array.isArray(source.charge_lines)?source.charge_lines.filter(r=>r&&typeof r==='object'&&!Array.isArray(r)):[source],proposed=m?rows.map(r=>({code_system:r.code_type||'',code:r.code||'',description:r.code_text||'',modifiers:r.modifier||'',units:/^[1-9]\d*$/.test(String(r.units))?Number(r.units):'',source_fee:r.fee,diagnosis_codes:[]})):[{}];
  const sourceBacked=!!(m||a?.source_history_id),serviceDate=typeof revenueServiceDate==='function'?revenueServiceDate():localIsoDate(),coverage=typeof revenueCoverage==='function'?revenueCoverage(serviceDate):null,v=a?.content||{visit_id:encounter?.id||'',coverage_id:coverage?.id||'',service_date:encounter?serviceDate:'',lines:proposed,notes:''};
- // A charge editor opened for an encounter is a live table: the lines, then one box with the encounter,
- // insurance and fee details. Nothing a line needs sits behind a closed box, and every edit
- // saves itself. Reconciling a record from the previous system keeps its one review step.
+ // An encounter editor puts the usual coding fields before presets and billing setup.
+ // Reconciling an imported record keeps its explicit review step.
  const compact=!!v.visit_id,selfPay=compact&&!sourceBacked&&!v.coverage_id&&!a?.coverage_snapshot;
- const sourceLines=m?' data-charge-lines-source=""':'',chargeVisitBlock=`<div class="form-grid"><label>Visit<select name="visit_id" ${sourceBacked?'':'required'}><option value="">${sourceBacked?'Source kept — no visit found for it':'Choose a patient visit'}</option>${workspace.visits.map(vis=>`<option value="${vis.id}" ${v.visit_id===vis.id?'selected':''}>${esc((workspace.appointments.find(ap=>ap.id===vis.appointment_id)?.title||'Visit')+' · '+date(workspace.appointments.find(ap=>ap.id===vis.appointment_id)?.starts_at||vis.created_at))} · ${esc(human(vis.status))}</option>`).join('')}</select></label>${billingField('service_date','Service date',v.service_date,'date',0,true)}<label>Billing coverage<select name="coverage_id"><option value="">Self-pay / no selected coverage</option>${workspace.billing.coverages.map(c=>`<option value="${c.id}" ${v.coverage_id===c.id?'selected':''}>${esc(human(c.content.priority))} · ${esc(payerName(c.content.payer_id))} · ${esc(c.content.member_id)}</option>`).join('')}</select></label><label>Currency<input value="USD" readonly></label></div>`,chargeNotesBlock=`<label>Notes<textarea name="notes" maxlength="2000">${esc(v.notes)}</textarea></label>`,chargeLinesBlock=`${chargeLinesMarkup(v.lines,compact)}<div class="charge-table-foot"><button type="button" data-add-charge>${compact?'+ Add procedure':'+ Charge line'}</button><p class="charge-table-status" data-charge-status role="status" aria-live="polite"></p></div>${correcting?'':`<div class="charge-table-next-slot" data-charge-next>${chargeTableNextMarkup(v.visit_id,chargeTableNextWritten)}</div>`}`,chargeOptionsBlock=`${chargeVisitBlock}<div data-charge-coverage-order>${billingCoverageOrderMarkup(v.service_date,v.coverage_id,compact)}</div>${typeof feeContextMarkup==='function'?feeContextMarkup(v.fee_context):''}${chargeNotesBlock}`,  chargeFormBody=compact?`<h4 class="charge-lines-title">Procedures</h4><div class="charge-bundles" data-charge-bundles></div>${chargeLinesBlock}${chargeInsuranceDisclosure('Prior authorization',encounterClaimDetailsMarkup(v.claim_details,'authorization',correcting),selfPay)}${encounterClaimDetailsMarkup(v.claim_details,'actions')}<section class="charge-encounter-head" data-visit-charge-options><h4>Insurance and dates</h4>${chargeVisitBlock}<div data-charge-coverage-order>${billingCoverageOrderMarkup(v.service_date,v.coverage_id,compact)}</div>${chargeInsuranceDisclosure('Insurance claim fields',encounterClaimDetailsMarkup(v.claim_details,'head'),selfPay)}</section>${encounterClaimDetailsMarkup(v.claim_details,'provider')}<details class="charge-more-options"><summary>Hospital stay, claim codes and box 19</summary>${encounterClaimDetailsMarkup(v.claim_details,'extras')}</details><details class="charge-more-options"><summary>Fees and notes</summary>${typeof feeContextMarkup==='function'?feeContextMarkup(v.fee_context):''}${chargeNotesBlock}${encounterClaimDetailsMarkup(v.claim_details,'notes')}</details>`:`${chargeOptionsBlock}<p class="muted">Enter the amount for the whole line, not for one unit.</p>${chargeLinesBlock}`;
+ const sourceLines=m?' data-charge-lines-source=""':'',chargeVisitBlock=`<div class="form-grid"><label>Visit<select name="visit_id" ${sourceBacked?'':'required'}><option value="">${sourceBacked?'Source kept — no visit found for it':'Choose a patient visit'}</option>${workspace.visits.map(vis=>`<option value="${vis.id}" ${v.visit_id===vis.id?'selected':''}>${esc((workspace.appointments.find(ap=>ap.id===vis.appointment_id)?.title||'Visit')+' · '+date(workspace.appointments.find(ap=>ap.id===vis.appointment_id)?.starts_at||vis.created_at))} · ${esc(human(vis.status))}</option>`).join('')}</select></label>${billingField('service_date','Service date',v.service_date,'date',0,true)}<label>Billing coverage<select name="coverage_id"><option value="">Self-pay / no selected coverage</option>${workspace.billing.coverages.map(c=>`<option value="${c.id}" ${v.coverage_id===c.id?'selected':''}>${esc(human(c.content.priority))} · ${esc(payerName(c.content.payer_id))} · ${esc(c.content.member_id)}</option>`).join('')}</select></label><label>Currency<input value="USD" readonly></label></div>`,chargeNotesBlock=`<label>Notes<textarea name="notes" maxlength="2000">${esc(v.notes)}</textarea></label>`,chargeLinesBlock=`${chargeLinesMarkup(v.lines,compact)}<div class="charge-table-foot"><button type="button" data-add-charge>${compact?'+ Add procedure':'+ Charge line'}</button><p class="charge-table-status" data-charge-status role="status" aria-live="polite"></p></div>${correcting?'':`<div class="charge-table-next-slot" data-charge-next>${chargeTableNextMarkup(v.visit_id,chargeTableNextWritten)}</div>`}`,chargeOptionsBlock=`${chargeVisitBlock}<div data-charge-coverage-order>${billingCoverageOrderMarkup(v.service_date,v.coverage_id,compact)}</div>${typeof feeContextMarkup==='function'?feeContextMarkup(v.fee_context):''}${chargeNotesBlock}`,  chargeFormBody=compact?`<h4 class="charge-lines-title">Procedures</h4>${chargeLinesBlock}${encounterClaimDetailsMarkup(v.claim_details,'actions')}
+   <details class="charge-more-options" data-inline data-encounter-code-presets><summary>Use saved procedures</summary><div class="charge-bundles" data-charge-bundles></div></details>
+   <details class="charge-more-options" data-inline data-encounter-code-setup><summary>Billing setup and claim fields</summary>
+    ${chargeInsuranceDisclosure('Prior authorization',encounterClaimDetailsMarkup(v.claim_details,'authorization',correcting),selfPay)}
+    <section class="charge-encounter-head" data-visit-charge-options><h4>Insurance and dates</h4>${chargeVisitBlock}<div data-charge-coverage-order>${billingCoverageOrderMarkup(v.service_date,v.coverage_id,compact)}</div>${chargeInsuranceDisclosure('Insurance claim fields',encounterClaimDetailsMarkup(v.claim_details,'head'),selfPay)}</section>
+    ${encounterClaimDetailsMarkup(v.claim_details,'provider')}
+    <details class="charge-more-options" data-inline><summary>Hospital stay, claim codes and box 19</summary>${encounterClaimDetailsMarkup(v.claim_details,'extras')}</details>
+    <details class="charge-more-options" data-inline><summary>Fees and notes</summary>${typeof feeContextMarkup==='function'?feeContextMarkup(v.fee_context):''}${chargeNotesBlock}${encounterClaimDetailsMarkup(v.claim_details,'notes')}</details>
+   </details>`:`${chargeOptionsBlock}<p class="muted">Enter the amount for the whole line, not for one unit.</p>${chargeLinesBlock}`;
  // Charges for the encounter in hand come from that visit alone; a reconciliation of a record from
  // the previous system, or a chart opened elsewhere, is never filled in from another visit.
  // Charges are only ever filled in for the encounter this table is being opened for, and only from

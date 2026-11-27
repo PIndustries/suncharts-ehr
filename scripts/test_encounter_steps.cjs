@@ -4,6 +4,7 @@
 const assert=require('node:assert/strict'),fs=require('node:fs'),{JSDOM}=require('jsdom');
 const source=fs.readFileSync('web/patient-revenue.js','utf8');
 new (require('node:vm').Script)(source); // Parse the full module as well as exercising its mounted steps.
+const appointmentSource=source.slice(source.indexOf('function revenueAppointment'),source.indexOf('function revenueServiceDate'));
 const codeStrip=source.slice(source.indexOf('function encounterCodesStripMarkup'),source.indexOf('// The claim form is offered'));
 function fixture({signed=false,selfPay=false,sent=false,paid=false,ready=true,closed=false,unposted=false,insuranceMessage=''}={}){
  const dom=new JSDOM(`<main class="frame-content"><section id="chart"><div id="patient-banner"></div><div id="visit-page-host"><div id="encounter-progress"></div><div id="visit-editor"><div id="encounter-intake"><div id="encounter-benefits"><details><summary>Synthetic Plan · Copay $25 · Active</summary>Coverage detail</details></div><section id="encounter-rooming-vitals"><h3 class="visit-section-label">Rooming &amp; vitals</h3><div class="section-head"><h3>Rooming</h3><span class="badge" data-rooming-status>Not started</span></div><form id="rooming-form"><select name="status"><option value="in_progress" ${ready?'':'selected'}>Rooming</option><option value="ready" ${ready?'selected':''}>Ready</option></select><textarea name="chief_complaint">${ready?'Synthetic concern':''}</textarea><input type="checkbox" name="medications_reviewed" ${ready?'checked':''}><input type="checkbox" name="allergies_reviewed" ${ready?'checked':''}></form></section></div><div id="encounter-documentation"><div id="encounter-billing-editor"><input name="code" value="SYN01"></div><h3 class="visit-section-label">Note</h3><form id="note-form"><button type="button" class="primary" data-action="sign-bill">Sign &amp; bill</button><button type="button" data-action="sign">Sign note</button></form></div></div><section id="encounter-revenue"><div id="encounter-revenue-status"><div class="visit-billing-card"><div class="visit-billing-totals">Money</div><section id="visit-billing-review"><button type="button" data-visit-review-send>Send claim</button></section></div></div><div id="visit-billing-payments">Receipt</div><details id="visit-billing-history"><summary>History</summary><div>Technical details</div></details></section><div id="visit-checkout"><form id="checkout-complete-form"><button type="submit">Finish encounter</button></form></div></div></section></main>`,{runScripts:'outside-only'});
@@ -21,12 +22,14 @@ function fixture({signed=false,selfPay=false,sent=false,paid=false,ready=true,cl
  w.HTMLDialogElement.prototype.close=function(){this.open=false;this.dispatchEvent(new w.Event('close'));};
  w.$=id=>w.document.getElementById(id);w.money=n=>'$'+(n/100).toFixed(2);w.esc=s=>String(s??'');
  require('node:vm').runInContext(fs.readFileSync('web/visit-billing.js','utf8'),dom.getInternalVMContext());
- w.selected='synthetic-patient';w.activeVisit={id:'synthetic-encounter',status:signed?'signed':'in_progress',vitals:{systolic_mm_hg:120,diastolic_mm_hg:80}};
+ w.selected='synthetic-patient';w.activeVisit={id:'synthetic-encounter',appointment_id:'appointment',status:signed?'signed':'in_progress',vitals:{systolic_mm_hg:120,diastolic_mm_hg:80}};
  w.scheduleInsuranceCheckMessage=()=>insuranceMessage;
  w.workspace={appointments:[]};w.encounterRevenueState={data:{summary:{state:paid?'paid_in_full':sent?'waiting_insurer':signed?'post_charges':'sign_visit',charges_cents:53000,account:{status:signed&&!unposted?'posted':'draft'},insurance:{insured:!selfPay,status:paid?'answered':sent?'waiting':'not_sent',paid_cents:paid?50500:0},patient:{copay_cents:2500,copay_paid_cents:2500,copay_due_cents:0,owes_now_cents:paid?0:2500}}}};
+ w.workspace.appointments=[{id:'appointment',patient_id:w.selected,status:'completed'}];
+ Object.assign(w.encounterRevenueState.data.summary,{patient_id:w.selected,visit:w.activeVisit});
  w.checkoutKey=()=> 'synthetic';w.checkoutStates=new Map([['synthetic',{checkout:{completed:closed}}]]);
  w.sheetOpen=(title,node)=>{const dialog=w.document.createElement('dialog');dialog.append(node);w.document.body.append(dialog);return dialog;};
- w.eval(codeStrip+source.slice(source.indexOf('// One continuous encounter')));w.eval('encounterStepsSync()');
+ w.eval(appointmentSource+codeStrip+source.slice(source.indexOf('// One continuous encounter')));w.eval('encounterStepsSync()');
  return {w,dom,page:w.$('visit-page-host'),sync:()=>w.eval('encounterStepsSync()'),model:()=>w.eval('encounterStepsModel(encounterRevenueState.data.summary,activeVisit,{},false,{status:"ready"})')};
 }
 {
@@ -270,6 +273,26 @@ for(const options of [{},{selfPay:true},{signed:true},{signed:true,sent:true},{s
  assert.equal(f.page.querySelector('[data-step-insurance]'),null);
  f.dom.window.close();
 })().catch(error=>{console.error(error);process.exitCode=1;});
+{
+ const f=fixture(),s=f.w.encounterRevenueState.data.summary;
+ s.patient.copay_due_cents=2500;
+ f.sync();
+ const quick=f.page.querySelector('[data-encounter-early-payment]');
+ assert.equal(quick.textContent,'Take $25.00 copay');
+ assert.equal(f.page.querySelector('[data-encounter-next]').textContent,'Sign note');
+ f.w.workspace.appointments=[];
+ f.sync();
+ assert(quick.hidden,'Do not open a collection window for an unlinked visit');
+ assert.match(f.page.querySelector('[data-step-payment]').textContent,/requires an active appointment/);
+ s.patient.copay_due_cents=0;
+ s.receipts=[{id:'synthetic-receipt',amount_cents:2500,refunded_cents:0,test:true}];
+ f.sync();
+ assert.equal(f.page.querySelector('[data-payment-summary]').textContent,'Test copay recorded');
+ s.receipts[0].test=false;
+ f.sync();
+ assert.equal(f.page.querySelector('[data-payment-summary]').textContent,'Copay recorded');
+ f.dom.window.close();
+}
 // Count workflow presses with completed synthetic booking and all required data entered.
 for(const selfPay of [false,true]){
  const f=fixture({selfPay}),w=f.w,bar=w.$('encounter-stepper'),frame=w.document.querySelector('.frame-content');

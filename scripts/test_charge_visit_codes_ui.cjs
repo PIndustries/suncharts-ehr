@@ -372,7 +372,7 @@ const addDiagnosis=async(code,display)=>{
  assert.match(editorHtml.slice(sectionAt,tableAt),/<h3>Diagnoses<\/h3>/,'named in one plain word, no developer wording');
  // Headings and buttons in plain words: the section is 'Diagnoses', the lines below are
 // 'Procedures', and nothing here is called an encounter, a pointer or a link.
- assert.match(editorHtml.slice(tableAt,editorHtml.indexOf('</thead>',tableAt)),/<th>Procedure<\/th><th>Modifiers<\/th><th>Units<\/th><th>Diagnoses<\/th><th>Amount<\/th>/,'the lines are headed Procedure, not Code / Description');
+ assert.match(editorHtml.slice(tableAt,editorHtml.indexOf('</thead>',tableAt)),/<th scope="col">Procedure<\/th><th scope="col">Units<\/th><th scope="col">Diagnoses<\/th><th scope="col">Amount<\/th>/,'the lines are headed Procedure, not Code / Description');
  assert.doesNotMatch(editorHtml.slice(sectionAt,tableAt),/>Refresh<|>Find |<h3>[^<]*(Encounter|Diagnosis Pointer|Diagnosis Link)/,'no new Refresh or Find button, and no developer wording in any heading');
  assert.doesNotMatch(editorHtml,/<h3>[^<]*(Encounter|Procedure Codes|Charge Lines)/,'the charge table is not headlined with a developer term either');
  // The encounter's diagnoses are lettered, in the encounter's order, so a charge line can name one with a

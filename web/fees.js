@@ -33,7 +33,17 @@ async function feeContextQuick(form){
   return facility_id&&setting?{facility_id,setting}:null;
  }catch{return null;}
 }
-function feeOverrideState(row){const host=row.querySelector('[data-fee-line]');if(!host)return;const amount=row.querySelector('[name="amount"]').value;let differs=false;try{differs=host.dataset.feeSchedule&&cents(amount)!==Number(host.dataset.feeExpected);}catch{differs=!!host.dataset.feeSchedule;}const label=host.querySelector('[data-fee-override]');label.hidden=!differs&&!label.querySelector('input').value;label.querySelector('input').required=!!differs;}
+function feeOverrideState(row){
+ const host=row.querySelector('[data-fee-line]');if(!host)return;
+ const amount=row.querySelector('[name="amount"]').value;
+ let differs=false;
+ try{differs=host.dataset.feeSchedule&&cents(amount)!==Number(host.dataset.feeExpected);}
+ catch{differs=!!host.dataset.feeSchedule;}
+ const label=host.querySelector('[data-fee-override]'),reason=label.querySelector('input');
+ label.hidden=!differs&&!reason.value;reason.required=!!differs;
+ const options=label.closest?.('[data-charge-line-options]');
+ if(options&&differs&&!reason.value.trim())options.open=true;
+}
 function applyFee(form,row,quote){const host=row.querySelector('[data-fee-line]');row.querySelector('[name="amount"]').value=dollars(quote.expected_line_amount_cents);host.dataset.feeSchedule=quote.schedule_id;host.dataset.feeEntry=quote.entry_key;host.dataset.feeExpected=String(quote.expected_line_amount_cents);host.dataset.feeQuery=feeQuery(form,row);delete host.dataset.feePreserved;host.querySelector('[data-fee-manual]').hidden=false;host.querySelector('[name="fee_override_reason"]').value='';feeOverrideState(row);captureBillingChargeDraft();}
 // The price list has nothing for this line. Nothing is guessed: the amount stays as it is and
 // the fee note says what the lookup could not do, which is what the table filled in from an

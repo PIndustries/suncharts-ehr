@@ -18,6 +18,9 @@ function revenueAppointment(){
  const open=(workspace.appointments||[]).filter(a=>['checked_in','in_progress','booked'].includes(a.status)),asked=copayAppointmentSelection.get(selected);
  return open.find(a=>a.id===asked)||open[0];
 }
+function encounterPaymentAppointment(appointment){
+ return !!(appointment?.id&&appointment.patient_id===selected&&!['cancelled','canceled','no_show'].includes(appointment.status));
+}
 function revenueServiceDate(appointment=revenueAppointment()){
  const value=appointment?.starts_at?new Date(appointment.starts_at):new Date();
  const fields=new Intl.DateTimeFormat('en-CA',{timeZone:appointment?.timezone||undefined,year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(value);
@@ -2005,7 +2008,7 @@ function openCollectModal(){
  const balance=posted?patient.owes_now_cents:summary?.insurance?.insured===true?patient.copay_due_cents:null;
  const known=scoped&&!data.error&&!data.stale&&!review&&Number.isSafeInteger(balance)&&balance>=0;
  const due=known&&balance>0?balance:null;
- const canCollect=!!(current&&appointment.patient_id===selected&&!['cancelled','canceled','no_show'].includes(appointment.status)&&due&&billingCan('create'));
+ const canCollect=!!(encounterPaymentAppointment(appointment)&&due&&billingCan('create'));
  const scope={patient:selected,tenant:me?.tenant_id||'',identity:me,visit:visit?.id,appointment:current,canCollect,
   status:review?'Review the payment history before collecting.':!known?'The current balance could not be confirmed.':balance===0?(posted?'No patient amount due.':'No copay due.'):!canCollect?'Payment collection is unavailable for this encounter.':''};
  const home=panel.parentNode,marker=document.createComment('visit-billing-collect');home.insertBefore(marker,panel);
@@ -2286,12 +2289,13 @@ function encounterTemplateCodeChoices(dialog){
 function encounterTemplateCodesPaint(dialog){
  const suggestions=encounterTemplateCodeChoices(dialog);
  const body=dialog.querySelector('.sheet-body');
+ const presets=body.querySelector('[data-encounter-code-presets]')||body;
  let panel=body.querySelector('[data-visit-type-codes]');
  if(!suggestions?.choices.length){if(panel)panel.remove();return;}
  if(!panel){
   panel=document.createElement('fieldset');panel.dataset.visitTypeCodes='';panel.className='visit-type-codes';
-  body.prepend(panel);
  }
+ if(panel.parentElement!==presets)presets.append(panel);
  const {type,choices}=suggestions;
  const signature=JSON.stringify([type.id,type.version,choices.map(c=>c.key)]);
  if(signature===panel.codesSignature)return;
@@ -2337,7 +2341,7 @@ function encounterOpenCodesDialog(launcher,area='codes'){
  const enteringFirst=area==='codes'&&(diagnosisField?!diagnosisField.value.trim():!encounterSavedCodes(activeVisit,null).diagnoses?.length);
  if(enteringFirst)area='diagnoses';
  dialog.codesFocusDiagnosis=area==='diagnoses'&&!diagnosisField;
- const targets={diagnoses:'#visit-diagnoses',details:'[data-visit-charge-options]',procedures:'.billing-charge-row',rendering:'[data-encounter-provider]'};
+ const targets={diagnoses:'#visit-diagnoses',details:'[data-encounter-code-setup],[data-visit-charge-options]',procedures:'.billing-charge-row',rendering:'[data-encounter-provider]'};
  const target=targets[area]?body.querySelector(targets[area]):null;
  if(target){
   for(let parent=target;parent&&parent!==body;parent=parent.parentElement)if(parent.tagName==='DETAILS')parent.open=true;
@@ -2465,8 +2469,11 @@ function encounterCodeEditorParent(documentation,visit,account,diagnoses,editor,
  for(const selector of ['[data-previous-procedure-choices]','[data-clinical-diagnosis-search]']){
   const fresh=documentation.querySelector(selector);if(!fresh)continue;
   const old=body.querySelector(selector);if(old&&old!==fresh)old.remove();
-  encounterStepMove(fresh,body);
+  if(selector==='[data-previous-procedure-choices]')dialog.codesPreviousProcedures=fresh;
+  else encounterStepMove(fresh,body);
  }
+ const previous=dialog.codesPreviousProcedures,presets=form?.querySelector('[data-encounter-code-presets]')||body;
+ if(previous&&previous.parentElement!==presets){presets.append(previous);if(presets!==body)previous.open=true;}
  if(dialog.open)encounterTemplateCodesPaint(dialog);
  return body;
 }
@@ -2516,12 +2523,17 @@ function encounterStepPayments(body,revenue,status,s,model,locked){
  const amount=posted?s.patient?.owes_now_cents:draftInsured?s.patient?.copay_due_cents:null;
  const known=Number.isSafeInteger(amount)&&amount>=0;
  const stale=encounterRevenueState.data?.stale,failed=encounterRevenueState.data?.error,review=s.patient?.receipt_needs_review||s.receipts?.some(r=>!r.voided&&r.needs_review);
- const canCollect=!stale&&!failed&&!review&&known&&amount>0&&(posted?!locked:draftInsured)&&(typeof billingCan!=='function'||billingCan('create'));
+ const canRecord=!stale&&!failed&&!review&&known&&amount>0&&(posted?!locked:draftInsured)&&(typeof billingCan!=='function'||billingCan('create'));
+ const appointment=revenueAppointment();
+ const canCollect=canRecord&&encounterPaymentAppointment(appointment)&&s.patient_id===selected&&
+  s.visit?.id===activeVisit?.id&&s.visit?.appointment_id===appointment.id;
+ const copays=draftInsured?(s.receipts||[]).filter(r=>!r.voided&&r.amount_cents>(r.refunded_cents||0)):[];
+ const copayStatus=copays.some(r=>r.test===false)?'Copay recorded':copays.length&&copays.every(r=>r.test===true)?'Test copay recorded':'No copay due';
  let text='Balance pending';
  if(failed)text='Balance could not be loaded.';
  else if(stale)text='Balance could not be refreshed.';
  else if(review)text='Review the payment history before collecting.';
- else if(known)text=posted?(amount===0?'No patient amount due':'Patient amount due '+money(amount)):(amount===0?'No copay due':'Copay due '+money(amount));
+ else if(known)text=posted?(amount===0?'No patient amount due':'Patient amount due '+money(amount)):(amount===0?copayStatus:'Copay due '+money(amount));
  else if(s.patient&&selfPay&&!posted)text='Balance available after charges are posted.';
  else if(s.patient&&draftInsured)text='Copay not confirmed.';
  const retry=failed||stale?'<button type="button" class="text-button" data-refresh-revenue>Retry balance</button>':'';
@@ -2548,14 +2560,15 @@ function encounterStepPayments(body,revenue,status,s,model,locked){
  }
  const write=(node,markup)=>{if(node.paymentMarkup!==markup){node.paymentMarkup=markup;node.innerHTML=markup;}};
  const history=!!(ledger||statements||s.receipts?.length||s.timeline?.length||posted||review);
- write(payment,`<div class="encounter-payment-summary" aria-live="polite"><p data-payment-summary>${esc(text)}</p>${insurer?`<p class="muted" data-insurer-payment-summary>${esc(insurer)}</p>`:''}</div>${retry}${remittance}${canCollect?'<button type="button" class="primary" data-visit-collect>Take payment</button>':''}${receipt}${history?'<button type="button" class="text-button" data-open-encounter-payment-history>Payment history</button>':''}`);
+ const unavailable=canRecord&&!canCollect?'<p class="muted">Taking a payment requires an active appointment linked to this visit.</p>':'';
+ write(payment,`<div class="encounter-payment-summary" aria-live="polite"><p data-payment-summary>${esc(text)}</p>${unavailable}${insurer?`<p class="muted" data-insurer-payment-summary>${esc(insurer)}</p>`:''}</div>${retry}${remittance}${canCollect?'<button type="button" class="primary" data-visit-collect>Take payment</button>':''}${receipt}${history?'<button type="button" class="text-button" data-open-encounter-payment-history>Payment history</button>':''}`);
  for(const button of ledger?.querySelectorAll('[data-visit-collect]')||[])button.hidden=true;
  let actions=destination.querySelector('[data-payment-detail-actions]');
  if(!actions){actions=document.createElement('div');actions.dataset.paymentDetailActions='';destination.append(actions);}
  if(selfPay){
   const ctx=typeof visitBillingStateContext==='function'?visitBillingStateContext():{canCreate:typeof billingCan!=='function'||billingCan('create'),canWrite:typeof billingCan!=='function'||billingCan()};
   write(actions,visitBillingSelfPayDetails(s,ctx,encounterSelfPayCredits(s),{ledger:!!ledger,statements:!!statements,due:amount}));
-  return;
+  return canCollect;
  }
  // The ledger presents the receipt once. Keep receipts absent from that list (including
  // voids and visits without a charge account) and vetted correction actions accessible.
@@ -2579,6 +2592,7 @@ function encounterStepPayments(body,revenue,status,s,model,locked){
  if(draftInsured&&s.receipts?.length)links.push('<button type="button" data-visit-history="payments">Payment history and refunds</button>');
  const facts=draftInsured?visitBillingDraftPayments(s):'';
  write(actions,(facts?`<p>${esc(facts)}</p>`:'')+(links.length?`<div class="actions">${links.join('')}</div>`:''));
+ return canCollect;
 }
 function encounterInsurerPayment(s,model){
  const insurance=s.insurance;
@@ -2592,6 +2606,59 @@ function encounterInsurerPayment(s,model){
  if(insurance.status==='answered'&&model.paid)return 'Insurer response posted';
  if(s.state==='insurance_outside')return 'Insurer billed outside SunCharts';
  return model.sent?'Insurer payment pending':'Insurer payment pending claim submission';
+}
+function encounterNextAction(page,summary,model){
+ const button=selector=>[...page.querySelectorAll(selector)].find(node=>!node.closest('[hidden],dialog:not([open])'));
+ const follow=(label,control)=>control?{label,control,run:()=>control.click()}:null;
+ const codes=button('[data-open-encounter-codes]');
+ const addCode=codes&&['diagnoses','procedures'].includes(codes.dataset.encounterCodesArea)?{
+  label:codes.textContent,control:codes,run:event=>encounterOpenCodesDialog(event.currentTarget,codes.dataset.encounterCodesArea)
+ }:null;
+ const collect=button('[data-step-payment] [data-visit-collect]');
+ if(!model.signed){
+  const note=page.querySelector('#note-form'),sign=button('#note-form [data-action="sign"]');
+  const missing=note&&sign&&typeof noteMissingForSign==='function'?noteMissingForSign(note):[];
+  if(missing.length){
+   const field=note.elements[missing[0]],name={subjective:'subjective',objective:'objective',assessment:'assessment',plan:'plan'}[missing[0]];
+   return {label:missing.length===4?'Write note':`Add ${name}`,run(){encounterContentScroll(field,'instant','1');field?.focus({preventScroll:true});}};
+  }
+  if(addCode)return addCode;
+  const combined=model.selfPay&&button('#note-form [data-action="sign-bill"]');
+  return combined?follow('Sign & bill',combined):follow('Sign note',sign);
+ }
+ const post=button('[data-encounter-post-charges],#claim-screen-footer [data-visit-post-charges],#claim-screen-footer [data-post-and-send]');
+ const claim=button('#claim-screen-footer [data-open-signed-claim-details]');
+ const signedClaim=button('#claim-screen-footer .actions > button:not([data-open-signed-claim-details]):not([data-claim-screen-resend])');
+ const remit=button('[data-step-payment] [data-revenue-remittance]');
+ if(!model.closed&&summary.account?.status!=='posted'&&!model.sent){
+  if(addCode)return addCode;
+  if(post)return follow(post.textContent,post);
+ }
+ if(remit)return follow('Review insurer payment',remit);
+ const response={claim_rejected:'Review returned claim',claimmd_correction:'Review returned claim',correct_claim:'Review corrected charges',denied:'Review payer decision',review_response:'Review insurer response'}[summary.state];
+ if(response&&claim)return follow(response,claim);
+ if(!model.selfPay&&!model.sent&&(signedClaim||claim)){
+  const label=signedClaim?.textContent||claim.textContent;
+  return follow(label==='Claim details'?'Review claim':label,signedClaim||claim);
+ }
+ return follow('Take payment',collect);
+}
+function encounterNextSync(page,guide,action,earlyCopay){
+ const primary=guide.querySelector('[data-encounter-next]'),payment=guide.querySelector('[data-encounter-early-payment]');
+ const previous=page.encounterNextControl;
+ if(previous!==action?.control){
+  previous?.removeAttribute('data-encounter-next-source');
+  action?.control?.setAttribute('data-encounter-next-source','');
+  page.encounterNextControl=action?.control;
+ }
+ guide.hidden=!action&&!earlyCopay;
+ primary.hidden=!action;primary.disabled=!!action?.control?.disabled;
+ if(action&&primary.textContent!==action.label)primary.textContent=action.label;
+ primary.onclick=action?.run||null;
+ payment.hidden=!earlyCopay;
+ payment.toggleAttribute('data-visit-collect',!!earlyCopay);
+ const label=earlyCopay?`Take ${money(earlyCopay)} copay`:'';
+ if(payment.textContent!==label)payment.textContent=label;
 }
 function encounterStepsSync(){
  const page=$('visit-page-host'),v=typeof activeVisit!=='undefined'?activeVisit:null;
@@ -2633,12 +2700,17 @@ function encounterStepsSync(){
   }
   const heading=$('encounter-progress');
   let stepper=$('encounter-stepper');if(!stepper){stepper=document.createElement('section');stepper.id='encounter-stepper';}
+  let guide=page.querySelector('[data-encounter-guide]');
+  if(!guide){
+   guide=document.createElement('div');guide.className='encounter-guide';guide.dataset.encounterGuide='';
+   guide.innerHTML='<button type="button" class="primary" data-encounter-next></button><button type="button" data-encounter-early-payment></button>';
+  }
   stepper.hidden=!showing;
   const editorRooming=$('visit-editor')?.querySelector('[id="encounter-rooming-vitals"]');
   const mountedRooming=Array.from(page.children).find(node=>node.id==='encounter-rooming-vitals');
   const roomingBlock=editorRooming||mountedRooming;
   if(editorRooming&&mountedRooming&&editorRooming!==mountedRooming)mountedRooming.remove();
-  const order=[heading,stepper,roomingBlock,one,revenue,$('encounter-orders-actions')].filter(Boolean);
+  const order=[heading,stepper,guide,roomingBlock,one,revenue,$('encounter-orders-actions')].filter(Boolean);
   let nextNode=null;
   for(const node of [...order].reverse()){
    if(node.parentNode!==page||node.nextElementSibling!==nextNode)page.insertBefore(node,nextNode);
@@ -2669,7 +2741,6 @@ function encounterStepsSync(){
   encounterStepMove(diagnoses,codeParent);encounterStepMove(editor,codeParent);
   if(restoreCodeFocus&&focusedCode.isConnected&&document.activeElement!==focusedCode)focusedCode.focus({preventScroll:true});
   const status=revenue.querySelector(':scope > #encounter-revenue-status')||$('encounter-revenue-status');
-  const billingData=scoped?encounterRevenueState.data:null;
   const showClaim=billingAllowed&&!!s.insurance&&!model.selfPay;
   let claimStatus=documentation.querySelector('[data-encounter-claim-status]');
   if(!claimStatus){
@@ -2683,7 +2754,7 @@ function encounterStepsSync(){
   claimStatus.hidden=!showClaim;
   encounterStepMove(status,claimStatus);
   const paymentLocked=!model.signed||s.account?.status!=='posted';
-  encounterStepPayments(body(three),revenue,status,s,model,paymentLocked);
+  const canCollect=encounterStepPayments(body(three),revenue,status,s,model,paymentLocked);
   const roomingHost=$('visit-rooming');
   if(roomingBlock){
    let warnings=roomingBlock.querySelector('[data-signed-intake-warnings]');
@@ -2769,13 +2840,10 @@ function encounterStepsSync(){
   const originalAction=!model.signed?originalSign:null;
   if(originalAction){
    const sameVisit=raw.visit?.id===v.id&&raw.patient_id===selected;
-   const mayCombine=sameVisit&&billingData&&!billingData.error&&!billingData.stale&&s.insurance?.insured===true&&
-    typeof visitEncounterCanSignAndSubmit==='function'&&visitEncounterCanSignAndSubmit(s,account);
-   const mode=mayCombine?'queue':null;
-   if(mode)originalAction.dataset.claimHandoff=mode;else delete originalAction.dataset.claimHandoff;
-   const name=mode==='queue'?'Sign & submit claim':'Sign & bill';
+   delete originalAction.dataset.claimHandoff;
+   const name='Sign & bill';
    if(originalAction.textContent!==name)originalAction.textContent=name;
-   originalAction.hidden=!sameVisit||s.insurance?.insured!==false&&!mode;
+   originalAction.hidden=!sameVisit||s.insurance?.insured!==false;
    const signOnly=page.querySelector('#note-form [data-action="sign"]');
    const signLabel=originalAction.hidden?'Sign note':'Sign only';
    if(signOnly){
@@ -2792,6 +2860,9 @@ function encounterStepsSync(){
    stepper.innerHTML=markup;
    stepper.encounterMarkup=markup;
   }
+  const next=showing?encounterNextAction(page,s,model):null;
+  const earlyCopay=showing&&billingAllowed&&canCollect&&s.account?.status!=='posted'?s.patient.copay_due_cents:0;
+  encounterNextSync(page,guide,next,earlyCopay);
   encounterStepsWatchScroll(page,showing);
   if(showing&&!opening&&document.activeElement!==focused){
    const restore=focusedChip?stepper.querySelector(`[data-encounter-step-open="${focusedChip}"]`):focusedLabel;
@@ -2970,7 +3041,7 @@ function encounterHistoryOpen(){
 }
 if(typeof document!=='undefined'&&document.addEventListener){
  if(typeof window!=='undefined')window.addEventListener?.('resize',encounterStepsSchedule);
- for(const type of ['input','change'])document.addEventListener(type,event=>{if(event.target.closest?.('#rooming-form'))encounterStepsSchedule();});
+ for(const type of ['input','change'])document.addEventListener(type,event=>{if(event.target.closest?.('#rooming-form,#note-form'))encounterStepsSchedule();});
  document.addEventListener('click',event=>{
   const target=event.target;
   const openCodes=target.closest?.('[data-open-encounter-codes],[data-encounter-codes-anchor]');

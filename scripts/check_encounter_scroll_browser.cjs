@@ -38,17 +38,18 @@ const procedure = {code: '99213', description: 'Established patient office visit
   units: 1, modifiers: '', diagnosis_codes: [diagnosis.code], service_from: date, service_to: date, code_system: 'CPT'};
 
 function encounterBilling(currentVisit, scenario, correction) {
-  if (scenario === 'handoff') {
+  if (scenario === 'early-copay') {
+    const b=encounterBilling(currentVisit,'draft-insured',correction);
+    b.copays=[];
+    b.summary.receipts=[];
+    Object.assign(b.summary.patient,{copay_paid_cents:0,copay_due_cents:2500,received_cents:0,unapplied_cents:0});
+    return b;
+  }
+  if (scenario === 'sign-insured') {
     const b=encounterBilling(currentVisit,'draft-insured',correction);
     b.coverages[0].content.relationship='self';
     b.accounts[0].content.lines=[procedure];
-    if(currentVisit.status==='signed'){
-      b.accounts[0].status='posted';
-      b.claims=[{id:claimId,status:'ready',payer_name:'Synthetic PPO',frequency:'original',issues:[]}];
-      b.summary.claim=b.claims[0];
-      b.summary.state='send_claim';
-      b.summary.claim_handoff={outcome:'queued',claim_id:claimId,submission_id:id(150),job_id:id(151),delivery_status:'queued'};
-    }
+    if(currentVisit.status==='signed')b.summary.state='post_charges';
     b.summary.account=b.accounts[0];
     return b;
   }
@@ -99,7 +100,7 @@ function fixture(route, currentVisit, scenario, correction, currentRooming) {
     case '/auth/me': return staff;
     case '/auth/mode': return {mode: 'local'};
     case '/api/v1/connect/status': return {status: 'not_connected', services: {configured: false}, transport: {configured: false}};
-    case '/api/v1/billing/payers': return ['draft-insured','handoff'].includes(scenario)?list([{id:'synthetic', content:{name:'Synthetic PPO',payer_code:'SYN'}}]):list([]);
+    case '/api/v1/billing/payers': return ['draft-insured','sign-insured'].includes(scenario)?list([{id:'synthetic', content:{name:'Synthetic PPO',payer_code:'SYN'}}]):list([]);
     case '/api/v1/patients': return list([patient]);
     case patientPath: return patient;
     case patientPath + '/workspace': return {patient, visits: [currentVisit], appointments: [appointment], amendments: [], flags: []};
@@ -108,6 +109,7 @@ function fixture(route, currentVisit, scenario, correction, currentRooming) {
     case patientPath + '/intake-packets': return {patient_id: patient.id, summary: {}, ...list([])};
     case patientPath + '/billing': return {patient, ...billing};
     case patientPath + '/billing/visit-summary': return billing.summary;
+    case `${patientPath}/appointments/${appointment.id}/copay-checkouts`: return {items:[],availability:{available:false,livemode:false}};
     case '/api/v1/billing/copay-receipts/' + receipt.id: return {receipt, context: {patient, appointment}};
     case patientPath + '/visits/' + visit.id + '/checkout': return {visit: currentVisit, version: 1, events: [], releases: [],
       checkout: {completed: false}, readiness: {issues: []}, current_avs: null, preview_snapshot: {},
@@ -476,14 +478,36 @@ async function checkFirstProcedureSave(page, releaseFirstSave, writes){
     await page.locator(row(i)+' [name=amount]').fill(price);
   }
   await page.locator(launcher).click();
+  await page.waitForSelector(row(1)+' [name=procedure]',{visible:true});
+  const basic=['[name=procedure]','[name=description]','[name=units]','[data-charge-diagnoses]','[name=amount]'];
+  assert.deepEqual(await page.$eval(row(1),(line,fields)=>fields.map(field=>line.querySelector(field)?.checkVisibility()),basic),basic.map(()=>true),'CPT code, description, units, diagnosis and amount are ready without opening options');
+  const detail=form+' :is([data-encounter-code-presets],[data-encounter-code-setup])';
+  assert.deepEqual(await page.$$eval(detail,groups=>groups.map(group=>group.open)),[false,false],'Reusable codes and billing setup start closed');
+  assert.equal(await page.$eval(row(1)+' [name=ndc_code]',field=>field.checkVisibility()),false,'A common procedure starts without drug details');
+  await page.locator(row(1)+' [name=procedure]').fill('J0585');
+  await page.waitForSelector(row(1)+' [name=ndc_code]',{visible:true});
   await fillLine(1,'99213','Synthetic office service','100.00');
+  await page.waitForSelector(row(1)+' [name=ndc_code]',{hidden:true});
   await firstSaveStarted;
   await page.locator(form+' [data-add-charge]').click();
   await fillLine(2,'97110','Synthetic exercise service','80.00');
   await page.locator(row(1)+' [name=amount]').fill('125.00');
-  await page.locator(row(1)+' [data-modifier-toggle="25"]').click();
+  const modifier=row(1)+' [data-modifier-toggle="25"]';
+  const lineOptions=row(1)+' [data-charge-line-options] > summary';
+  assert.equal(await page.$eval(modifier,button=>button.checkVisibility()),false,'Modifier editing starts in the line options');
+  await page.locator(lineOptions).click();
+  await page.locator(modifier).click();
+  const hit=await page.$eval(save,button=>{
+    const {x,y,width,height}=button.getBoundingClientRect();
+    return document.elementFromPoint(x+width/2,y+height/2)===button;
+  });
+  assert.equal(hit,true,'Line options leave Done reachable while the modifier controls are open');
+  await page.locator(lineOptions).click();
+  assert.equal(await page.$eval(modifier,button=>button.checkVisibility()),false);
+  assert.equal(await page.$eval(row(1)+' [data-line-modifier-summary]',node=>node.textContent),'25','The chosen modifier remains readable when options are closed');
   await page.locator(save).click();
-  await page.waitForFunction(selector=>document.querySelector(selector)?.disabled,{},save);
+  await page.waitForFunction(selector=>document.querySelector(selector)?.codesSaving===true,{},codesDialog);
+  assert.equal(writes.length,1,'Done waits in the open editor while the first POST is still pending');
   releaseFirstSave();
   try{
     await page.waitForSelector(codesDialog,{hidden:true});
@@ -518,15 +542,15 @@ async function checkFirstProcedureSave(page, releaseFirstSave, writes){
   await reopenSavedTable(true);
   await page.reload({waitUntil:'load'});
   await reopenSavedTable();
-  console.log('PASS first account autosave: two procedures, latest price and modifier survive Save and close and reload');
+  console.log('PASS first account autosave: basic fields visible, NDC follows the code, modifier editing stays in the dialog, and Done preserves both procedures on reload');
 }
 
 async function run(browser, viewport, reducedMotion, failures, scenario = 'blank') {
   const context = await browser.createBrowserContext();
   const errors = [];
   let currentVisit = structuredClone(visit);
-  let correction = null, handoffs=0, savedHandoffAccount;
-  if(scenario==='handoff')currentVisit.note={subjective:'Synthetic symptom',objective:'Synthetic exam',assessment:'Synthetic diagnosis',plan:'Synthetic follow-up'};
+  let correction = null, signatures=0;
+  if(scenario==='sign-insured')currentVisit.note={subjective:'Synthetic symptom',objective:'Synthetic exam',assessment:'Synthetic diagnosis',plan:'Synthetic follow-up'};
   if(scenario==='unsigned-codes')currentVisit.note={subjective:draftText,objective:'Synthetic exam',assessment:'Synthetic assessment'};
   const procedureWrites=[];
   let procedureAccount,releaseFirstProcedureSave;
@@ -537,7 +561,7 @@ async function run(browser, viewport, reducedMotion, failures, scenario = 'blank
     intake_notes: '', medications_reviewed: true, allergies_reviewed: true};
   let releaseRoomingSave;
   const roomingSaveRelease = new Promise(resolve => { releaseRoomingSave = resolve; });
-  if (!['blank', 'rooming', 'unsigned-codes', 'draft-insured', 'first-code', 'first-procedures', 'handoff'].includes(scenario)) {
+  if (!['blank', 'rooming', 'unsigned-codes', 'draft-insured', 'early-copay', 'first-code', 'first-procedures', 'sign-insured'].includes(scenario)) {
     currentVisit.status = 'signed';
     currentVisit.signed_at = appointment.ends_at;
   }
@@ -554,19 +578,11 @@ async function run(browser, viewport, reducedMotion, failures, scenario = 'blank
       if (url.origin !== origin) return request.abort();
       const method = request.method();
       let data;
-      if(scenario==='handoff'&&method==='POST'&&url.pathname===patientPath+'/billing/visits/'+visit.id+'/claim-handoff'){
-        handoffs++;assert.equal(handoffs,1,'One explicit signature and delivery request');
-        const body=JSON.parse(request.postData());
-        assert.equal(body.sign_version,currentVisit.version);assert.equal(body.mode,'queue');assert.equal(body.account_id,accountId);assert.equal(body.account_version,savedHandoffAccount?.version||1);
-        assert.equal(body.confirmations.routine_professional_reviewed,true);assert.equal(body.confirmations.synthetic_test_reviewed,false);
+      if(scenario==='sign-insured'&&method==='POST'&&url.pathname===visitPath+'/sign'){
+        assert.equal(++signatures,1,'The next action signs the note once');
+        assert.equal(request.headers()['if-match'],'"'+currentVisit.version+'"');
         currentVisit={...currentVisit,status:'signed',signed_by:staff.user_id,signed_at:date+'T17:30:00Z',version:currentVisit.version+1};
-        data={...encounterBilling(currentVisit,'handoff').summary.claim_handoff,signed:true,visit_id:visit.id,account_id:accountId,visit_version:currentVisit.version};
-      } else if(scenario==='handoff'&&method==='PUT'&&url.pathname===patientPath+'/billing/accounts/'+accountId){
-        const saved=savedHandoffAccount||encounterBilling(currentVisit,'handoff').accounts[0];
-        assert.equal(request.headers()['if-match'],'"'+saved.version+'"');
-        const body=JSON.parse(request.postData());assert.equal(body.content.visit_id,currentVisit.id);assert.equal(body.content.lines[0].code,procedure.code);
-        savedHandoffAccount={...saved,content:body.content,version:saved.version+1};
-        data=savedHandoffAccount;
+        data=currentVisit;
       } else if(scenario==='first-procedures'&&(
         (method==='POST'&&url.pathname===patientPath+'/billing/accounts')||
         (method==='PUT'&&url.pathname===patientPath+'/billing/accounts/'+accountId))){
@@ -631,11 +647,6 @@ async function run(browser, viewport, reducedMotion, failures, scenario = 'blank
           if(url.pathname===patientPath+'/billing/visit-summary')Object.assign(data,{account:procedureAccount,charges_cents:procedureAccount.total_cents});
           if(url.pathname===patientPath+'/billing/accounts/'+accountId)data=procedureAccount;
         }
-        if(scenario==='handoff'&&savedHandoffAccount){
-          const account={...savedHandoffAccount,status:currentVisit.status==='signed'?'posted':'draft'};
-          if(url.pathname===patientPath+'/billing')data.accounts=[account];
-          if(url.pathname===patientPath+'/billing/visit-summary')data.account=account;
-        }
       } else if (/^\/$|\.(css|js|png|svg|webp|woff2?|ico)$/.test(url.pathname)) {
         return request.continue();
       } else {
@@ -651,50 +662,51 @@ async function run(browser, viewport, reducedMotion, failures, scenario = 'blank
     await page.goto(origin + '/#/patients/' + patient.id + '/encounter/' + visit.id, {waitUntil: 'load'});
     try {
       await page.waitForSelector(currentVisit.status === 'signed' ? '#encounter-stepper .encounter-step-toolbar' : noteSelector, {visible: true});
-      await page.waitForFunction(insured => encounterRevenueState.data?.summary?.insurance?.insured === insured, {}, ['draft-insured','handoff'].includes(scenario));
+      await page.waitForFunction(insured => encounterRevenueState.data?.summary?.insurance?.insured === insured, {}, ['draft-insured','early-copay','sign-insured'].includes(scenario));
     } catch (cause) {
       const screen = await page.evaluate(() => ({hash: location.hash, title: document.querySelector('#page-title')?.textContent,
         notice: document.querySelector('#notice')?.textContent, noteExists: !!document.querySelector('#note-form'),
         chart: document.querySelector('#chart')?.innerText.slice(0, 1200), alerts: [...document.querySelectorAll('[role=alert]')].map(alert => alert.innerText)}));
       throw new Error('Synthetic encounter did not open: ' + JSON.stringify({screen, errors, requests}), {cause});
     }
-    if(scenario==='handoff'){
-      const action='#note-form [data-action="sign-bill"]:not([hidden])';
-      await page.waitForFunction(selector=>document.querySelector(selector)?.innerText==='Sign & submit claim',{},action);
+    if(scenario==='sign-insured'){
+      const next='[data-encounter-next]:not([hidden])';
+      await page.waitForFunction(selector=>document.querySelector(selector)?.innerText==='Sign note',{},next);
       const layout=await page.$eval('#encounter-documentation',section=>{
         const codes=section.querySelector('[data-encounter-codes-summary]');
         const note=section.querySelector('#note-form');
-        const afterCodes=selector=>Boolean(codes.compareDocumentPosition(note.querySelector(selector))&Node.DOCUMENT_POSITION_FOLLOWING);
+        const sign=note.querySelector('[data-action="sign"]');
         return {
-          signAndSubmitAfterCodes:afterCodes('[data-action="sign-bill"]'),
-          signOnlyAfterCodes:afterCodes('[data-action="sign"]'),
+          signAfterCodes:Boolean(codes.compareDocumentPosition(sign)&Node.DOCUMENT_POSITION_FOLLOWING),
+          combinedHidden:note.querySelector('[data-action="sign-bill"]').hidden,
           saveBelongsToNote:note.querySelector('button[type="submit"]').form===note,
           claimOutsideNote:!note.contains(section.querySelector('[data-encounter-claim-status]'))
         };
       });
-      assert.deepEqual(layout,{
-        signAndSubmitAfterCodes:true,signOnlyAfterCodes:true,saveBelongsToNote:true,claimOutsideNote:true
-      },'Review codes before signing while keeping the note and claim forms independent');
+      assert.deepEqual(layout,{signAfterCodes:true,combinedHidden:true,saveBelongsToNote:true,claimOutsideNote:true});
       assert.doesNotMatch(await page.$eval('[data-note-actions]',actions=>actions.innerText),/signing locks the note/i);
-      await page.locator(action).click();
-      await page.waitForSelector('[role=alertdialog]',{visible:true});
-      const confirmation=await page.$eval('[role=alertdialog]',dialog=>dialog.innerText);
-      assert.match(confirmation,/benefits are assigned/);
-      assert.doesNotMatch(confirmation,/signing locks the note/i);
-      await page.click('[role=alertdialog] button[data-dialog-cancel]');
-      assert.equal(handoffs,0);
-      await page.waitForFunction(selector=>!busy&&document.querySelector(selector)?.disabled===false&&
-        !document.querySelector('[role=alertdialog]'),{},action);
-      await page.locator(action).click();
-      await page.locator('[role=alertdialog] button[data-dialog-confirm]').click();
-      const status='[data-encounter-claim-status] [data-claim-handoff-status]';
-      await page.waitForFunction(selector=>document.querySelector(selector)?.innerText.includes('Queued for Claim.MD'),{},status);
-      assert.equal(handoffs,1);
-      await page.reload({waitUntil:'load'});
-      await page.waitForFunction(selector=>document.querySelector(selector)?.innerText.includes('Queued for Claim.MD'),{},status);
-      assert.equal(await page.$('[data-visit-handoff-resume]'),null);
-      assert.deepEqual(errors,[]);
-      console.log('Insured visit: explicit signature queues one claim, cancellation does nothing, reload preserves unconfirmed delivery.');
+      await page.locator(next).click();
+      await page.waitForSelector('#note-form',{hidden:true});
+      assert.equal(signatures,1);
+      assert.equal(await page.$('[role=alertdialog]'),null);
+      assert.deepEqual(errors,[],'Signing alone does not post charges or transmit a claim');
+      console.log('PASS insured visit: one next action signs the note after coding; the claim has its own review.');
+      return;
+    }
+    if(scenario==='early-copay'){
+      const quick='[data-encounter-early-payment]:not([hidden])';
+      const sheet='dialog.collect-sheet[open]';
+      await page.waitForSelector(quick,{visible:true});
+      assert.equal(await page.$eval(quick,b=>b.innerText),'Take $25.00 copay');
+      await page.locator(quick).click();
+      await page.waitForSelector(`${sheet} [name="amount"]`,{visible:true});
+      assert.deepEqual(await page.$$eval(`${sheet} [name="amount"]`,fields=>fields.map(f=>f.value)),['25.00']);
+      assert.equal(await page.$eval(`${sheet} [data-collect-submit]`,b=>b.innerText),'Record $25.00 cash');
+      await page.keyboard.press('Escape');
+      await page.waitForSelector(sheet,{hidden:true});
+      assert.equal(await page.$eval('[data-payment-summary]',p=>p.innerText),'Copay due $25.00');
+      assert.deepEqual(errors,[],'Opening and closing early payment makes no writes');
+      console.log('PASS early copay: one click from Visit opens one prefilled amount while the note and claim are still outstanding.');
       return;
     }
     if(scenario==='first-procedures'){
@@ -917,7 +929,8 @@ if(require.main===module)(async () => {
   const failures = [];
   try {
     const desktop = {width: 1280, height: 900};
-    await run(browser, desktop, false, failures, 'handoff');
+    await run(browser, desktop, false, failures, 'sign-insured');
+    await run(browser, desktop, false, failures, 'early-copay');
     await run(browser, desktop, false, failures, 'first-procedures');
     await run(browser, desktop, false, failures, 'first-code');
     await run(browser, desktop, false, failures, 'unsigned-codes');

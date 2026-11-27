@@ -168,15 +168,15 @@ async function main(){
   console.log('PASS native controls: self-pay check-in prompt dismisses without a mutation');
   // Mount the continuous encounter itself; navigation scrolls the frame while the header stays fixed.
   if(realBrowser)await page.goto('http://127.0.0.1/');
-  await page.setContent(`<style>body{margin:0}.frame-content{position:absolute;inset:0;overflow:auto}#patient-banner{position:sticky;top:0;height:80px;background:white;z-index:30}#visit-editor{min-height:650px}#encounter-rooming-vitals{min-height:150px}[data-step-claim]{min-height:500px}#visit-checkout{min-height:500px}</style><main class="frame-content"><div id="chart"><div id="patient-banner">Synthetic Patient</div><div id="visit-page-host"><div id="visit-editor"><div id="encounter-intake"><div id="encounter-benefits">Synthetic coverage</div><div id="encounter-rooming-vitals">Rooming fields</div></div><div id="encounter-documentation"><form id="note-form"><textarea>Synthetic SOAP</textarea><button type="button" data-action="sign-bill">Sign &amp; bill</button></form></div></div><div id="encounter-revenue"><div id="encounter-revenue-status"><div class="visit-billing-totals"></div><div id="visit-billing-review"><button data-visit-review-send>Send claim</button></div></div></div><div id="visit-checkout"><p>Patient instructions and follow-up</p><button>Finish encounter</button></div></div></div></main>`);
+  await page.setContent(`<style>body{margin:0}.frame-content{position:absolute;inset:0;overflow:auto}#patient-banner{position:sticky;top:0;height:80px;background:white;z-index:30}#visit-editor{min-height:650px}#encounter-rooming-vitals{min-height:150px}[data-step-claim]{min-height:500px}#visit-checkout{min-height:500px}</style><main class="frame-content"><div id="chart"><div id="patient-banner">Synthetic Patient</div><div id="visit-page-host"><div id="visit-editor"><div id="encounter-intake"><div id="encounter-benefits">Synthetic coverage</div><div id="encounter-rooming-vitals">Rooming fields</div></div><div id="encounter-documentation"><form id="note-form"><textarea>Synthetic SOAP</textarea><button type="button" data-action="sign">Sign note</button></form></div></div><div id="encounter-revenue"><div id="encounter-revenue-status"><div class="visit-billing-totals"></div><div id="visit-billing-review"><button data-visit-review-send>Send claim</button></div></div></div><div id="visit-checkout"><p>Patient instructions and follow-up</p><button>Finish encounter</button></div></div></div></main>`);
   await page.addStyleTag({content:read('visit-billing.css')});
   await page.evaluate(()=>{
    window.$=id=>document.getElementById(id);window.esc=String;window.money=n=>'$'+(n/100).toFixed(2);
-   window.selected='synthetic';window.activeVisit={id:'synthetic',status:'in_progress'};window.workspace={appointments:[]};window.visitBillingDraftSelfPay=()=>false;
-   window.encounterRevenueState={data:{summary:{state:'sign_visit',account:{status:'draft'},insurance:{insured:true,status:'not_sent'},patient:{owes_now_cents:2500}}}};
+   window.selected='synthetic';window.activeVisit={id:'synthetic',status:'in_progress',appointment_id:'visit-appt'};window.workspace={appointments:[{id:'visit-appt',patient_id:'synthetic',status:'completed'}]};window.visitBillingDraftSelfPay=()=>false;
+   window.encounterRevenueState={data:{summary:{state:'sign_visit',patient_id:selected,visit:activeVisit,account:{status:'draft'},insurance:{insured:true,status:'not_sent'},patient:{owes_now_cents:2500}}}};
   });
   if(!await page.evaluate(()=>typeof visitBillingReceiptEntries==='function'))await page.addScriptTag({content:read('visit-billing.js')});
-  const revenue=read('patient-revenue.js');await page.addScriptTag({content:revenue.slice(revenue.indexOf('function encounterCodesStripMarkup('),revenue.indexOf('function encounterCodesStripClaimSync('))+'\n'+revenue.slice(revenue.indexOf('// One continuous encounter'))});
+  const revenue=read('patient-revenue.js');await page.addScriptTag({content:revenue.slice(revenue.indexOf('function revenueAppointment('),revenue.indexOf('function revenueServiceDate('))+'\n'+revenue.slice(revenue.indexOf('function encounterCodesStripMarkup('),revenue.indexOf('function encounterCodesStripClaimSync('))+'\n'+revenue.slice(revenue.indexOf('// One continuous encounter'))});
   await page.evaluate(()=>{
    encounterStepsSync();
    $('note-form').querySelector('button').onclick=()=>{activeVisit.status='signed';encounterRevenueState.data.summary.account.status='posted';encounterStepsSync();};
@@ -189,7 +189,7 @@ async function main(){
    if(realBrowser)assert.equal(await page.$eval('#patient-banner',n=>n.getBoundingClientRect().top),header);
   }
   await page.evaluate(()=>{document.querySelector('.frame-content').scrollTop=250;});
-  await page.click('#note-form [data-action="sign-bill"]');
+  await page.click('[data-encounter-next]');
   assert.equal(await page.evaluate(()=>activeVisit.status),'signed');
   assert(await page.$('[data-encounter-claim-status] [data-visit-review-send]'));
   await page.click('[data-encounter-claim-status] [data-visit-review-send]');
