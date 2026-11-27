@@ -214,7 +214,7 @@ async function checkClaimResponse(browser,viewport,returned=false){
   throw error;
  }finally{await ctx.close();}
 }
-async function checkReadyClaim(browser,viewport,delegated=false){
+async function checkReadyClaim(browser,viewport,delegated=false,canceled=false){
  const context=await browser.createBrowserContext(),page=await context.newPage(),errors=[],writes=[];
  const signed={...visit,status:'signed',signed_at:appointment.ends_at};
  const billing=fixture(patientPath+'/billing',signed,'insured',null,{});
@@ -233,6 +233,10 @@ async function checkReadyClaim(browser,viewport,delegated=false){
  const summary={...billing.summary,claim,viewer:{delegated},insurance:{...billing.summary.insurance,insurer:payer.content.name}};
  billing.summary=summary;
  const claimEndpoint='/api/v1/billing/claims/'+claim.id;
+ const prepareEndpoint=patientPath+'/billing/accounts/'+account.id+'/claims/prepare';
+ const original={...claim,id:id(833),status:'void',version:4,control_number:'SYN-CANCELLED'};
+ const beforeResubmit={...summary,state:'claim_cancelled',claim:null,canceled_claim:{id:original.id,version:original.version}};
+ if(canceled)billing.claims=[original];
  const handoffEndpoint=patientPath+'/billing/visits/'+signed.id+'/claim-handoff';
  const partner={id:id(829),partner_id:id(830),partner_version:1,route_key:'synthetic-claimmd',usage:'T'};
  const artifact={id:id(831),version:1,claim_id:claim.id,partner_id:partner.partner_id,partner_version:partner.partner_version};
@@ -256,6 +260,12 @@ async function checkReadyClaim(browser,viewport,delegated=false){
    if(request.method()!=='GET'){
     const body=JSON.parse(request.postData()||'{}'),version=request.headers()['if-match'];
     writes.push({method:request.method(),route,body,version});
+    if(canceled&&route===prepareEndpoint){
+     assert.equal(request.method(),'POST');
+     assert.deepEqual(body,{again:true,canceled_claim_id:original.id,canceled_claim_version:original.version});
+     billing.claims=[original,claim];
+     return request.respond({status:200,contentType:'application/json',body:JSON.stringify({outcome:'prepared',claim_id:claim.id})});
+    }
     if(route===claimEndpoint&&request.method()==='PUT'){
      if(body.content.encounter.prior_authorization_number==='SYN-FIRST-EDIT')await new Promise(resolve=>{releaseFirstAuthorization=resolve;});
      if(failNextAuthorization){failNextAuthorization=false;return request.respond({status:409,contentType:'application/json',body:JSON.stringify({message:'Check the current prior authorization before saving.'})});}
@@ -286,7 +296,7 @@ async function checkReadyClaim(browser,viewport,delegated=false){
    }
    let data;
    if(route===patientPath+'/billing')data=billing;
-   else if(route===patientPath+'/billing/visit-summary')data=summary;
+   else if(route===patientPath+'/billing/visit-summary')data=canceled&&billing.claims.length===1?beforeResubmit:summary;
    else if(route===patientPath+'/demographics')data={patient_id:patient.id,content:{address:{line1:'100 Synthetic Avenue',city:'Trenton',region:'NJ',postal_code:'08608'}}};
    else if(route==='/api/v1/billing/payers')data={items:[payer],total:1};
    else if(delegated&&route==='/auth/me')data={...staff,delegated:true,delegated_role:'partner_admin'};
@@ -302,6 +312,33 @@ async function checkReadyClaim(browser,viewport,delegated=false){
   const trigger='[data-encounter-step-number="1"] [data-signed-claim-summary] [data-open-signed-claim-details]';
   const dialog='dialog[data-signed-claim-details][open]',overview=dialog+' [data-signed-claim-overview]';
   const send=overview+' [data-signed-claim-send]',preview=overview+' [data-encounter-claim-form]';
+  if(canceled){
+   const next='[data-encounter-next]';
+   await page.waitForFunction(selector=>document.querySelector(selector)?.textContent==='Resubmit claim',{},next);
+   await page.waitForSelector('[data-visit-claim-resend][data-encounter-next-source]',{visible:true});
+   assert.deepEqual(writes,[],'loading a canceled claim does not prepare or send');
+   // A charge deep link can start below the toolbar on mobile. Its inline action is visible there.
+   await page.locator(viewport.isMobile&&delegated?'[data-visit-claim-resend]':next).click();
+   await page.waitForSelector(dialog+'[data-signed-claim-details="'+claim.id+'"]',{visible:true});
+   assert.deepEqual(writes.map(write=>write.route),[prepareEndpoint],'resubmit creates only the exact replacement draft');
+   const review=overview+(delegated?' [data-signed-claim-native-review]':' [data-signed-claim-send]');
+   await page.waitForSelector(review,{visible:true});
+   if(delegated){
+    const form=dialog+' #claimmd-submit-form';
+    await page.locator(review).click();
+    await page.waitForSelector(form,{visible:true});
+    assert.deepEqual(await page.$$eval(form+' input[required][type=checkbox]',boxes=>boxes.map(box=>box.checked)),[false,false,false,false]);
+   }else{
+    assert.match(await page.$eval(dialog+' #signed-claim-attestation',node=>node.innerText),/By selecting Send claim to Claim.MD, I confirm the provider signature is on file/);
+    await page.$eval(review,button=>button.click());
+   }
+   await page.keyboard.press('Escape');
+   await page.waitForSelector(dialog,{hidden:true});
+   assert.deepEqual(writes.map(write=>write.route),delegated&&viewport.isMobile?[prepareEndpoint,claimEndpoint+'/actions']:[prepareEndpoint]);
+   assert.deepEqual(errors,[]);
+   console.log(viewport.width+'px PASS canceled claim creates an exact new draft, with separate '+(delegated?'delegated':'direct')+' consent and no delivery on close');
+   return;
+  }
   await page.locator(trigger).click();
   if(delegated){
    const review=overview+' [data-signed-claim-native-review]',form=dialog+' #claimmd-submit-form';
@@ -479,6 +516,8 @@ async function checkReadyClaim(browser,viewport,delegated=false){
    await checkClaimResponse(browser,viewport,true);
    await checkReadyClaim(browser,viewport);
    await checkReadyClaim(browser,viewport,true);
+   await checkReadyClaim(browser,viewport,false,true);
+   await checkReadyClaim(browser,viewport,true,true);
   }
  }finally{await browser.close();}
 })().catch(e=>{console.error(e);process.exitCode=1;});

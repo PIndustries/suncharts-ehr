@@ -312,7 +312,12 @@ async function loadInsuranceEligibility(coverageId,force=false){
 }
 // The encounter's billing card. Every amount and the next step come from the server's summary
 // for this encounter; nothing here adds or subtracts money.
-function visitBillingStateContext(extra={}){return {delegated:typeof me!=='undefined'&&me?.delegated===true||encounterRevenueState.data?.summary?.viewer?.delegated===true,canCreate:billingCan('create'),canWrite:billingCan(),claimsAllowed:typeof workspaceResourceAllowed!=='function'?true:workspaceResourceAllowed('claims','view'),...extra};}
+function visitBillingStateContext(extra={}){
+ const claimsAllowed=action=>typeof workspaceResourceAllowed!=='function'||workspaceResourceAllowed('claims',action);
+ return {delegated:typeof me!=='undefined'&&me?.delegated===true||encounterRevenueState.data?.summary?.viewer?.delegated===true,
+  canCreate:billingCan('create'),canWrite:billingCan(),claimsAllowed:claimsAllowed('view'),
+  canResubmitClaim:claimsAllowed('create')&&!encounterRevenueState.data?.stale&&!encounterRevenueState.data?.error,...extra};
+}
 function visitBillingContext(extra={}){return visitBillingStateContext(extra);}
 // Whether this encounter's charges are on their way onto the table filled in from the patient's last
 // visit, or already sit there untouched. The billing card asks the charge table's own code (see
@@ -373,7 +378,7 @@ state.reviewCard=state.data?.summary||null;node.innerHTML=encounterRevenueStatus
  const details=$('visit-billing-details');if(details)details.hidden=!summary.technical;
  if(typeof renderEncounterInvoices==='function')renderEncounterInvoices();
 }
-async function loadEncounterRevenueStatus(account,force=false){
+async function loadEncounterRevenueStatus(account,force=false,{prepare=true}={}){
  const visit=typeof activeVisit!=='undefined'?activeVisit:null;if(!visit)return;
  const visitStatus=visit.status;
  let state=encounterRevenueState;
@@ -389,7 +394,7 @@ async function loadEncounterRevenueStatus(account,force=false){
  // The claim is prepared only while the billing step itself is showing, never because the
  // visit was opened on its note or another step.
  const onBillingStep=()=>encounterOnBillingStep();
- const mayPrepare=summary=>summary?.state==='prepare_claim'&&summary.account&&billingCan('create')&&!state.prepared&&onBillingStep()&&me?.delegated!==true&&summary.viewer?.delegated!==true;
+ const mayPrepare=summary=>prepare&&summary?.state==='prepare_claim'&&summary.account&&billingCan('create')&&!state.prepared&&onBillingStep()&&me?.delegated!==true&&summary.viewer?.delegated!==true;
  if(state.data?.summary&&!force&&!mayPrepare(state.data.summary)&&Date.now()-state.loadedAt<15000){render();return;}
  if(!state.data)state.data={};render();
  state.pending=(async()=>{
@@ -425,37 +430,50 @@ async function loadEncounterRevenueStatus(account,force=false){
  })();
  return state.pending;
 }
-async function prepareVisitClaim(again,quiet){
+async function prepareVisitClaim(){
  const account=encounterChargeAccount(),state=encounterRevenueState,patient=selected,identity=me,visit=activeVisit?.id;
  if(!account)throw new Error('Post the charges for this encounter first.');
  const current=()=>selected===patient&&me===identity&&activeVisit?.id===visit&&encounterChargeAccount()?.id===account.id;
  state.prepared=true;
- const result=await api(`/api/v1/patients/${encodeURIComponent(patient)}/billing/accounts/${encodeURIComponent(account.id)}/claims/prepare`,'POST',again?{again:true}:{});
+ const result=await api(`/api/v1/patients/${encodeURIComponent(patient)}/billing/accounts/${encodeURIComponent(account.id)}/claims/prepare`,'POST',{});
  if(!current())return;
  if(encounterRevenueState===state&&state.data)state.data.prepareError=null;
  await loadEncounterRevenueStatus(account,true);
- if(current()&&result.outcome==='prepared'&&!quiet)notice('Claim prepared from this encounter. Nothing was sent.');
+ if(current()&&result.outcome==='prepared')notice('Claim prepared from this encounter. Nothing was sent.');
 }
-// A cancelled claim goes out again in one press: the claim is prepared again (keeping what a person
-// corrected on the cancelled one), the encounter is read back, and when nothing needs fixing the same
-// send the review panel's own button runs goes ahead. Otherwise the review panel shows what to fix.
+// Prepare from the exact cancelled claim the user saw, then open only its replacement draft.
 async function visitClaimResend(button){
- const patient=selected,identity=me,visit=activeVisit?.id;
- const current=()=>selected===patient&&me===identity&&activeVisit?.id===visit;
- if(button){button.disabled=true;button.textContent='Sending…';}
+ const patient=selected,identity=me,visit=activeVisit?.id,account=encounterChargeAccount();
+ const current=()=>selected===patient&&me===identity&&activeVisit?.id===visit&&encounterChargeAccount()?.id===account?.id&&chartSection==='visits';
+ const scoped=summary=>summary?.patient_id===patient&&summary.visit?.id===visit&&summary.account?.id===account?.id;
+ const data=encounterRevenueState.data,original=visitBillingCanceledClaim(data?.summary,visitBillingStateContext());
+ if(!account?.id||!current()||!scoped(data?.summary)||!original||
+  original.id!==button.dataset.visitClaimResend||String(original.version)!==button.dataset.canceledClaimVersion)return;
+ button.disabled=true;
+ button.textContent='Preparing draft…';
  try{
-  await prepareVisitClaim(true,true);
+  let result,prepareError;
+  try{
+   result=await api(`/api/v1/patients/${encodeURIComponent(patient)}/billing/accounts/${encodeURIComponent(account.id)}/claims/prepare`,'POST',
+    {again:true,canceled_claim_id:original.id,canceled_claim_version:original.version});
+  }catch(error){if(error.signedOut)throw error;prepareError=error;}
   if(!current())return;
-  const summary=encounterRevenueState.data?.summary;
-  const clear=summary?.state==='send_claim'&&!visitReviewMustFix(visitReviewChecks(summary,visitReviewContext())).length;
-  const account=typeof encounterChargeAccount==='function'?encounterChargeAccount():null;
-  const options=clear?visitReviewSendContext(summary,account):null;
-  visitReviewOpen();
-  if(options)await visitReviewRun(summary.claim?.id||null,options);
- }catch(error){
-  if(current())visitClaimSendFailure(error,button);
+  // Finish any pre-existing read before reloading the authoritative result of the prepare.
+  await encounterRevenueState.pending;
+  if(!current())return;
+  await loadEncounterRevenueStatus(encounterChargeAccount(),true,{prepare:false});
+  if(!current())return;
+  if(prepareError){notice(prepareError.message||'The draft could not be confirmed. Check the claim status.',true);return;}
+  const refreshed=encounterRevenueState.data,summary=refreshed?.summary,claim=summary?.claim;
+  if(!['prepared','exists'].includes(result?.outcome)||!result.claim_id||result.claim_id===original.id||
+   refreshed?.stale||refreshed?.error||!scoped(summary)||claim?.id!==result.claim_id||!['draft','ready'].includes(claim.status)){
+   notice('The new draft could not be confirmed. Check the claim status before trying again.',true);
+   return;
+  }
+  if(encounterRevenueState.review?.claimId!==claim.id)encounterRevenueState.review=null;
+  visitOpenSignedClaimDetails();
  }finally{
-  if(current()&&button&&button.isConnected!==false){button.disabled=false;button.textContent='Send the claim again';}
+  if(current()&&button.isConnected!==false){button.disabled=false;button.textContent='Resubmit claim';}
  }
 }
 // The statement is the patient's side of this encounter. Its record is saved the first time it
@@ -902,8 +920,8 @@ document.addEventListener('click',event=>{
   });
   return;
  }
- if(button.hasAttribute('data-visit-claim-resend')){event.preventDefault();button.disabled=true;button.textContent='Sending…';run(()=>visitClaimResend(button));return;}
- if(button.dataset.visitClaimPrepare!==undefined){event.preventDefault();button.disabled=true;run(()=>prepareVisitClaim(button.dataset.visitClaimPrepare==='again'));return;}
+ if(button.hasAttribute('data-visit-claim-resend')){event.preventDefault();run(()=>visitClaimResend(button));return;}
+ if(button.dataset.visitClaimPrepare!==undefined){event.preventDefault();button.disabled=true;run(()=>prepareVisitClaim());return;}
  if(button.dataset.visitClaimDirectSend){event.preventDefault();run(()=>sendVisitClaimNow(button.dataset.visitClaimDirectSend,button));return;}
  if(button.dataset.visitPostAndSend){event.preventDefault();run(()=>postVisitChargesAndSend());return;}
  if(button.dataset.visitClaimSend){event.preventDefault();visitReviewOpen();return;}
@@ -2628,7 +2646,7 @@ function encounterNextAction(page,summary,model){
  }
  const post=button('[data-encounter-post-charges],#claim-screen-footer [data-visit-post-charges],#claim-screen-footer [data-post-and-send]');
  const claim=button('#claim-screen-footer [data-open-signed-claim-details]');
- const signedClaim=button('#claim-screen-footer .actions > button:not([data-open-signed-claim-details]):not([data-claim-screen-resend])');
+ const signedClaim=button('#claim-screen-footer .actions > button:not([data-open-signed-claim-details])');
  const remit=button('[data-step-payment] [data-revenue-remittance]');
  if(!model.closed&&summary.account?.status!=='posted'&&!model.sent){
   if(addCode)return addCode;
@@ -2637,7 +2655,8 @@ function encounterNextAction(page,summary,model){
  if(remit)return follow('Review insurer payment',remit);
  const response={claim_rejected:'Review returned claim',claimmd_correction:'Review returned claim',correct_claim:'Review corrected charges',denied:'Review payer decision',review_response:'Review insurer response'}[summary.state];
  if(response&&claim)return follow(response,claim);
- if(!model.selfPay&&!model.sent&&(signedClaim||claim)){
+ if(summary.state==='claim_cancelled'&&signedClaim)return follow(signedClaim.textContent,signedClaim);
+ if(summary.state!=='claim_cancelled'&&!model.selfPay&&!model.sent&&(signedClaim||claim)){
   const label=signedClaim?.textContent||claim.textContent;
   return follow(label==='Claim details'?'Review claim':label,signedClaim||claim);
  }

@@ -307,13 +307,13 @@ function visitClaimFooter(s,ctx,checks){
  }
  const sent=ctx.sent||['submitted','accepted','rejected','adjudicated'].includes(s.claim?.status);
  const status=visitBillingStatus(s,ctx);
+ if(s.state==='claim_cancelled')return `<footer id="claim-screen-footer" class="claim-screen-footer" tabindex="-1"><p role="status">${esc(status.detail||status.headline)}</p><div class="actions">${ctx.billingCard?'':status.action}</div></footer>`;
  const line=ctx.error?ctx.error:ctx.progress?.step?ctx.progress.step:sent?(s.claimmd?.message||(['waiting_insurer','claimmd_received','send_claim','post_charges'].includes(s.state)?'Sent · waiting on the insurer':status.headline)):blocking?`${blocking} thing${blocking===1?'':'s'} to fix before sending`:s.state==='send_claim'?'Ready to send to the clearinghouse':status.headline;
  let action='';
  if(!sent&&ctx.canWrite&&ctx.claimsAllowed&&s.insurance?.electronic&&!s.claim?.secondary&&!s.claim?.crossover){
   if(s.state==='sign_visit')action=visitReviewButton('Send claim','class="primary" data-visit-review-send disabled');
   if(s.state==='send_claim')action=visitReviewButton('Send claim',`class="primary" data-visit-review-send${busy||blocking?' disabled':''}`);
   if(s.state==='post_charges')action=visitReviewButton('Send claim',`class="primary" data-visit-review-send${busy||blocking?' disabled':''}`);
-  if(s.state==='claim_cancelled'&&ctx.canCreate&&!ctx.delegated)action=visitReviewButton('Send the claim again',`class="primary" data-claim-screen-resend${busy?' disabled':''}`);
  }
  return `<footer id="claim-screen-footer" class="claim-screen-footer" tabindex="-1"><div><p role="${ctx.error?'alert':'status'}"${blocking?' data-review-blocked':''}${ctx.error?' data-review-stalled':''}>${ctx.error?'<b>Nothing more was sent.</b> ':''}${esc(line)}</p>${visitReviewProgressMarkup(ctx.progress)}</div><div class="actions">${blocking?visitReviewButton(`${blocking} thing${blocking===1?'':'s'} to fix`,'data-claim-problems'):''}${action}</div></footer>`;
 }
@@ -442,12 +442,12 @@ function visitEncounterClaimStatus(s,ctx,sent){
   line=visitHandoffStatus(handoff);hint=visitHandoffDetail(handoff);
   if(visitHandoffCanResume(handoff)&&missing)action=codeIssue?'':visitSignedClaimIssueAction(missing,s,ctx);
   else if(visitHandoffCanResume(handoff)&&visitHandoffMode(s,visitReviewAccount())==='queue')action=visitReviewButton('Resume claim submission','class="primary" data-visit-handoff-resume');
+ }else if(!ctx.claimsAllowed){line='Claims access is required for this encounter.';}
+ else if(s.state==='claim_cancelled'){
+  line='Claim cancelled';hint=status.detail;action=status.action;
  }else if(ctx.error||ctx.progress?.step){
   line=ctx.error||ctx.progress.step;
   feedback=visitReviewProgressMarkup(ctx.progress);
- }else if(!ctx.claimsAllowed){line='Claims access is required for this encounter.';}
- else if(s.state==='claim_cancelled'&&ctx.canCreate&&!ctx.delegated){
-  line='Claim cancelled';action=visitReviewButton('Send the claim again','class="primary" data-claim-screen-resend');
  }else if(sent){
   hint=status.detail;
   if(s.state==='post_response')hint='Review the payment in the Payment section.';
@@ -463,7 +463,7 @@ function visitEncounterClaimStatus(s,ctx,sent){
   line=ready.title;hint=ready.next;label=ready.finalSend||ready.manualReview?'Review claim':'Claim details';
  }else if(status.action&&!status.action.includes('data-visit-review-open'))action=status.action;
  const details=visitReviewButton(label,`${!action&&ctx.claimsAllowed?'class="primary" ':''}data-open-signed-claim-details aria-haspopup="dialog"`);
- return `<div data-encounter-claim-summary ${unsigned?'':'data-signed-claim-summary'}><div id="claim-screen-footer" class="signed-claim-summary" tabindex="-1"><div ${handoff?'data-claim-handoff-status ':''}role="${ctx.error?'alert':'status'}"><strong>${esc(line)}</strong>${hint?`<p class="muted signed-claim-hint">${esc(hint)}</p>`:''}${feedback}</div><div class="actions">${action}${ctx.claimsAllowed&&!unsigned?details:''}</div></div></div>`;
+ return `<div data-encounter-claim-summary ${unsigned?'':'data-signed-claim-summary'}><div id="claim-screen-footer" class="signed-claim-summary" tabindex="-1"><div ${handoff?'data-claim-handoff-status ':''}role="${ctx.error?'alert':'status'}"><strong>${esc(line)}</strong>${hint?`<p class="muted signed-claim-hint">${esc(hint)}</p>`:''}${feedback}</div><div class="actions">${action}${ctx.claimsAllowed&&!unsigned&&s.state!=='claim_cancelled'?details:''}</div></div></div>`;
 }
 // Summarize the recorded clearinghouse and payer evidence separately. A rejected claim can
 // have a clearinghouse receipt without ever having a payer receipt.
@@ -1170,7 +1170,7 @@ function visitBillingCardCurrent(s){
 }
 function visitBillingReviewButton(s,ctx={}){
   if(!ctx.canWrite||!ctx.claimsAllowed||!s.insurance?.insured||!s.account||ctx.noReview)return '';
-  if(!['post_charges','prepare_claim','claim_cancelled','fix_claim','send_claim'].includes(s.state))return '';
+  if(!['post_charges','prepare_claim','fix_claim','send_claim'].includes(s.state))return '';
   if(['submitted','accepted','adjudicated','void'].includes(s.claim?.status))return '';
   if(!visitBillingCardCurrent(s))return '';
   return `<button type="button" class="primary" data-visit-review-open="account">Review and send to the clearinghouse</button>`;
@@ -1391,7 +1391,6 @@ document.addEventListener('click',event=>{
     event.preventDefault();visitReviewOpen();return;
   }
   if(button.dataset.claimPreview){event.preventDefault();encounterRevenueState.claimPreview=button.dataset.claimPreview;visitReviewPaint();return;}
-  if(button.hasAttribute('data-claim-screen-resend')){event.preventDefault();run(()=>visitClaimResend(button));return;}
   if(button.hasAttribute('data-visit-review-close')){event.preventDefault();visitReviewClose();return;}
   if(button.hasAttribute('data-visit-review-refresh')){event.preventDefault();run(async()=>{await loadEncounterRevenueStatus(typeof encounterChargeAccount==='function'?encounterChargeAccount():null,true);visitReviewPaint();});return;}
   if(button.hasAttribute('data-visit-handoff-resume')){

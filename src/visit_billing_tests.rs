@@ -1647,6 +1647,144 @@ async fn missing_details_denials_deductibles_secondary_and_overpayment_are_repor
 }
 
 #[tokio::test]
+async fn canceled_original_copy_checks_version_and_creates_only_a_local_draft() {
+    let f = setup().await;
+    let (patient, _, visit) = f.visit(true).await;
+    let (_, policy) = f.coverage(patient, "primary", "SYN-P", None).await;
+    let account = f
+        .post(
+            patient,
+            &f.charges(patient, visit, Some(id(&policy)), 10000).await,
+        )
+        .await;
+    let account_id = id(&account);
+    let (_, prepared) = f.prepare(&f.owner, patient, account_id, json!({})).await;
+    let original = f.claim(&prepared["claim_id"]).await;
+    let claim_path = format!("/api/v1/billing/claims/{}", id(&original));
+    let mut content = original["content"].clone();
+    content["encounter"]["prior_authorization_number"] = json!("SYN-EXACT-BOX-23");
+    let edited = f
+        .ok(
+            "PUT",
+            &claim_path,
+            json!({"content":content,"reason":"Synthetic Box 23 edit"}),
+            Some(version(&original)),
+        )
+        .await;
+    let canceled = f
+        .ok(
+            "POST",
+            &format!("{claim_path}/actions"),
+            json!({"action":"void_draft","reason":"Synthetic local cancellation"}),
+            Some(version(&edited)),
+        )
+        .await;
+    let support = Actor {
+        sub: Uuid::new_v4(),
+        ..f.owner.clone()
+    };
+    sqlx::query("INSERT INTO partner_support_sessions(token_hash,tenant_id,grant_id,partner_id,customer_id,order_id,issuer,audience,expires_at,actor_subject,delegated_role) VALUES($1,$2,$3,gen_random_uuid(),gen_random_uuid(),gen_random_uuid(),'https://connect.suncharts.app','https://clinic.suncharts.app',clock_timestamp()+interval '15 minutes','synthetic-support','partner_admin')")
+        .bind(support.sub.to_string()).bind(support.tenant_id).bind(support.sub).execute(&f.db).await.unwrap();
+
+    let summary = f.summary(&support, patient, visit).await;
+    assert_eq!(summary["state"], "claim_cancelled");
+    assert_eq!(
+        summary["canceled_claim"],
+        json!({"id":id(&canceled),"version":version(&canceled)})
+    );
+    assert!(summary["canceled_claim_blocked"].is_null());
+    let (status, _) = f
+        .prepare(&support, patient, account_id, json!({"again":true}))
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    let (status, _) = f.prepare(&support, patient, account_id, json!({"again":true,"canceled_claim_id":id(&canceled),"canceled_claim_version":version(&edited)})).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    let copy_request = json!({"again":true,"canceled_claim_id":id(&canceled),"canceled_claim_version":version(&canceled)});
+    let ((first_status, first), (second_status, second)) = tokio::join!(
+        f.prepare(&support, patient, account_id, copy_request.clone()),
+        f.prepare(&support, patient, account_id, copy_request),
+    );
+    assert_eq!(first_status, StatusCode::OK, "{first}");
+    assert_eq!(second_status, StatusCode::OK, "{second}");
+    let outcomes = [
+        first["outcome"].as_str().unwrap(),
+        second["outcome"].as_str().unwrap(),
+    ];
+    assert!(outcomes.contains(&"prepared") && outcomes.contains(&"exists"));
+    assert_eq!(first["claim_id"], second["claim_id"]);
+    let copy = f.claim(&first["claim_id"]).await;
+    assert_ne!(id(&copy), id(&canceled));
+    assert_eq!(copy["frequency"], "original");
+    assert_eq!(copy["status"], "draft");
+    assert_eq!(
+        copy["content"]["encounter"]["prior_authorization_number"],
+        "SYN-EXACT-BOX-23"
+    );
+    assert_eq!(f.claim(&canceled["id"]).await, canceled);
+    assert_eq!(
+        f.count("SELECT count(*) FROM edi_submissions WHERE tenant_id=$1")
+            .await,
+        0
+    );
+    assert_eq!(
+        f.count("SELECT count(*) FROM edi_delivery_jobs WHERE tenant_id=$1")
+            .await,
+        0
+    );
+    let (actor, evidence): (Uuid, Value) = sqlx::query_as("SELECT actor_id,evidence FROM claim_revisions WHERE tenant_id=$1 AND claim_id=$2 AND version=1")
+        .bind(f.owner.tenant_id).bind(id(&copy)).fetch_one(&f.db).await.unwrap();
+    assert_eq!(actor, support.sub);
+    assert_eq!(evidence["copied_canceled_claim"], summary["canceled_claim"]);
+}
+
+#[tokio::test]
+async fn canceled_original_copy_checks_prior_delivery_on_void_sibling_account() {
+    let f = setup().await;
+    let (patient, _, visit) = f.visit(true).await;
+    let (_, policy) = f.coverage(patient, "primary", "SYN-P", None).await;
+    let account = f
+        .post(
+            patient,
+            &f.charges(patient, visit, Some(id(&policy)), 10000).await,
+        )
+        .await;
+    let account_id = id(&account);
+    let (_, prepared) = f.prepare(&f.owner, patient, account_id, json!({})).await;
+    let original = f.claim(&prepared["claim_id"]).await;
+    let canceled = f
+        .ok(
+            "POST",
+            &format!("/api/v1/billing/claims/{}/actions", id(&original)),
+            json!({"action":"void_draft","reason":"Synthetic local cancellation"}),
+            Some(version(&original)),
+        )
+        .await;
+    // Historical fixture: a closed sibling account from this visit still has a payer receipt.
+    let sibling = Uuid::new_v4();
+    sqlx::query("INSERT INTO billing_accounts(tenant_id,id,patient_id,visit_id,coverage_id,content,coverage_snapshot,total_cents,status,request_id,creation_hash) SELECT tenant_id,$3,patient_id,visit_id,coverage_id,content,coverage_snapshot,total_cents,'void',gen_random_uuid(),'synthetic' FROM billing_accounts WHERE tenant_id=$1 AND id=$2")
+        .bind(f.owner.tenant_id).bind(account_id).bind(sibling).execute(&f.db).await.unwrap();
+    let prior_claim = Uuid::new_v4();
+    sqlx::query("INSERT INTO ehr_claims(tenant_id,id,patient_id,account_id,payer_id,control_number,frequency,content,snapshot,status,payer_control_number,request_id,creation_hash) SELECT tenant_id,$4,patient_id,$3,payer_id,'SYN-OLDER-CLAIM','original',content,snapshot,'void','SYN-PAYER-RECEIPT',gen_random_uuid(),'synthetic' FROM ehr_claims WHERE tenant_id=$1 AND id=$2")
+        .bind(f.owner.tenant_id).bind(id(&canceled)).bind(sibling).bind(prior_claim).execute(&f.db).await.unwrap();
+
+    let summary = f.summary(&f.owner, patient, visit).await;
+    assert_eq!(summary["state"], "claim_cancelled");
+    assert!(summary["canceled_claim"].is_null());
+    assert_eq!(summary["canceled_claim_status_id"], json!(prior_claim));
+    assert!(summary["canceled_claim_blocked"]
+        .as_str()
+        .unwrap()
+        .contains("Prior delivery"));
+    let (status, body) = f.prepare(&f.owner, patient, account_id, json!({"again":true,"canceled_claim_id":id(&canceled),"canceled_claim_version":version(&canceled)})).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(
+        f.count("SELECT count(*) FROM ehr_claims WHERE tenant_id=$1 AND status<>'void'")
+            .await,
+        0
+    );
+}
+
+#[tokio::test]
 async fn every_screen_shows_the_same_patient_owes_now_and_support_sessions_never_prepare_claims() {
     let f = setup().await;
     let (p, _, visit) = f.visit(true).await;
