@@ -914,7 +914,17 @@ document.addEventListener('click',event=>{
  if(button.hasAttribute('data-revenue-documentation')){event.preventDefault();setEncounterSection('documentation');return;}
  if(button.dataset.visitPostCharges){event.preventDefault();run(()=>postVisitChargesFromCard());return;}
  if(button.dataset.revenueAccount){event.preventDefault();if(billingSelected!==button.dataset.revenueAccount||!$('encounter-billing-detail')?.innerHTML)showBillingAccount(button.dataset.revenueAccount,false);const details=$('encounter-charge-details');if(details)details.open=true;$('encounter-billing-detail')?.scrollIntoView({behavior:'smooth',block:'start'});return;}
- if(button.dataset.revenueClaim||button.dataset.revenueRemittance){event.preventDefault();run(async()=>{if(button.dataset.revenueClaim){const account=encounterChargeAccount();if(!account)throw new Error('Select the encounter charge account.');await showEncounterClaim(button.dataset.revenueClaim,account.id);}else{await showClaimsWorkspace();await showEra(button.dataset.revenueRemittance);}});return;}
+ if(button.dataset.revenueClaim||button.dataset.revenueRemittance){
+  event.preventDefault();
+  run(async()=>{
+   if(button.dataset.revenueRemittance){await showClaimsWorkspace();await showEra(button.dataset.revenueRemittance);return;}
+   const account=encounterChargeAccount();if(!account)throw new Error('Select the encounter charge account.');
+   const claimId=button.dataset.revenueClaim;
+   if(typeof visitOpenCurrentEncounterClaim==='function'&&await visitOpenCurrentEncounterClaim(claimId,account.id))return;
+   if($('visit-page-host')?.dataset?.encounterSteps!==undefined){await showClaimsWorkspace();await showClaim(claimId);}
+   else await showEncounterClaim(claimId,account.id);
+  });return;
+ }
  if(button.dataset.revenueInvoice||button.dataset.revenueInvoices){event.preventDefault();billingSelected=button.dataset.revenueInvoice||button.dataset.revenueInvoices;run(async()=>{if(button.dataset.revenueInvoice)patientInvoiceEditor();else await showPatientInvoices();});return;}
  if(button.dataset.paymentGroup){event.preventDefault();run(()=>showPaymentGroupReceipt(button.dataset.paymentGroup,button.dataset.appointment));return;}
  if(button.dataset.copayReceipt){event.preventDefault();run(()=>showCopayReceipt(button.dataset.copayReceipt,button.dataset.appointment));return;}
@@ -1957,8 +1967,11 @@ function encounterStepsModel(s={},v={},_appointment={},closed=false){
  const p=s.patient||{},i=s.insurance||{},signed=v.status==='signed'||!!v.signed_at;
  const selfPay=i.insured===false&&!s.claim?.id;
  const handoff=typeof visitHandoffEvidence==='function'?visitHandoffEvidence(s):null;
- const sent=handoff?handoff.outcome==='delivered':!['claim_cancelled','correct_claim','denied','claimmd_correction'].includes(s.state)&&(['waiting','answered'].includes(i.status)||['submitted','accepted','adjudicated'].includes(s.claim?.status));
- const paid=(signed&&s.account?.status==='posted'&&p.owes_now_cents===0)||s.state==='paid_in_full'||(s.account?.status==='posted'&&p.owes_now_cents===0&&(!i.insured||(i.status==='answered'&&!(i.pending_cents>0)&&!(i.unassigned_cents>0)&&!['post_response','review_response','review_balance','patient_credit'].includes(s.state))));
+ const sent=handoff?['delivered','recorded_externally'].includes(handoff.outcome):!['claim_cancelled','correct_claim','claim_rejected','denied','claimmd_correction'].includes(s.state)&&(['waiting','received','answered'].includes(i.status)||['submitted','accepted','adjudicated'].includes(s.claim?.status));
+ const patientSettled=signed&&s.account?.status==='posted'&&p.owes_now_cents===0&&!p.receipt_needs_review;
+ const insurerSettled=selfPay||i.status==='answered'&&!(i.pending_cents>0)&&!(i.unassigned_cents>0)&&
+  !['claim_rejected','denied','post_response','review_response','review_balance','patient_credit'].includes(s.state);
+ const paid=s.state==='paid_in_full'||patientSettled&&insurerSettled;
  const serviceReady=selfPay?s.account?.status==='posted':sent;
  const current=!signed||!serviceReady?1:2;
  const states=[signed&&serviceReady?'done':'todo',paid?'done':'todo'];
@@ -2264,10 +2277,13 @@ function encounterStepPayments(body,revenue,status,s,model,locked){
  if(failed)text='Balance could not be loaded.';
  else if(stale)text='Balance could not be refreshed.';
  else if(review)text='Review the payment history before collecting.';
- else if(known)text=(posted?'Amount due ':'Copay due ')+money(amount);
+ else if(known)text=posted?(amount===0?'No patient amount due':'Patient amount due '+money(amount)):(amount===0?'No copay due':'Copay due '+money(amount));
  else if(s.patient&&selfPay&&!posted)text='Balance available after charges are posted.';
  else if(s.patient&&draftInsured)text='Copay not confirmed.';
  const retry=failed||stale?'<button type="button" class="text-button" data-refresh-revenue>Retry balance</button>':'';
+ const insurer=posted&&s.insurance?.insured&&!failed&&!stale?encounterInsurerPayment(s,model):'';
+ const remittance=insurer&&s.state==='post_response'&&s.claim?.response_to_review?
+  `<button type="button" class="primary" data-revenue-remittance="${esc(s.claim.response_to_review)}">Review insurer payment</button>`:'';
  const receipt=posted&&amount===0?visitBillingSelfPayReceipt(s):'';
  const dialog=encounterPaymentHistory(body),destination=dialog.querySelector('.sheet-body');
  for(const id of ['visit-billing-payments','visit-billing-invoices','encounter-copay-receipt']){
@@ -2288,7 +2304,7 @@ function encounterStepPayments(body,revenue,status,s,model,locked){
  }
  const write=(node,markup)=>{if(node.paymentMarkup!==markup){node.paymentMarkup=markup;node.innerHTML=markup;}};
  const history=!!(ledger||statements||s.receipts?.length||s.timeline?.length||posted||review);
- write(payment,`<p data-payment-summary aria-live="polite">${esc(text)}</p>${retry}${canCollect?'<button type="button" class="primary" data-visit-collect>Take payment</button>':''}${receipt}${history?'<button type="button" class="text-button" data-open-encounter-payment-history>Payment history</button>':''}`);
+ write(payment,`<div class="encounter-payment-summary" aria-live="polite"><p data-payment-summary>${esc(text)}</p>${insurer?`<p class="muted" data-insurer-payment-summary>${esc(insurer)}</p>`:''}</div>${retry}${remittance}${canCollect?'<button type="button" class="primary" data-visit-collect>Take payment</button>':''}${receipt}${history?'<button type="button" class="text-button" data-open-encounter-payment-history>Payment history</button>':''}`);
  for(const button of ledger?.querySelectorAll('[data-visit-collect]')||[])button.hidden=true;
  let actions=destination.querySelector('[data-payment-detail-actions]');
  if(!actions){actions=document.createElement('div');actions.dataset.paymentDetailActions='';destination.append(actions);}
@@ -2319,6 +2335,19 @@ function encounterStepPayments(body,revenue,status,s,model,locked){
  if(draftInsured&&s.receipts?.length)links.push('<button type="button" data-visit-history="payments">Payment history and refunds</button>');
  const facts=draftInsured?visitBillingDraftPayments(s):'';
  write(actions,(facts?`<p>${esc(facts)}</p>`:'')+(links.length?`<div class="actions">${links.join('')}</div>`:''));
+}
+function encounterInsurerPayment(s,model){
+ const insurance=s.insurance;
+ if(s.state==='post_response')return 'Insurer payment ready to review';
+ if(s.state==='claim_rejected'||s.state==='claimmd_correction')return 'Insurer payment pending claim correction';
+ if(s.state==='denied')return 'Payer denial recorded';
+ if(insurance.paid_cents>0){
+  const posted=`Insurer payment posted ${money(insurance.paid_cents)}`;
+  return insurance.pending_cents>0?`${posted} · ${money(insurance.pending_cents)} still pending`:posted;
+ }
+ if(insurance.status==='answered'&&model.paid)return 'Insurer response posted';
+ if(s.state==='insurance_outside')return 'Insurer billed outside SunCharts';
+ return model.sent?'Insurer payment pending':'Insurer payment pending claim submission';
 }
 function encounterStepsSync(){
  const page=$('visit-page-host'),v=typeof activeVisit!=='undefined'?activeVisit:null;
@@ -2492,12 +2521,19 @@ function encounterStepsSync(){
   const originalSign=page.querySelector('[data-action="sign-bill"]');
   const originalAction=!model.signed?originalSign:null;
   if(originalAction){
-   const mode=billingData&&!billingData.error&&!billingData.stale&&typeof visitHandoffMode==='function'&&raw.visit?.id===v.id&&raw.patient_id===selected?visitHandoffMode(s,account):null;
+   const sameVisit=raw.visit?.id===v.id&&raw.patient_id===selected;
+   const mayCombine=sameVisit&&billingData&&!billingData.error&&!billingData.stale&&s.insurance?.insured===true&&
+    typeof visitEncounterCanSignAndSubmit==='function'&&visitEncounterCanSignAndSubmit(s,account);
+   const mode=mayCombine?'queue':null;
    if(mode)originalAction.dataset.claimHandoff=mode;else delete originalAction.dataset.claimHandoff;
-   const name=mode==='queue'?'Sign & submit claim':mode==='prepare'?'Sign & prepare claim':'Sign & bill';
+   const name=mode==='queue'?'Sign & submit claim':'Sign & bill';
    if(originalAction.textContent!==name)originalAction.textContent=name;
-   if(raw.visit?.id===v.id&&raw.patient_id===selected){
-    originalAction.hidden=!!s.insurance?.insured&&!mode;
+   originalAction.hidden=!sameVisit||s.insurance?.insured!==false&&!mode;
+   const signOnly=page.querySelector('#note-form [data-action="sign"]');
+   const signLabel=originalAction.hidden?'Sign note':'Sign only';
+   if(signOnly){
+    if(signOnly.textContent!==signLabel)signOnly.textContent=signLabel;
+    signOnly.classList.toggle('primary',originalAction.hidden);
    }
   }
   const chips=billingAllowed?encounterStepChips:encounterStepChips.slice(0,1);
@@ -2755,7 +2791,7 @@ function closeVisitDenialSheet(form){
 }
 function openDeniedClaimAction(action){
  const summary=encounterRevenueState.data?.summary,account=encounterChargeAccount();
- if(!summary?.claim?.id||summary.state!=='denied'||!account)throw new Error('Refresh the denied claim before continuing.');
+ if(!summary?.claim?.id||summary.state!=='denied'||summary.claim.status!=='adjudicated'||summary.claim.answer?.denied!==true||!account)throw new Error('Open the payer’s recorded denial before changing the balance.');
  const label=action==='write_off'?'Write off':'Move to patient balance';
  openVisitDenialSheet(label,`<form id="denial-resolution" data-visit="${esc(activeVisit.id)}" data-patient="${esc(selected)}" data-account="${esc(account.id)}" data-claim="${esc(summary.claim.id)}" data-version="${account.version}" data-request="${crypto.randomUUID()}" data-action="${esc(action)}"><p>${action==='write_off'?'Take the remaining balance off this encounter as a ledger adjustment.':'Assign the remaining encounter balance to the patient. Review coverage and the insurer’s answer first.'}</p><label>Reason<input name="reason" required maxlength="1000"></label><button class="primary" type="submit">${label}</button><button type="button" data-sheet-close>Cancel</button></form>`);
 }

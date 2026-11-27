@@ -49,7 +49,7 @@ function fixture({signed=false,allowBillingWrites=false}={}){
   if(route===patientPath+'/billing')return {accounts:[currentAccount],coverages:[],entries:[],claims:[],copays:[]};
   if(route===patientPath+'/billing/visit-summary'){
    const posted=currentAccount.status==='posted',total=currentAccount.total_cents;
-   return {visit,account:currentAccount,state:posted?'self_pay_collect':signed?'post_charges':'sign_visit',charges_cents:total,insurance:{insured:false},patient:{owes_now_cents:posted?total:0,copay_due_cents:0},receipts:[]};
+   return {patient_id:patient.id,visit,account:currentAccount,state:posted?'self_pay_collect':signed?'post_charges':'sign_visit',charges_cents:total,insurance:{insured:false},patient:{owes_now_cents:posted?total:0,copay_due_cents:0},receipts:[]};
   }
   if(route===patientPath+'/banner')return {patient_id:patient.id,revision:'synthetic',billing:{patient_due_cents:0},eligibility:[],flags:[]};
   if(route===patientPath+'/demographics')return {patient_id:patient.id,content:{}};
@@ -112,9 +112,16 @@ async function close(fixture){
 
   const note=find('#note-form'),plan=note.elements.plan;
   assert.equal(plan.value,'Original plan');
-  assert.equal(note.querySelector('[data-action="sign"]').textContent,'Sign only');
+  const sign=note.querySelector('[data-action="sign"]');
+  const combined=await f.wait(()=>{
+   const button=note.querySelector('[data-action="sign-bill"]');
+   return button&&!button.hidden&&button;
+  },'this visit’s scoped self-pay billing enables combined signing and posting');
+  assert.equal(combined.textContent,'Sign & bill');
+  assert.equal(sign.textContent,'Sign only');
+  assert.equal(note.querySelector('[data-claim-handoff]'),null,'self-pay cannot submit a claim');
   const codeSummary=find('[data-encounter-codes-summary]');
-  assert.ok(codeSummary.compareDocumentPosition(note.querySelector('[data-action="sign-bill"]'))&f.w.Node.DOCUMENT_POSITION_FOLLOWING,'signing follows the code summary');
+  assert.ok(codeSummary.compareDocumentPosition(sign)&f.w.Node.DOCUMENT_POSITION_FOLLOWING,'signing follows the code summary');
   assert.match(codeSummary.textContent,/Z00\.00/);
   assert.match(codeSummary.textContent,/99213/);
   const rooming=find('#encounter-rooming-vitals details');
@@ -188,7 +195,7 @@ async function close(fixture){
   draftAmount.dispatchEvent(new signed.w.Event('input',{bubbles:true}));
   draft.querySelector('[data-visit-post-charges]').click();
   await signed.wait(()=>find('[data-encounter-step-number="2"] [data-visit-collect]'),'posting enables payment for the updated balance');
-  assert.match(find('[data-encounter-step-number="2"]').textContent,/Amount due\s*\$120\.00/);
+  assert.match(find('[data-encounter-step-number="2"]').textContent,/Patient amount due\s*\$120\.00/);
   assert.deepEqual(signed.calls.filter(call=>call.method!=='GET').map(call=>[call.method,call.route.split('/').pop()]),[['PUT',account.id],['POST','actions']]);
 
   if(find('dialog[data-encounter-codes-dialog][open]'))find('[data-close-encounter-codes]').click();

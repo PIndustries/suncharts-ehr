@@ -836,6 +836,56 @@ async fn claim_handoff_http_signs_once_and_queues_one_insured_submission_on_repl
         )]
     );
     assert_eq!(f.action_count("visit.sign", visit).await, 1);
+    let list_path = format!(
+        "/api/v1/billing/claims?account_id={}",
+        id(&body["account_id"])
+    );
+    let read_list = || f.ok("GET", &list_path, Value::Null, None);
+    let queued = read_list().await;
+    let row = &queued["items"][0];
+    assert_eq!(row["status"], "ready");
+    assert_eq!(row["claim_handoff"]["outcome"], "queued");
+    assert_eq!(
+        row["claim_handoff"]["submission_id"],
+        first["submission_id"]
+    );
+    assert_eq!(row["claim_handoff"]["job_id"], first["job_id"]);
+    assert_eq!(row["remittance_posted"], false);
+    assert_eq!(row["payer_denied"], Value::Null);
+    assert_eq!(row["paid_cents"], Value::Null);
+    let summary = f.summary(&f.owner, id(&row["patient_id"]), visit).await;
+    assert_eq!(row["claim_handoff"], summary["claim_handoff"]);
+
+    let job = id(&first["job_id"]);
+    let job_version: i64 = sqlx::query_scalar(
+        "UPDATE edi_delivery_jobs SET status='unknown' WHERE tenant_id=$1 AND id=$2 RETURNING version",
+    )
+    .bind(f.owner.tenant_id)
+    .bind(job)
+    .fetch_one(&f.db)
+    .await
+    .unwrap();
+    let waiting = read_list().await;
+    assert_eq!(waiting["items"][0]["status"], "ready");
+    assert_eq!(waiting["items"][0]["claim_handoff"]["outcome"], "waiting");
+    assert_eq!(
+        waiting["items"][0]["claim_handoff"]["delivery_status"],
+        "unknown"
+    );
+
+    f.ok(
+        "POST",
+        &format!("/api/v1/billing/delivery/jobs/{job}/actions"),
+        json!({"action":"confirmed_received","reason":"Synthetic receipt verified","reference":"SYN-RECEIPT"}),
+        Some(job_version),
+    )
+    .await;
+    let delivered = read_list().await;
+    assert_eq!(delivered["items"][0]["status"], "submitted");
+    assert_eq!(
+        delivered["items"][0]["claim_handoff"]["outcome"],
+        "delivered"
+    );
     server.abort();
 }
 
@@ -1938,10 +1988,21 @@ async fn a_reviewed_invoice_and_an_earlier_answer_keep_their_amounts() {
     // While the corrected claim is open the answer is not final: the plan copay applies.
     assert_eq!(f.owes(p, visit).await, 1000);
     let submitted = f.send(&replacement["id"]).await;
-    f.ok("POST", &format!("/api/v1/billing/claims/{}/actions", id(&submitted)), json!({"action":"record_rejection","reference":"SYNTHETIC-REJECTION","event_date":"2026-10-27","reason":"Synthetic rejection"}), Some(version(&submitted))).await;
+    let path = format!("/api/v1/billing/claims/{}/actions", id(&submitted));
+    let accepted = f.ok("POST", &path, json!({"action":"record_acceptance","reference":"SYN-ACCEPTED","payer_control_number":"SYN-REPLACEMENT-CONTROL","event_date":"2026-10-26","reason":"Synthetic payer acceptance"}), Some(version(&submitted))).await;
+    f.ok("POST", &path, json!({"action":"record_rejection","reference":"SYNTHETIC-REJECTION","event_date":"2026-10-27","reason":"Synthetic rejection"}), Some(version(&accepted))).await;
     let s = f.summary(&f.owner, p, visit).await;
     adds_up(&s);
-    assert_eq!(s["state"], "denied");
+    assert_eq!(s["state"], "claim_rejected");
+    assert_eq!(s["insurance"]["status"], "rejected");
+    assert_eq!(s["claim"]["status"], "rejected");
+    assert_eq!(s["claim"]["id"], replacement["id"]);
+    assert_eq!(s["claim"]["payer_acceptance_recorded"], true);
+    let staff = f.staff(Role::FrontDesk, "front_desk").await;
+    let staff_summary = f.summary(&staff, p, visit).await;
+    assert_eq!(staff_summary["claim"]["payer_control_number"], Value::Null);
+    assert_eq!(staff_summary["claim"]["payer_acceptance_recorded"], true);
+
     assert_eq!(s["patient"]["responsibility_source"], "insurer_response");
     assert_eq!(
         s["patient"]["owes_now_cents"], 5000,
@@ -3033,6 +3094,75 @@ async fn patient_overpayment_before_the_insurer_answers_is_credit_not_a_smaller_
 }
 
 #[tokio::test]
+async fn returned_claim_keeps_pending_insurance_and_disallows_denial_resolution() {
+    let f = setup().await;
+    f.directory(true).await;
+    let (p, _, visit) = f.visit(true).await;
+    let (_, policy) = f.coverage(p, "primary", "SYN-RETURNED", None).await;
+    let account = id(&f
+        .post(p, &f.charges(p, visit, Some(id(&policy)), 10000).await)
+        .await);
+    let claim = f.sent_claim(p, account).await;
+    let claim_id = id(&claim);
+    f.ok(
+        "POST",
+        &format!("/api/v1/billing/claims/{claim_id}/actions"),
+        json!({"action":"record_rejection","reference":"SYN-RETURN","event_date":"2026-10-27","reason":"Synthetic claim returned before acceptance"}),
+        Some(version(&claim)),
+    )
+    .await;
+
+    let summary = f.summary(&f.owner, p, visit).await;
+    adds_up(&summary);
+    assert_eq!(summary["state"], "claim_rejected");
+    assert_eq!(summary["waiting_on"], "staff");
+    assert_eq!(summary["claim"]["status"], "rejected");
+    assert_eq!(summary["claim"]["payer_acceptance_recorded"], false);
+    assert_eq!(summary["claim"]["id"], json!(claim_id));
+    assert_eq!(summary["insurance"]["status"], "rejected");
+    assert_eq!(summary["insurance"]["pending_cents"], 10000);
+    assert_eq!(summary["patient"]["owes_now_cents"], 0);
+    let balances = f
+        .ok(
+            "GET",
+            &format!("/api/v1/patients/{p}/billing/encounters"),
+            Value::Null,
+            None,
+        )
+        .await;
+    assert_eq!(balances["items"][0]["denied"], false);
+
+    let path = format!("/api/v1/patients/{p}/billing/accounts/{account}/denial");
+    let account_version = version(&summary["account"]);
+    for action in ["patient_balance", "write_off"] {
+        let (status, detail) = f
+            .call(
+                &f.owner,
+                "POST",
+                &path,
+                json!({"request_id":Uuid::new_v4(),"claim_id":claim_id,"action":action,"reason":"Synthetic return review"}),
+                Some(account_version),
+            )
+            .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{detail}");
+    }
+    let after = f.summary(&f.owner, p, visit).await;
+    assert_eq!(after["account"]["version"], account_version);
+    assert_eq!(after["state"], "claim_rejected");
+    assert_eq!(after["balance_cents"], 10000);
+    assert_eq!(after["patient"]["owes_now_cents"], 0);
+    assert_eq!(
+        f.count("SELECT count(*) FROM billing_denial_resolutions WHERE tenant_id=$1")
+            .await,
+        0
+    );
+    assert_eq!(
+        f.audit_count("billing.denial_resolved", &claim["id"]).await,
+        0
+    );
+}
+
+#[tokio::test]
 async fn dead_ends_denial_writeoff_and_patient_balance_are_attributed_and_idempotent() {
     let f = setup().await;
     f.directory(true).await;
@@ -3058,6 +3188,39 @@ async fn dead_ends_denial_writeoff_and_patient_balance_are_attributed_and_idempo
         )
         .await;
         let summary = f.summary(&f.owner, p, visit).await;
+        let claim_detail = f
+            .ok(
+                "GET",
+                &format!("/api/v1/billing/claims/{}", id(&c)),
+                Value::Null,
+                None,
+            )
+            .await;
+        let listed = f
+            .ok(
+                "GET",
+                &format!("/api/v1/billing/claims?account_id={}", id(&b)),
+                Value::Null,
+                None,
+            )
+            .await;
+        let row = &listed["items"][0];
+        assert_eq!(row["claim_handoff"]["outcome"], "recorded_externally");
+        assert_eq!(row["claim_handoff"]["submission_id"], Value::Null);
+        assert_eq!(row["claim_handoff"]["job_id"], Value::Null);
+        assert_eq!(row["remittance_posted"], true);
+        assert_eq!(row["payer_denied"], true);
+        assert_eq!(row["paid_cents"], 0);
+        assert_eq!(
+            row["remittance_posted"],
+            claim_detail["tracking"]["remittance_posted"]
+        );
+        assert_eq!(
+            row["payer_denied"],
+            claim_detail["tracking"]["payer_denied"]
+        );
+        assert_eq!(row["paid_cents"], claim_detail["tracking"]["paid_cents"]);
+
         let path = format!("/api/v1/patients/{p}/billing/accounts/{}/denial", id(&b));
         let input = json!({"request_id":Uuid::new_v4(),"claim_id":id(&c),"action":action,"reason":"Synthetic reviewed denial decision"});
         let current = summary["account"]["version"].as_i64().unwrap();

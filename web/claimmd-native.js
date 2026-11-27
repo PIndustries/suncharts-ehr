@@ -21,7 +21,7 @@ function claimMdWorkflowOverview(state=claimMdConnectionState,submissions=[],cla
 function claimMdTrackingHeadline(evidence={}){
  // The message-level status wins over the claim-level one.
  const sender=evidence.sender_name||'',isClaimMd=evidence.senderid==='CLMMD',claimLevel=String(evidence.status||'').toUpperCase(),messageLevel=String(evidence.message?.status||'').toUpperCase(),level=messageLevel||claimLevel;
- if(level==='R'||claimLevel==='R')return{headline:isClaimMd?'The clearinghouse rejected this claim':`${sender||'The payer'} rejected this claim`};
+ if(level==='R'||claimLevel==='R')return{headline:isClaimMd?'The clearinghouse returned this claim':sender?`${sender} returned this claim`:'The claim submission was returned'};
  if(level==='W')return{headline:isClaimMd?'Warning from Claim.MD':sender?`Warning from ${sender}`:'Claim status warning'};
  if(level==='A'||claimLevel==='A'){if(isClaimMd)return{headline:'The clearinghouse received this claim'};if(evidence.sender_icn)return{headline:`${sender||'The payer'} accepted this claim`,extra:`Payer claim number ${evidence.sender_icn}`};}
  return{headline:`Update from ${sender||'the payer'}`};
@@ -43,6 +43,9 @@ function claimMdClaimLifecycle(claim,detail={},history={items:[]},{responsesOpen
  const submissions=tracking.submissions||[],reports=tracking.reports||[];
  const delivered=submissions.some(item=>item.status==='delivered'),externalSubmitted=tracking.external_submission_recorded===true||(history.items||[]).some(item=>item.evidence?.action==='record_submission');
  const prepared=['ready','submitted','accepted','rejected','adjudicated'].includes(status)&&!detail.preflight_issues?.length;
+ const remittancePosted=tracking.remittance_posted===true;
+ const paymentPosted=remittancePosted&&tracking.paid_cents>0&&!tracking.payer_denied;
+ const postingLabel=paymentPosted?'Payment posted':tracking.payer_denied?'Payer denial recorded':'Payer response posted';
  // The same count the claim page shows: two messages about one box are one thing to fix.
  const fixCount=(()=>{const issues=detail.preflight_issues||[];if(!issues.length)return 0;if(typeof claimMissingGroupsFor==='function'){const n=Object.values(claimMissingGroupsFor(issues)).reduce((sum,bucket)=>sum+bucket.words.length,0);if(n)return n;}return issues.length;})();
  const stages=[
@@ -52,11 +55,11 @@ function claimMdClaimLifecycle(claim,detail={},history={items:[]},{responsesOpen
   {label:'Sent to clearinghouse',todo:'Send to the clearinghouse',done:needsCorrection||delivered||externalSubmitted,detail:needsCorrection?'Claim.MD received the claim.':delivered?(status==='submitted'?'The clearinghouse received the claim. The payer still has to accept it.':'The clearinghouse received the claim.'):externalSubmitted?'Staff recorded that this claim was sent outside SunCharts.':submissions.length?'Claim file prepared. Not confirmed as received yet.':connected?'Not sent yet.':'Connect a clearinghouse in Claim connections to send this claim.'},
   needsCorrection
    ?{label:'Clearinghouse correction',todo:'Needs correcting',done:false,detail:'Claim.MD is holding the claim for correction.'}
-   :{label:'Payer response',todo:'Waiting for the payer',done:['accepted','rejected','adjudicated'].includes(status)||tracking.remittance_posted===true,detail:status==='rejected'?'Rejected. The reason is shown below.':status==='accepted'?'The payer accepted the claim.':delivered&&reports.length?'The clearinghouse received the claim. Waiting for the payer.':'Waiting for a response to this claim.'},
-  {label:'Payment posted',todo:'Post the insurance payment',done:tracking.remittance_posted===true,detail:tracking.remittance_posted?'Insurance payment is posted. Check the adjustments and what the patient owes.':'No insurance payment posted yet.'}
+   :{label:status==='rejected'?'Claim returned':'Payer response',todo:'Waiting for the payer',done:['accepted','rejected','adjudicated'].includes(status)||remittancePosted,detail:status==='rejected'?'The return reason is shown below.':status==='accepted'?'The payer accepted the claim.':delivered&&reports.length?'The clearinghouse received the claim. Waiting for the payer.':'Waiting for a response to this claim.'},
+  {label:remittancePosted?postingLabel:'Insurance payment',todo:'Review the remittance',done:remittancePosted,detail:remittancePosted?'Review the posted response and the current balance.':'No insurance payment posted yet.'}
  ];
  const current=needsCorrection?4:!hasCoverage?0:!prepared?2:!delivered&&!externalSubmitted?3:['rejected','void'].includes(status)?-1:!reports.length?4:status==='submitted'?4:tracking.remittance_posted?-1:5;
- const next=needsCorrection?'Review the Claim.MD response.':status==='draft'?(detail.preflight_issues?.length?'Fill in what is listed under Before this can be sent, then send.':'Check the details, then continue to send.'):status==='ready'&&submissions.some(item=>item.status==='prepared')?'A claim file is already prepared. Open it to send it or to check its delivery.':status==='ready'&&!delivered&&!externalSubmitted?(connected?'Send this claim to the clearinghouse.':'Connect a clearinghouse in Claim connections to send this claim.'):status==='rejected'?'Read the reason below, then fix and resend the claim.':status==='accepted'&&!tracking.remittance_posted?'Nothing to do right now. Waiting for the insurance payment.':tracking.remittance_posted?'Check the posted payment, adjustments and the patient invoice.':reports.length?'Read the response on this page. Post the insurance payment when it arrives.':'Nothing to do right now. Waiting for the clearinghouse or payer.';
+ const next=needsCorrection?'Review the Claim.MD response.':status==='draft'?(detail.preflight_issues?.length?'Fill in what is listed under Before this can be sent, then send.':'Check the details, then continue to send.'):status==='ready'&&submissions.some(item=>item.status==='prepared')?'A claim file is already prepared. Open it to send it or to check its delivery.':status==='ready'&&!delivered&&!externalSubmitted?(connected?'Send this claim to the clearinghouse.':'Connect a clearinghouse in Claim connections to send this claim.'):status==='rejected'?'Read the reason below, then fix and resend the claim.':status==='accepted'&&!remittancePosted?'Waiting for the insurer’s remittance.':remittancePosted?'Check the posted response, adjustments and the patient balance.':reports.length?'Read the response on this page. Review the remittance when it arrives.':'Waiting for the clearinghouse or payer.';
  // A thin bar of six steps beside the claim's name; each step's words show on hover or focus,
  // and one line says where the claim is and what to do. Status checks fold away unless the
  // insurer or clearinghouse has answered.

@@ -169,7 +169,7 @@ async fn claim_views(
          'content',c.content,'snapshot',jsonb_build_object('patient',c.snapshot->'patient','account',c.snapshot->'account'),\
          'response_to_review',(SELECT r.id FROM era_remittances r WHERE r.tenant_id=c.tenant_id AND r.status IN ('staged','reconciled') AND (r.matches @> jsonb_build_array(jsonb_build_object('claim_id',c.id)) OR EXISTS(SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(r.document->'claims')='array' THEN r.document->'claims' ELSE '[]'::jsonb END) x WHERE x->>'control_number'=c.control_number)) ORDER BY r.created_at LIMIT 1),\
          'head',(SELECT jsonb_build_object('remittance_id',h.remittance_id,'row_index',h.row_index,'patient_responsibility_cents',p.patient_responsibility_cents,'writeoff_cents',p.writeoff_cents,'payment_date',r.document->>'payment_date','trace',r.trace,'row',r.document->'claims'->h.row_index) FROM era_claim_heads h JOIN era_remittances r ON r.tenant_id=h.tenant_id AND r.id=h.remittance_id LEFT JOIN era_postings p ON p.tenant_id=h.tenant_id AND p.remittance_id=h.remittance_id AND p.row_index=h.row_index WHERE h.tenant_id=c.tenant_id AND h.claim_id=c.id)) \
-         FROM ehr_claims c WHERE c.tenant_id=$1 AND c.account_id=$2 ORDER BY c.created_at,c.id LIMIT 200",
+         FROM ehr_claims c WHERE c.tenant_id=$1 AND c.account_id=$2 ORDER BY c.created_at DESC,c.id DESC LIMIT 200",
     )
     .bind(a.tenant_id)
     .bind(account)
@@ -177,6 +177,7 @@ async fn claim_views(
     .await?;
     Ok(rows
         .into_iter()
+        .rev()
         .map(|row| {
             let head = &row["head"];
             let answer = head.is_object().then(|| {
@@ -243,7 +244,7 @@ const BALANCES: &str = r#"WITH acct AS (
   coalesce(l.test_activity,false) OR coalesce((i.snapshot->>'test_activity')::boolean,false) AS test_activity,
   c.id AS claim_id,c.status AS claim_status,c.response_to_review,
   n.claim_id IS NOT NULL AND coalesce(c.status NOT IN ('draft','ready','submitted','accepted'),false) AS answered,n.responsibility AS settled_responsibility,n.answered_at,
-  coalesce(c.status='rejected' OR (c.status='adjudicated' AND c.answered AND c.denied),false) AND NOT EXISTS(SELECT 1 FROM billing_denial_resolutions dr WHERE dr.tenant_id=a.tenant_id AND dr.claim_id=c.id) AS denied,
+  coalesce(c.status='adjudicated' AND c.answered AND c.denied,false) AND NOT EXISTS(SELECT 1 FROM billing_denial_resolutions dr WHERE dr.tenant_id=a.tenant_id AND dr.claim_id=c.id) AS denied,
   EXISTS(SELECT 1 FROM ehr_claims z WHERE z.tenant_id=a.tenant_id AND z.account_id=a.id AND z.status='void') AS any_void,
   m.id IS NOT NULL AND m.account_version=a.version AND (l.last_entry_at IS NULL OR l.last_entry_at<=m.created_at) AS statement_current,m.created_at AS statement_at,
   CASE WHEN jsonb_typeof(m.snapshot->'responsibility_cents')='number' THEN (m.snapshot->>'responsibility_cents')::bigint END AS statement_responsibility
@@ -436,7 +437,8 @@ pub(crate) fn state_of_with_claimmd(
             ("claimmd_received", "nobody")
         }
         Some("submitted" | "accepted") => ("waiting_insurer", "insurer"),
-        _ if row["denied"] == true => ("denied", "staff"),
+        Some("rejected") => ("claim_rejected", "staff"),
+        Some("adjudicated") if row["denied"] == true => ("denied", "staff"),
         _ if owes > 0 => ("patient_owes", "patient"),
         _ if cents(&row["unassigned_cents"]) > 0 => ("review_response", "staff"),
         _ => settled(),
@@ -810,8 +812,12 @@ pub(crate) async fn summarize(
         None => vec![],
     };
     let live: Vec<&ClaimView> = views.iter().filter(|c| c.status() != "void").collect();
-    let open = live.iter().copied().find(|c| c.open());
-    let latest = open.or_else(|| live.last().copied());
+    // Keep the displayed claim aligned with the claim used to compute the account balance.
+    let latest = live
+        .iter()
+        .copied()
+        .find(|c| c.row["id"] == money["claim_id"]);
+    let open = latest.filter(|c| c.open());
     // Where Claim.MD stands on the claim this card words. A correction the clearinghouse holds
     // is staff's work, not a wait on the insurer, and a claim Claim.MD has only acknowledged has
     // not reached the payer at all. Read for the one claim the card is about, never per row.
@@ -920,7 +926,8 @@ pub(crate) async fn summarize(
                 "submitted" | "accepted" if claimmd["needs_correction"] == true => "correction",
                 "submitted" | "accepted" if claimmd["acknowledged"] == true => "received",
                 "submitted" | "accepted" => "waiting",
-                _ if denied => "denied",
+                "rejected" => "rejected",
+                "adjudicated" if denied => "denied",
                 _ => "answered",
             },
         }
@@ -928,6 +935,10 @@ pub(crate) async fn summarize(
 
     let claim_json = latest.map(|c| {
         let mut row = c.row.clone();
+        let payer_acceptance_recorded = matches!(c.status(), "accepted" | "adjudicated")
+            || row["payer_control_number"]
+                .as_str()
+                .is_some_and(|number| !number.trim().is_empty());
         if let Some(object) = row.as_object_mut() {
             object.remove("head");
             object.remove("snapshot_total_cents");
@@ -938,6 +949,7 @@ pub(crate) async fn summarize(
                 object.remove("payer_control_number");
             }
         }
+        row["payer_acceptance_recorded"] = json!(payer_acceptance_recorded);
         row["issues"] = json!(issues);
         if claimmd.is_object() {
             row["claimmd_position"] = claimmd.clone();

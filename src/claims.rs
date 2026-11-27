@@ -847,18 +847,28 @@ async fn claims(
     };
     // A claim Claim.MD is holding for correction is named as such in the list, whatever the
     // claim row's own status still says, so staff sort and filter their work by what they
-    // actually have to do. One extra query reads the provider position for the page.
+    // actually have to do. Read provider and delivery evidence for the current page in batches.
     let ids: Vec<Uuid> = rows
         .iter()
         .filter_map(|row| Uuid::parse_str(row["id"].as_str()?).ok())
         .collect();
-    let positions = claim_md_positions(&mut tx, a.tenant_id, &ids).await?;
-    for row in rows.iter_mut() {
-        if let Some(position) = Uuid::parse_str(row["id"].as_str().unwrap_or_default())
-            .ok()
-            .and_then(|id| positions.get(&id))
-        {
-            row["claimmd_position"] = position.clone();
+    let mut positions = claim_md_positions(&mut tx, a.tenant_id, &ids).await?;
+    let mut handoffs =
+        crate::visit_claim_handoff::evidence_for_claims(&mut tx, a.tenant_id, &ids).await?;
+    let mut remittances =
+        crate::retrieval::claim_remittance_dispositions(&mut tx, a.tenant_id, &ids).await?;
+    for row in &mut rows {
+        if let Some(id) = row["id"].as_str().and_then(|id| Uuid::parse_str(id).ok()) {
+            if let Some(position) = positions.remove(&id) {
+                row["claimmd_position"] = position;
+            }
+            if let Some(handoff) = handoffs.remove(&id) {
+                row["claim_handoff"] = handoff;
+            }
+            let remittance = remittances.remove(&id);
+            row["remittance_posted"] = json!(remittance.is_some());
+            row["payer_denied"] = json!(remittance.as_ref().and_then(|r| r.payer_denied));
+            row["paid_cents"] = json!(remittance.as_ref().and_then(|r| r.paid_cents));
         }
     }
     crate::postgres::audit(&mut tx, &a, "claim.worklist", a.tenant_id).await?;

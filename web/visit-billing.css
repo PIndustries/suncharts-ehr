@@ -773,7 +773,8 @@ dialog.encounter-codes-dialog[open]{display:flex;flex-direction:column}
 @media(max-width:640px){dialog.encounter-codes-dialog{width:calc(100vw - 16px);max-height:calc(100dvh - 16px)}}
 @media(max-width:640px){[data-encounter-codes-summary].encounter-codes-strip{grid-template-columns:1fr}}
 [data-step-payment]{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
-[data-step-payment]>p{margin:0}
+[data-step-payment]>p,.encounter-payment-summary p,.signed-claim-hint{margin:0}
+.note-save-line{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 
 .signed-claim-summary{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
 .signed-claim-summary .actions{display:flex;align-items:center;flex-wrap:wrap;gap:8px}

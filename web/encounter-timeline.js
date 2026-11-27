@@ -14,8 +14,8 @@ function encounterTimelineTime(value){
 function encounterTimelineDay(value){return typeof visitBillingDate==='function'?visitBillingDate(value):'';}
 // The step staff can act on, taken from the server's own state word so the timeline and the next-step
 // bar say the same thing. A state with no entry here falls back to the first step not done.
-const encounterTimelineStateStep={sign_visit:'note',post_charges:'charges',prepare_claim:'claim',fix_claim:'claim',send_claim:'claim',correct_claim:'claim',claim_cancelled:'claim',denied:'claim',claimmd_correction:'claim',claim_restricted:'claim',claimmd_received:'insurer',waiting_insurer:'insurer',post_response:'insurer',review_response:'insurer',insurance_outside:'insurer',patient_owes:'closed',self_pay_collect:'closed',review_balance:'closed',patient_credit:'closed'};
-const encounterTimelineClaimFix=['fix_claim','denied','claimmd_correction','correct_claim'];
+const encounterTimelineStateStep={sign_visit:'note',post_charges:'charges',prepare_claim:'claim',fix_claim:'claim',send_claim:'claim',correct_claim:'claim',claim_cancelled:'claim',claim_rejected:'claim',denied:'claim',claimmd_correction:'claim',claim_restricted:'claim',claimmd_received:'insurer',waiting_insurer:'insurer',post_response:'insurer',review_response:'insurer',insurance_outside:'insurer',patient_owes:'closed',self_pay_collect:'closed',review_balance:'closed',patient_credit:'closed'};
+const encounterTimelineClaimFix=['fix_claim','claim_rejected','denied','claimmd_correction','correct_claim'];
 function encounterTimelineSteps(summary,visit,appointment){
  const s=summary||null,p=s?.patient||{},i=s?.insurance||{},insured=!!s&&i.insured===true;
  const signed=visit?.status==='signed'||!!visit?.signed_at,posted=s?.account?.status==='posted';
@@ -33,11 +33,11 @@ function encounterTimelineSteps(summary,visit,appointment){
  add('charges',posted?'Charges posted':'Charges',s&&s.charges_cents!=null?encounterTimelineMoney(s.charges_cents)+(s.account?.status==='draft'?' (not posted)':''):'',posted);
  let sentDetail='',insurerDone=false,claimDone=false;
  if(insured){
-  const sent=['waiting','answered','denied'].includes(i.status)&&!encounterTimelineClaimFix.includes(state)&&state!=='claim_cancelled';
+  const sent=['waiting','received','answered','denied'].includes(i.status)&&!encounterTimelineClaimFix.includes(state)&&state!=='claim_cancelled';
   claimDone=sent;
-  add('claim','Claim sent',sent?(i.sent_on?encounterTimelineDay(i.sent_on):''):'',sent);
+  add('claim',state==='claim_rejected'?'Claim returned':state==='denied'?'Payer denial':'Claim sent',sent?(i.sent_on?encounterTimelineDay(i.sent_on):''):'',sent);
   insurerDone=i.status==='answered'&&pending<=0&&unassigned<=0&&!['post_response','review_response'].includes(state);
-  add('insurer','Insurer paid',insurerDone?`${encounterTimelineMoney(Number(i.paid_cents)||0)} paid`:pending>0&&posted?`${encounterTimelineMoney(pending)} pending`:'',insurerDone);
+  add('insurer','Insurer payment',insurerDone?(Number(i.paid_cents)>0?`${encounterTimelineMoney(i.paid_cents)} posted`:'Response posted'):pending>0&&posted?`${encounterTimelineMoney(pending)} pending`:'',insurerDone);
  }
  const nothingOwed=posted&&owes<=0&&pending<=0&&unassigned<=0&&balance<=0&&(!insured||insurerDone)&&!(state in encounterTimelineStateStep);
  add('closed','Closed',nothingOwed?'Nothing owed':'',nothingOwed);

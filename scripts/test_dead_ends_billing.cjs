@@ -9,11 +9,19 @@ for(const file of ['visit-billing','patient-revenue','checkout'])run(fs.readFile
 async function main(){
  new vm.Script(fs.readFileSync('web/patient-portal.js','utf8'));
  new vm.Script(fs.readFileSync('web/claimmd-extended.js','utf8'));
- const summary={state:'denied',account:{id:'synthetic-account'},claim:{id:'synthetic-claim',payer_name:'Synthetic insurer'},patient:{owes_now_cents:0},insurance:{paid_cents:0}};
+ const summary={state:'denied',account:{id:'synthetic-account'},claim:{id:'synthetic-claim',payer_name:'Synthetic insurer',status:'adjudicated',answer:{denied:true}},patient:{owes_now_cents:0},insurance:{paid_cents:0}};
  ctx.summary=summary;
  let html=run('visitBillingCardMarkup(summary,{canWrite:true})');
- for(const label of ['Fix and resend claim','Move to patient balance','Write off','Start appeal'])assert.ok(html.includes(label),label);
- assert.ok(!run('visitBillingCardMarkup(summary,{canWrite:false})').includes('Write off'));
+ for(const label of ['Review payer decision','Move to patient balance','Write off','Start appeal'])assert.ok(html.includes(label),label);
+ assert.doesNotMatch(run('visitBillingCardMarkup(summary,{canWrite:false})'),/data-denial-action|data-denial-appeal/);
+ const adjudicated={...summary.claim,answer:{denied:false}};
+ ctx.returned={...summary,state:'claim_rejected',claim:{...summary.claim,status:'rejected'}};
+ assert.match(run('visitBillingCardMarkup(returned,{canWrite:true})'),/Review returned claim/);
+ assert.doesNotMatch(run('visitBillingCardMarkup(returned,{canWrite:true})'),/data-denial-action|data-denial-appeal/);
+ for(const claim of [adjudicated,{...summary.claim,answer:{}}]){
+  ctx.unconfirmed={...summary,claim};
+  assert.doesNotMatch(run('visitBillingCardMarkup(unconfirmed,{canWrite:true})'),/data-denial-action|data-denial-appeal/);
+ }
  summary.state='unknown';assert.match(run('visitBillingStatus(summary).action'),/data-refresh-revenue/);
  assert.equal(run('copayUnapplied({amount_cents:10000,allocated_cents:2000,cash_refunded_cents:3000})'),5000);
  assert.equal(run('copayUnapplied({amount_cents:10000,allocated_cents:2000,cash_refunded_cents:1000,hosted_checkout:{refunded_unapplied_cents:3000}})'),4000);

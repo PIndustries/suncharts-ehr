@@ -337,7 +337,7 @@ async function checkBillingSections(page, scenario, refreshBilling, screenshotPr
     const paidSummary = payment.section + ' [data-step-payment] [data-payment-summary]';
     await page.waitForSelector(paidSummary, {visible: true});
     const summary = await page.$eval(paidSummary, node => node.innerText.replace(/\s+/g, ' '));
-    assert.match(summary, scenario === 'paid' ? /Amount due \$0\.00/ : /Balance available after charges are posted/i);
+    assert.match(summary, scenario === 'paid' ? /No patient amount due/ : /Balance available after charges are posted/i);
     assert.equal(await page.$eval(paymentDetails, details => details.open), false, 'Detailed payment tools remain folded');
   } else {
     const paymentTotals = payment.section + ' .visit-billing-totals';

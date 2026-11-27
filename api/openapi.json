@@ -41003,7 +41003,7 @@
       "get": {
         "summary": "Read one visit's billing summary: next step, charges, insurance and what the patient owes now",
         "operationId": "readVisitBillingSummary",
-        "description": "When a visit is linked, visit.clinician_id and visit.clinician_name identify the assigned clinician even if their practice NPI is missing. The name can be empty when the practice has no display name for that staff account.",
+        "description": "When a visit is linked, visit.clinician_id and visit.clinician_name identify the assigned clinician even if their practice NPI is missing. The name can be empty when the practice has no display name for that staff account. Returned claims use the claim_rejected billing state. The claim’s payer_acceptance_recorded flag indicates whether payer acceptance evidence was recorded, including for staff views that omit the payer control number.",
         "parameters": [
           {
             "name": "visit_id",
@@ -47471,9 +47471,30 @@
           "minimum": 0
         }
       },
+      "ClaimDeliveryEvidence": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "Persisted clearinghouse file, job or staff-recorded submission evidence. Omitted when no evidence exists. A prepared file or queued job is separate from a confirmed delivery.",
+        "properties": {
+          "outcome": {
+            "type": "string",
+            "enum": ["prepared", "queued", "delivered", "recorded_externally", "waiting", "blocked"]
+          },
+          "claim_id": { "type": "string", "format": "uuid" },
+          "submission_id": { "type": ["string", "null"], "format": "uuid" },
+          "submission_version": { "type": ["integer", "null"], "format": "int64" },
+          "claim_version": { "type": ["integer", "null"], "format": "int64" },
+          "partner_id": { "type": ["string", "null"], "format": "uuid" },
+          "partner_version": { "type": ["integer", "null"], "format": "int64" },
+          "job_id": { "type": ["string", "null"], "format": "uuid" },
+          "delivery_status": { "type": ["string", "null"] },
+          "route_key": { "type": ["string", "null"] }
+        },
+        "required": ["outcome", "claim_id", "submission_id", "submission_version", "claim_version", "partner_id", "partner_version", "job_id", "delivery_status", "route_key"]
+      },
       "ClaimWorklist": {
         "type": "object",
-        "description": "Tenant-scoped claim summary page with patient_name, payer_name, coverage_priority, total_cents, lifecycle and boolean crossover_tracking_only; at most100 items. Each item also carries visit_id, encounter_number and service_date (the date of service on the claim's account). Tracking-only submitted rows represent a received secondary response, not an EHR transmission.",
+        "description": "Tenant-scoped claim summary page with patient_name, payer_name, coverage_priority, total_cents, lifecycle and boolean crossover_tracking_only; at most 100 items. Each item also carries visit_id, encounter_number and service_date (the date of service on the claim's account). Tracking-only submitted rows represent a received secondary response, not an EHR transmission.",
         "properties": {
           "items": {
             "type": "array",
@@ -47502,6 +47523,22 @@
                       "null"
                     ],
                     "description": "Date of service on the claim's account."
+                  },
+                  "claim_handoff": {
+                    "$ref": "#/components/schemas/ClaimDeliveryEvidence"
+                  },
+                  "remittance_posted": {
+                    "type": "boolean",
+                    "description": "Whether a posted payer remittance is the current claim head."
+                  },
+                  "payer_denied": {
+                    "type": ["boolean", "null"],
+                    "description": "Denial disposition from the current posted remittance, or null without disposition evidence."
+                  },
+                  "paid_cents": {
+                    "type": ["integer", "null"],
+                    "format": "int64",
+                    "description": "Amount paid on the current posted remittance in cents, or null when unavailable."
                   }
               }
             },
@@ -59923,6 +59960,15 @@
           "remittance_posted": {
             "type": "boolean"
           },
+          "payer_denied": {
+            "type": ["boolean", "null"],
+            "description": "Denial disposition from the current posted remittance, or null without disposition evidence."
+          },
+          "paid_cents": {
+            "type": ["integer", "null"],
+            "format": "int64",
+            "description": "Amount paid on the current posted remittance in cents, or null when unavailable."
+          },
           "external_submission_recorded": {
             "type": "boolean"
           }
@@ -59933,6 +59979,8 @@
           "connections",
           "eligibility",
           "remittance_posted",
+          "payer_denied",
+          "paid_cents",
           "external_submission_recorded"
         ],
         "description": "Read-only evidence scoped to the exact tenant and claim. Eligibility matches frozen coverage, member, payer and service date. Remittance posting does not imply zero balance. No GET triggers provider calls or accounting changes."
