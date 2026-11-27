@@ -214,7 +214,7 @@ async function checkClaimResponse(browser,viewport,returned=false){
   throw error;
  }finally{await ctx.close();}
 }
-async function checkReadyClaim(browser,viewport){
+async function checkReadyClaim(browser,viewport,delegated=false){
  const context=await browser.createBrowserContext(),page=await context.newPage(),errors=[],writes=[];
  const signed={...visit,status:'signed',signed_at:appointment.ends_at};
  const billing=fixture(patientPath+'/billing',signed,'insured',null,{});
@@ -230,15 +230,20 @@ async function checkReadyClaim(browser,viewport){
  const claim={...billing.claims[0],patient_id:patient.id,account_id:account.id,control_number:'SYN-READY',payer_name:payer.content.name,
   status:viewport.isMobile?'draft':'ready',version:1,content,snapshot:{account,patient}};
  billing.claims=[claim];
- const summary={...billing.summary,claim,insurance:{...billing.summary.insurance,insurer:payer.content.name}};
+ const summary={...billing.summary,claim,viewer:{delegated},insurance:{...billing.summary.insurance,insurer:payer.content.name}};
  billing.summary=summary;
  const claimEndpoint='/api/v1/billing/claims/'+claim.id;
  const handoffEndpoint=patientPath+'/billing/visits/'+signed.id+'/claim-handoff';
+ const partner={id:id(829),partner_id:id(830),partner_version:1,route_key:'synthetic-claimmd',usage:'T'};
+ const artifact={id:id(831),version:1,claim_id:claim.id,partner_id:partner.partner_id,partner_version:partner.partner_version};
+ const deliveryEndpoint='/api/v1/billing/submissions/'+artifact.id+'/delivery';
  let previewReads=0,failNextAuthorization=false,submissionIssues=[],releaseFirstAuthorization;
  const submissionDefaults={
   patient_address:{line1:'100 Synthetic Avenue',city:'Trenton',state:'NJ',postal_code:'08608'},
   billing_address:{line1:'400 Synthetic Clinic',city:'Trenton',state:'NJ',postal_code:'08608'},
-  subscriber_address:{line1:'100 Synthetic Avenue',city:'Trenton',state:'NJ',postal_code:'08608'}
+  subscriber_address:{line1:'100 Synthetic Avenue',city:'Trenton',state:'NJ',postal_code:'08608'},
+  subscriber_given_name:patient.given_name,subscriber_family_name:patient.family_name,rendering_given_name:'Synthetic',rendering_family_name:'Clinician',
+  billing_taxonomy:'207Q00000X',filing_indicator:'MB'
  };
  try{
   await page.setViewport(viewport);page.setDefaultTimeout(12000);
@@ -261,6 +266,18 @@ async function checkReadyClaim(browser,viewport){
     if(route===handoffEndpoint)return request.respond({status:200,contentType:'application/json',body:JSON.stringify({
      outcome:'needs_review',visit_id:signed.id,account_id:account.id,signed:true,visit_version:signed.version
     })});
+    if(delegated&&route===claimEndpoint+'/actions'&&body.action==='ready'){
+     assert.equal(version,JSON.stringify(String(claim.version)));
+     claim.status='ready';claim.version++;
+     return request.respond({status:200,contentType:'application/json',body:JSON.stringify(claim)});
+    }
+    if(delegated&&route===claimEndpoint+'/837p'){
+     assert.equal(version,JSON.stringify(String(claim.version)));
+     return request.respond({status:200,contentType:'application/json',body:JSON.stringify({...artifact,claim_version:claim.version})});
+    }
+    if(delegated&&route===deliveryEndpoint)return request.respond({status:200,contentType:'application/json',body:JSON.stringify({
+     id:id(832),submission_id:artifact.id,route_key:partner.route_key,status:'queued'
+    })});
     return request.abort();
    }
    if(route===claimEndpoint+'/cms1500'){
@@ -272,17 +289,66 @@ async function checkReadyClaim(browser,viewport){
    else if(route===patientPath+'/billing/visit-summary')data=summary;
    else if(route===patientPath+'/demographics')data={patient_id:patient.id,content:{address:{line1:'100 Synthetic Avenue',city:'Trenton',region:'NJ',postal_code:'08608'}}};
    else if(route==='/api/v1/billing/payers')data={items:[payer],total:1};
+   else if(delegated&&route==='/auth/me')data={...staff,delegated:true,delegated_role:'partner_admin'};
+   else if(delegated&&route==='/api/v1/billing/claimmd/status')data={configured:true,connected:true,active:partner};
    else if(route===claimEndpoint)data={claim,preflight_issues:claim.content.place_of_service?[]:['Two-digit place of service is required'],submission_issues:submissionIssues,submission_defaults:submissionDefaults,tracking:{}};
    else if(route.startsWith('/api/')||route.startsWith('/auth/'))data=fixture(route,signed,'insured',null,{});
    else if(/^\/$|\.(css|js|png|svg|webp|woff2?|ico)$/.test(route))return request.continue();
    else return request.abort();
    return request.respond({status:200,contentType:'application/json',body:JSON.stringify(data)});
   })().catch(async error=>{errors.push(error.message);if(!request.isInterceptResolutionHandled())await request.abort().catch(()=>{});}));
-  await page.goto(origin+'/#/patients/'+patient.id+'/encounter/'+signed.id+'/visit');
+  const section=delegated&&viewport.isMobile?'charges':'visit';
+  await page.goto(origin+'/#/patients/'+patient.id+'/encounter/'+signed.id+'/'+section);
   const trigger='[data-encounter-step-number="1"] [data-signed-claim-summary] [data-open-signed-claim-details]';
   const dialog='dialog[data-signed-claim-details][open]',overview=dialog+' [data-signed-claim-overview]';
   const send=overview+' [data-signed-claim-send]',preview=overview+' [data-encounter-claim-form]';
   await page.locator(trigger).click();
+  if(delegated){
+   const review=overview+' [data-signed-claim-native-review]',form=dialog+' #claimmd-submit-form';
+   const permissions=['signature_on_file','benefits_assigned','release_authorized','routine_professional_reviewed'];
+   await page.waitForSelector(review,{visible:true});
+   assert.equal(await page.$(send),null,'the delegated actor cannot enter the encounter handoff');
+   assert.deepEqual(writes,[],'opening claim review does not write');
+   if(!viewport.isMobile){
+    claim.version++;
+    await page.locator(review).click();
+    await page.waitForSelector(overview+' [data-signed-claim-review-error]',{visible:true});
+    assert.match(await page.$eval(overview,node=>node.innerText),/The claim changed/);
+    assert.equal(await page.$(form),null);
+    assert.deepEqual(writes,[]);
+    await page.keyboard.press('Escape');await page.waitForSelector(dialog,{hidden:true});
+    await page.locator(trigger).click();
+   }
+   await page.locator(review).click();
+   await page.waitForSelector(form,{visible:true});
+   assert.equal(await page.$$eval('dialog[open]',nodes=>nodes.length),1,'the existing consent form stays in the same review sheet');
+   assert.match(await page.$eval(form,node=>node.innerText),/Nothing is sent until you choose Send claim to the clearinghouse/);
+   assert.deepEqual(await page.$eval(form,(node,fields)=>fields.map(name=>[node.elements[name].required,node.elements[name].checked]),permissions),permissions.map(()=>[true,false]));
+   assert.deepEqual(writes.map(item=>item.route),viewport.isMobile?[claimEndpoint+'/actions']:[],'opening consent only releases an explicitly selected draft to ready');
+   if(viewport.isMobile){
+    await page.locator(dialog+' [data-signed-claim-native-back]').click();
+    await page.waitForSelector(review,{visible:true});
+    assert.equal(await page.$(form),null);
+    await page.locator(review).click();
+    await page.waitForSelector(form,{visible:true});
+    assert.equal(writes.length,1,'returning to review does not release the draft a second time');
+    await page.keyboard.press('Escape');await page.waitForSelector(dialog,{hidden:true});
+    assert.equal(writes.length,1,'closing without consent creates no transmission');
+   }else{
+    const queue=form+' [name="claimmd_action"][value="queue"]';
+    await page.locator(queue).click();
+    assert.deepEqual(writes,[],'unchecked attestations block the final action');
+    for(const name of permissions)await page.locator(form+' [name="'+name+'"]').click();
+    await page.locator(queue).click();
+    await page.waitForFunction(()=>document.getElementById('notice')?.innerText.includes('on its way to the clearinghouse'));
+    assert.deepEqual(writes.map(item=>item.route),[claimEndpoint+'/837p',deliveryEndpoint]);
+    assert.match(writes[0].body.reason,/Send claim to the clearinghouse/);
+    for(const name of permissions)assert.equal(writes[0].body.details[name],true);
+   }
+   assert.deepEqual(errors,[]);
+   console.log(viewport.width+'px PASS delegated native consent: same sheet, no automatic handoff, '+(viewport.isMobile?'draft review cancels without delivery':'stale version rejected and explicit recorded consent'));
+   return;
+  }
   await page.waitForSelector(send,{visible:true});
   await page.waitForFunction(selector=>getComputedStyle(document.querySelector(selector)).opacity==='1',{},dialog);
   assert.match(await page.$eval(overview,node=>node.innerText),/Avery Example.*SYN-READY.*Synthetic Medicare.*Prior authorization\s+\(Box 23\).*Ready to send.*This claim has not been sent\./s);
@@ -412,6 +478,7 @@ async function checkReadyClaim(browser,viewport){
    await checkClaimResponse(browser,viewport);
    await checkClaimResponse(browser,viewport,true);
    await checkReadyClaim(browser,viewport);
+   await checkReadyClaim(browser,viewport,true);
   }
  }finally{await browser.close();}
 })().catch(e=>{console.error(e);process.exitCode=1;});
