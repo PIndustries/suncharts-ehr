@@ -332,6 +332,18 @@
 /* The procedure's code and its full description both stay readable. */
 .charge-table .charge-cell-code{min-width:300px}
 .charge-table .charge-cell-code input[name="description"]{width:100%;min-width:240px}
+.charge-table-compact .charge-cell-code{min-width:0}
+.charge-table-compact .charge-cell-code input[name="description"]{min-width:0}
+.charge-line-options{margin:8px 0 0}
+.charge-line-options>summary,.diagnosis-code-source>summary{cursor:pointer;color:var(--muted);font-size:var(--fs-sm)}
+.charge-line-options[open]>summary,.diagnosis-code-source[open]>summary{margin-bottom:6px}
+.diagnosis-code-source:not(:has([data-terminology-selection])){display:none}
+.charge-line-options [data-line-modifier-summary]{margin-inline-start:4px}
+.charge-line-options .modifier-options{max-width:none}
+#billing-account-form>details[data-encounter-code-presets],
+#billing-account-form>details[data-encounter-code-setup]{padding:8px 0;border-top:1px solid var(--line)}
+#billing-account-form>details[data-encounter-code-presets]>summary,
+#billing-account-form>details[data-encounter-code-setup]>summary{cursor:pointer;color:var(--muted);font-weight:600}
 
 .payment-tag{display:inline-block;padding:2px 8px;border-radius:999px;border:1px solid var(--line);font-size:var(--fs-sm);cursor:default}
 .payment-row small{display:block;color:var(--muted)}
@@ -636,6 +648,11 @@ dialog.sheet-dialog:has(.payment-encounter-preview){width:min(760px,94vw);max-wi
 #visit-page-host #encounter-progress:empty{display:none}
 .encounter-step-toolbar{display:flex;align-items:center;gap:10px}
 .encounter-step-toolbar .encounter-step-chips{flex:1;min-width:0}
+.encounter-guide{display:flex;align-items:center;flex-wrap:wrap;gap:8px;padding-block:4px}
+.encounter-guide[hidden],.encounter-guide button[hidden]{display:none}
+.encounter-guide [data-encounter-early-payment]{margin-inline-start:auto}
+#visit-page-host button.primary[data-encounter-next-source]{background:var(--surface);border-color:var(--line);color:var(--ink);box-shadow:none}
+#visit-page-host button.primary[data-encounter-next-source]:hover:not(:disabled){background:var(--accent);border-color:var(--blue)}
 @media(max-width:600px){.encounter-step-toolbar{gap:4px}.encounter-step-toolbar .encounter-step-chips{flex:1 0 100%}}
 .encounter-step-instruction{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 0}
 #visit-page-host[data-encounter-steps] .encounter-workspace-heading .section-head{align-items:center}
@@ -765,6 +782,7 @@ dialog.encounter-codes-dialog{width:min(1120px,calc(100vw - 32px));max-height:ca
 dialog.encounter-codes-dialog[open]{display:flex;flex-direction:column}
 .encounter-codes-dialog .sheet-head,.encounter-codes-footer{flex:none;padding:12px 18px}
 .encounter-codes-dialog #billing-account-form[data-mode="draft"]>h3:first-child{display:none}
+.encounter-codes-dialog [data-diagnosis-up]:disabled{display:none}
 .encounter-codes-dialog .sheet-head h2{font-size:var(--fs-lg);margin:0}
 .encounter-codes-dialog .sheet-body{min-height:0;overflow:auto;overscroll-behavior:contain}
 .encounter-codes-footer{display:flex;flex-wrap:wrap;align-items:center;justify-content:flex-end;gap:12px;border-top:1px solid var(--line)}
@@ -804,6 +822,13 @@ dialog.encounter-codes-dialog[open]{display:flex;flex-direction:column}
 .signed-claim-next{margin:10px 0 0}
 .signed-claim-stage>button{margin-top:12px}
 .signed-claim-ready-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
+.signed-claim-reviewed-facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,140px),1fr));gap:8px 16px;margin:12px 0}
+.signed-claim-reviewed-facts dt{font-size:var(--fs-sm);color:var(--muted)}
+.signed-claim-reviewed-facts dd{margin:0}
+.signed-claim-attestation{font-size:var(--fs-sm);margin:12px 0 0}
+.signed-claim-inline-fix{display:grid;gap:6px}
+.signed-claim-inline-fix p,.signed-claim-inline-fix button{margin:0}
+.signed-claim-inline-fix button{justify-self:start}
 .signed-claim-disclosure{border-top:1px solid var(--line)}
 .signed-claim-disclosure>summary{cursor:pointer;font-weight:650;padding:12px 0}
 .signed-claim-disclosure[open]{padding-bottom:12px}
@@ -814,6 +839,10 @@ dialog.encounter-codes-dialog[open]{display:flex;flex-direction:column}
 @media(max-width:560px){
  .sheet-dialog.signed-claim-dialog{width:calc(100vw - 16px);max-height:calc(100dvh - 16px)}
  .signed-claim-stage>button,.signed-claim-ready-actions>button{width:100%;min-height:44px}
+ .signed-claim-stage:has([data-signed-claim-send]){padding:12px;margin:12px 0}
+ .signed-claim-reviewed-facts{column-gap:10px;row-gap:4px;margin:8px 0}
+ .signed-claim-ready-actions:has([data-signed-claim-send])>button{flex:1;min-width:0;width:auto}
+ .signed-claim-ready-actions>[data-signed-claim-send]{flex:1.35}
 }
 
 

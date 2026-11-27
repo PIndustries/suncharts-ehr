@@ -29,7 +29,7 @@ assert.doesNotMatch(plain,/name="code_system"/,'a charge line never shows a code
 // An encounter row keeps the same drug fields in the row, and tucks only the code list note away.
 const compact=ctx.chargeRow({code:'J0585',amount_cents:12500,ndc_code:'00023114501',ndc_quantity:'2.5',ndc_unit:'ML'},true);
 assert.match(compact,new RegExp('<div class="charge-drug">'));
-assert.match(compact,new RegExp('<details class="charge-more"><summary>Code list this came from</summary>'));
+assert.match(compact,new RegExp('<details class="charge-more" data-inline><summary>Code list this came from</summary>'));
 assert.match(compact,new RegExp('<input name="ndc_quantity"[^>]*value="2.5"'));
 assert.match(compact,new RegExp('<option value="ML" selected>ML — milliliters'));
 

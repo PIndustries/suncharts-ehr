@@ -172,6 +172,23 @@ const reset=()=>{vmAccount();sent.length=0;ctx.failed=null;ctx.noticed=null;ctx.
  assert.ok(!ambiguousChecks.some(row=>row.key==='practice-rendering_npi'),'the assigned clinician’s valid rendering NPI remains on the claim');
  const rendered=ctx.visitSignedClaimDetailBody(ambiguous,{canWrite:true,claimsAllowed:true},false);
  assert.match(rendered,/data-visit-claim-fix="claim" data-signed-focus="billing_provider_name">Edit billing details/);
+ assert.doesNotMatch(rendered,/data-signed-claim-fix="billing_npi"/,'staff choose the billing organization before editing its NPI');
+ const oneGroup={...ambiguous,practice_directory:{...multiDirectory,billing_organizations:[organizations[0]]}};
+ const oneGroupRendered=ctx.visitSignedClaimDetailBody(oneGroup,{canWrite:true,claimsAllowed:true},false);
+ assert.match(oneGroupRendered,/data-signed-claim-fix="billing_npi"[\s\S]*Update Billing NPI/,'a specific missing NPI is editable in the review sheet');
+ const missingSharedAddress={...claim,snapshot:{...claim.snapshot,account:{...claim.snapshot.account,
+  coverage_snapshot:{...claim.snapshot.account.coverage_snapshot,coverage:{content:{relationship:'self'}}}}},
+  preflight_issues:[],submission_issues:[
+   {field:'patient_address',message:'Patient address needs valid US state and ZIP.'},
+   {field:'subscriber_address',message:'Policy holder address needs valid US state and ZIP.'}
+  ]};
+ const selfAddressRendered=ctx.visitSignedClaimDetailBody({...oneGroup,claim:missingSharedAddress},{canWrite:true,claimsAllowed:true},false);
+ assert.doesNotMatch(selfAddressRendered,/data-signed-claim-fix="subscriber_address"/);
+ assert.match(selfAddressRendered,/data-chart-section="profile">Edit patient address/);
+ assert.equal((selfAddressRendered.match(/Edit patient address/g)||[]).length,1,'one edit fixes a shared patient and subscriber address');
+ missingSharedAddress.snapshot.account.coverage_snapshot.coverage.content.relationship='spouse';
+ const spouseAddressRendered=ctx.visitSignedClaimDetailBody({...oneGroup,claim:missingSharedAddress},{canWrite:true,claimsAllowed:true},false);
+ assert.match(spouseAddressRendered,/data-signed-claim-fix="subscriber_address"[\s\S]*Street, city, ST ZIP/,'a separate subscriber address is editable with a usable structure hint');
  const corrected=review({...ambiguous,claim:{...ambiguous.claim,content:{...ambiguous.claim.content,billing_provider_name:'Synthetic Billing Group Two',billing_npi:'1548469802',tax_id:'000000018'},issues:[]}});
  assert.ok(!corrected.some(row=>['practice-billing_npi','practice-rendering_npi','practice-tax'].includes(row.key)),'the reviewed billing identity resolves the claim checks');
  ctx.billingPayers.pop();ctx.workspace.billing.coverages.pop();delete ctx.workspace.patient.birth_date;delete ctx.activeVisit.clinician_id;

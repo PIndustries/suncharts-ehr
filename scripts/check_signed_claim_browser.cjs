@@ -235,6 +235,11 @@ async function checkReadyClaim(browser,viewport){
  const claimEndpoint='/api/v1/billing/claims/'+claim.id;
  const handoffEndpoint=patientPath+'/billing/visits/'+signed.id+'/claim-handoff';
  let previewReads=0,failNextAuthorization=false,submissionIssues=[],releaseFirstAuthorization;
+ const submissionDefaults={
+  patient_address:{line1:'100 Synthetic Avenue',city:'Trenton',state:'NJ',postal_code:'08608'},
+  billing_address:{line1:'400 Synthetic Clinic',city:'Trenton',state:'NJ',postal_code:'08608'},
+  subscriber_address:{line1:'100 Synthetic Avenue',city:'Trenton',state:'NJ',postal_code:'08608'}
+ };
  try{
   await page.setViewport(viewport);page.setDefaultTimeout(12000);
   await page.emulateMediaFeatures([{name:'prefers-color-scheme',value:theme}]);
@@ -267,7 +272,7 @@ async function checkReadyClaim(browser,viewport){
    else if(route===patientPath+'/billing/visit-summary')data=summary;
    else if(route===patientPath+'/demographics')data={patient_id:patient.id,content:{address:{line1:'100 Synthetic Avenue',city:'Trenton',region:'NJ',postal_code:'08608'}}};
    else if(route==='/api/v1/billing/payers')data={items:[payer],total:1};
-   else if(route===claimEndpoint)data={claim,preflight_issues:[],submission_issues:submissionIssues,tracking:{}};
+   else if(route===claimEndpoint)data={claim,preflight_issues:claim.content.place_of_service?[]:['Two-digit place of service is required'],submission_issues:submissionIssues,submission_defaults:submissionDefaults,tracking:{}};
    else if(route.startsWith('/api/')||route.startsWith('/auth/'))data=fixture(route,signed,'insured',null,{});
    else if(/^\/$|\.(css|js|png|svg|webp|woff2?|ico)$/.test(route))return request.continue();
    else return request.abort();
@@ -276,38 +281,38 @@ async function checkReadyClaim(browser,viewport){
   await page.goto(origin+'/#/patients/'+patient.id+'/encounter/'+signed.id+'/visit');
   const trigger='[data-encounter-step-number="1"] [data-signed-claim-summary] [data-open-signed-claim-details]';
   const dialog='dialog[data-signed-claim-details][open]',overview=dialog+' [data-signed-claim-overview]';
-  const send=overview+' [data-signed-claim-continue]',preview=overview+' [data-encounter-claim-form]';
+  const send=overview+' [data-signed-claim-send]',preview=overview+' [data-encounter-claim-form]';
   await page.locator(trigger).click();
   await page.waitForSelector(send,{visible:true});
   await page.waitForFunction(selector=>getComputedStyle(document.querySelector(selector)).opacity==='1',{},dialog);
   assert.match(await page.$eval(overview,node=>node.innerText),/Avery Example.*SYN-READY.*Synthetic Medicare.*Prior authorization\s+\(Box 23\).*Ready to send.*This claim has not been sent\./s);
   assert.equal(await page.$eval(overview+' [data-signed-claim-authorization]',node=>node.querySelector('input')?.value??node.textContent),authorization||'Not entered');
-  assert.doesNotMatch(await page.$eval(dialog,node=>node.innerText),/Claim review|Claim progress|Now: Finish the claim|SYN-ACCOUNT-AUTH/);
-  assert.deepEqual(await page.$$eval(dialog+' button.primary',nodes=>nodes.filter(node=>node.checkVisibility()).map(node=>node.textContent.trim())),['Review and send']);
+  assert.doesNotMatch(await page.$eval(dialog,node=>node.innerText),/Review and send|Claim progress|Now: Finish the claim|SYN-ACCOUNT-AUTH/);
+  assert.match(await page.$eval(overview+' #signed-claim-attestation',node=>node.innerText),/confirm the provider signature is on file, benefits are assigned, release of information is authorized, and I reviewed the codes and addresses/);
+  assert.match(await page.$eval(overview,node=>node.innerText),/Diagnoses.*Procedures.*Patient address.*400 Synthetic Clinic/s);
+  assert.deepEqual(await page.$$eval(dialog+' button.primary',nodes=>nodes.filter(node=>node.checkVisibility()).map(node=>node.textContent.trim())),['Send claim to Claim.MD']);
   assert.equal(await page.$$eval(dialog+' details[open]',nodes=>nodes.filter(node=>node.checkVisibility()).length),0);
   assert.equal(await page.$eval(preview,node=>node.textContent),'Preview claim form');
   const geometry=await page.$eval(dialog,node=>{
    const {x,y,right,bottom}=node.getBoundingClientRect();
    return {fits:x>=0&&y>=0&&right<=innerWidth&&bottom<=innerHeight&&node.scrollWidth<=node.clientWidth,
-    actionVisible:node.querySelector('[data-signed-claim-continue]').getBoundingClientRect().bottom<=bottom,theme:document.documentElement.dataset.theme};
+    actionVisible:node.querySelector('[data-signed-claim-send]').getBoundingClientRect().bottom<=bottom,theme:document.documentElement.dataset.theme};
   });
   assert.deepEqual(geometry,{fits:true,actionVisible:true,theme});
   const screenshotDir=process.env.CLAIM_DETAILS_SCREENSHOT_DIR;
   if(screenshotDir)await (await page.$(dialog)).screenshot({path:path.join(screenshotDir,`ready-claim-details-${viewport.width}-${theme}.png`)});
-  // Preview reads the exact claim and leaves submission untouched.
+  // A script click cannot attest. Physical browser preview leaves the same review sheet open.
+  await page.$eval(send,node=>node.click());
+  assert.deepEqual(writes,[]);
   await page.locator(preview).click();
   const previewSheet='dialog.receipt-preview-sheet[open]';
   await page.waitForSelector(previewSheet+' iframe[title="Claim form (CMS-1500)"]',{visible:true});
   assert.equal(previewReads,1);
   await page.keyboard.press('Escape');
   await page.waitForSelector(previewSheet,{hidden:true});
-  await page.locator(trigger).click();
-  await page.locator(send).click();
-  const confirm='[role="alertdialog"]';
-  await page.waitForSelector(confirm,{visible:true});
-  assert.match(await page.$eval(confirm,node=>node.innerText),/Submit claim\?.*Confirm the provider signature is on file/s);
-  await page.locator(confirm+' button[data-dialog-cancel]').click();
-  await page.waitForSelector(confirm,{hidden:true});
+  await page.waitForSelector(dialog,{visible:true});
+  await page.keyboard.press('Escape');
+  await page.waitForSelector(dialog,{hidden:true});
   assert.deepEqual(errors,[]);assert.deepEqual(writes,[]);
   if(viewport.isMobile){
    // Both claim reads are scoped to the reviewed claim. A printable address does not suppress the
@@ -341,32 +346,56 @@ async function checkReadyClaim(browser,viewport){
     ['PUT',claimEndpoint,'"1"','SYN-FIRST-EDIT'],['PUT',claimEndpoint,'"2"','SYN-LATEST-EDIT']
    ]);
    await page.keyboard.press('Escape');await page.waitForSelector(previewSheet,{hidden:true});
+   await page.waitForSelector(dialog,{visible:true});
 
-   // On version conflict the value stays in the field, with retry, and no confirmation is opened.
+   // A Box 23 conflict preserves the value and prevents the explicit send from writing anything.
    failNextAuthorization=true;
-   await page.locator(trigger).click();await page.waitForSelector(send,{visible:true});
    await page.locator(auth).fill('SYN-AUTH-RETRY');
    await page.locator(send).click();
    await page.waitForSelector(dialog+' [data-signed-claim-auth-retry]',{visible:true});
    assert.equal(await page.$eval(auth,node=>node.value),'SYN-AUTH-RETRY');
-   assert.equal(await page.$(confirm),null);
+   assert.equal(await page.$('[role="alertdialog"]'),null);
    await page.locator(dialog+' [data-signed-claim-auth-retry]').click();
    await page.waitForFunction(()=>document.querySelector('[data-signed-claim-auth-status]')?.textContent==='Saved');
-   await page.locator(send).click();await page.waitForSelector(confirm,{visible:true});
-   await page.locator(confirm+' button[data-dialog-cancel]').click();await page.waitForSelector(confirm,{hidden:true});
+   await page.keyboard.press('Escape');await page.waitForSelector(dialog,{hidden:true});
    assert.equal(writes.length,4);
    assert.ok(writes.every(item=>item.method==='PUT'&&item.route===claimEndpoint));
+
+   // Fill a genuinely missing draft claim field directly in the review sheet.
+   claim.content.place_of_service='';claim.version++;
+   await page.locator(trigger).click();
+   const place=dialog+' [data-signed-claim-fix="place_of_service"]';
+   await page.waitForSelector(place,{visible:true});
+   assert.equal(await page.$(send),null);
+   assert.equal(await page.$eval(place+' input',input=>document.activeElement===input),true);
+   await page.locator(place+' input').fill('11');
+   await page.locator(place+' button[type="submit"]').click();
+   await page.waitForSelector(send,{visible:true});
+   assert.equal(await page.$(place),null);
+   assert.equal(writes.length,5);
+   assert.equal(writes[4].route,claimEndpoint);
+   assert.equal(writes[4].body.content.place_of_service,'11');
+   await page.keyboard.press('Escape');await page.waitForSelector(dialog,{hidden:true});
   }
   if(!viewport.isMobile){
    await page.locator(trigger).click();
+   // Demographics can change separately from the claim's version. Show the new
+   // address and require deliberate review of that saved information.
+   await page.waitForSelector(send,{visible:true});
+   submissionDefaults.patient_address.city='Synthetic Gardens';
    await page.locator(send).click();
-   await page.locator(confirm+' button[data-dialog-confirm]').click();
+   await page.waitForSelector(overview+' [data-signed-claim-review-error]',{visible:true});
+   assert.match(await page.$eval(overview,node=>node.innerText),/Synthetic Gardens.*The claim changed/s);
+   assert.deepEqual(writes,[]);
+   await page.locator(send).click();
    await page.waitForFunction(()=>document.getElementById('notice')?.innerText.includes('Claim needs review'));
+   assert.equal(await page.$('[role="alertdialog"]'),null);
    assert.equal(writes.length,1);
    assert.equal(writes[0].route,handoffEndpoint);
    assert.deepEqual(writes[0].body.reviewed_claim,{id:claim.id,version:claim.version});
+   assert.deepEqual(writes[0].body.confirmations,{signature_on_file:true,benefits_assigned:true,release_authorized:true,routine_professional_reviewed:true,synthetic_test_reviewed:false});
   }
-  console.log(viewport.width+'px '+theme+' PASS ready claim: review, exact Box 23, canceled confirmation'+(viewport.isMobile?', autosave convergence and conflict recovery':''));
+  console.log(viewport.width+'px '+theme+' PASS one-sheet claim review, same-sheet attestation, nested preview'+(viewport.isMobile?', autosave, conflict recovery and focused inline fix':', changed-address guard and explicit handoff'));
  }catch(error){
   console.error(viewport.width,'ready',errors,writes,await page.evaluate(()=>({
    notice:document.getElementById('notice')?.textContent,dialogs:[...document.querySelectorAll('dialog[open]')].map(node=>node.innerText.slice(0,900))
