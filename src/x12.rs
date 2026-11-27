@@ -46,6 +46,25 @@ pub fn element(s: &str, min: usize, max: usize, label: &'static str) -> Result<S
     }
     Ok(t.to_string())
 }
+
+/// Use transport-equivalent hyphens for the typographic dashes found in
+/// organization display names. The frozen name stays intact for review; only
+/// the outbound representation changes. Other Unicode and delimiters remain
+/// invalid, and identifiers still use the strict `element` validator.
+pub(crate) fn organization_name(s: &str, label: &'static str) -> Result<String> {
+    if s.is_ascii() {
+        return element(s, 1, 60, label);
+    }
+    let wire_name: String = s
+        .chars()
+        .map(|c| match c {
+            '\u{2010}'..='\u{2014}' => '-',
+            _ => c,
+        })
+        .collect();
+    element(&wire_name, 1, 60, label)
+}
+
 fn field_error(label: &'static str) -> &'static str {
     match label {
         "member_id" => "Member ID can only use plain letters, numbers and basic punctuation, 2 to 80 characters.",
@@ -314,12 +333,7 @@ pub(crate) fn generate(
     }
     let content: ClaimContent = serde_json::from_value(c.content.clone())
         .map_err(|_| Error::Invalid("invalid claim packet"))?;
-    let billing_name = element(
-        &content.billing_provider_name,
-        1,
-        60,
-        "billing_provider_name",
-    )?;
+    let billing_name = organization_name(&content.billing_provider_name, "billing_provider_name")?;
     if content.place_of_service != "11" {
         return Err(Error::Invalid("initial 837P profile supports routine office POS 11; facility cases need a broader profile"));
     }
@@ -380,7 +394,7 @@ pub(crate) fn generate(
     let member = element(field(cov, "member_id")?, 2, 80, "member_id")?;
     let group = element(field(cov, "group_number")?, 0, 50, "group_number")?;
     let plan = element(field(cov, "plan_name")?, 0, 50, "plan_name")?;
-    let payer_name = element(field(payer, "name")?, 1, 60, "payer_name")?;
+    let payer_name = organization_name(field(payer, "name")?, "payer_name")?;
     let payer_code = element(field(payer, "payer_code")?, 2, 80, "payer_code")?;
     let lines = account["content"]["lines"]
         .as_array()
@@ -849,7 +863,7 @@ fn secondary_header(
         out,
         "PR",
         "2",
-        &element(field(payer, "name")?, 1, 60, "primary_payer_name")?,
+        &organization_name(field(payer, "name")?, "primary_payer_name")?,
         "",
         "PI",
         &element(field(payer, "payer_code")?, 1, 80, "primary_payer_code")?,
@@ -1559,6 +1573,32 @@ mod tests {
             .payload
             .contains("NM1*PR*2*SYNTHETIC PAYER*****PI*SYN-payer~"));
     }
+    #[test]
+    fn frozen_organization_dashes_convert_only_in_outbound_837p() {
+        let mut c = claim();
+        let billing = "Synthetic Development Clinic — Do Not Transmit";
+        let payer = "Synthetic Local RCM Test — Do Not Transmit";
+        c.content["billing_provider_name"] = json!(billing);
+        c.snapshot["account"]["coverage_snapshot"]["payer"]["content"]["name"] = json!(payer);
+        assert!(crate::claims::preflight(&c).unwrap().is_empty());
+
+        let g = generate(&c, &partner(), &details(), None, 42, Utc::now()).unwrap();
+        assert!(g
+            .payload
+            .contains("NM1*85*2*SYNTHETIC DEVELOPMENT CLINIC - DO NOT TRANSMIT*****XX*"));
+        assert!(g
+            .payload
+            .contains("NM1*PR*2*SYNTHETIC LOCAL RCM TEST - DO NOT TRANSMIT*****PI*SYN-payer~"));
+        assert_eq!(c.content["billing_provider_name"], billing);
+        assert_eq!(
+            c.snapshot["account"]["coverage_snapshot"]["payer"]["content"]["name"],
+            payer
+        );
+        assert!(element("SYN—MEMBER", 2, 80, "member_id").is_err());
+        assert!(organization_name("A—B~C", "payer_name").is_err());
+        assert!(organization_name(&format!("{}—Z", "A".repeat(59)), "payer_name").is_err());
+    }
+
     #[test]
     fn element_trim_and_inner_check() {
         assert_eq!(element("  ABC  ", 2, 80, "member_id").unwrap(), "ABC");

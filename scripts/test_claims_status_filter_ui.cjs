@@ -59,7 +59,7 @@ function fixture({write=true,claimRows=claims,remittanceRows=remittances,history
     if(path.endsWith('/history'))return {items:[]};
     const key=path.slice(claimsBase.length+1),row=[...pageClaims,...afterClaims].find(c=>c.id===key);
     assert.ok(row,`Fixture claim ${key} must exist`);
-    return {claim:row,tracking:{remittance_posted:row.remittance_posted===true}};
+    return {claim:row,canceled_claim_recovery:row.canceled_claim_recovery,tracking:{remittance_posted:row.remittance_posted===true}};
    }
    if(path.startsWith(eraBase+'/')){
     if(path.endsWith('/history'))return {items:[]};
@@ -227,6 +227,37 @@ const waitFor=async test=>{
  assert(guided.calls.every(([,method])=>method==='GET'),'the worklist opens decisions without carrying them out');
  console.log('PASS exact worklist actions, evidence age, and matched payment focus');
 
+ const recovery={claim_id:id(66),account_id:id(266),encounter_id:id(466),version:4,account_version:9};
+ const corrected=claim(66,'void',{version:4,visit_id:recovery.encounter_id,snapshot:{account:{content:{visit_id:recovery.encounter_id}}},canceled_claim_recovery:recovery});
+ const older=claim(67,'void',{version:3,visit_id:recovery.encounter_id,account_id:recovery.account_id,snapshot:corrected.snapshot});
+ const canceled=fixture({claimRows:[older,corrected]});
+ canceled.ctx.visitResubmitFromWorklist=async data=>canceled.opened.push(['resubmit',JSON.parse(JSON.stringify(data))]);
+ await canceled.ctx.showClaimsWorkspace();
+ assert.equal(canceled.stageCounts().action,1);
+ assert.equal(canceled.stageCounts().send,0,'a canceled claim is not a draft ready for delivery');
+ hasIds(canceled,'claim',[66]);
+ const resubmit=`[data-claim-open="${corrected.id}"]`;
+ assert.equal(canceled.$q(resubmit).textContent,'Resubmit claim');
+ assert.match(canceled.$q(resubmit).closest('tr').textContent,/Canceled before sending/);
+ const inactive=`[data-claim-open="${older.id}"]`;
+ canceled.choose('void');
+ assert.equal(canceled.$q(inactive).textContent,'Review cancellation');
+ assert.equal(canceled.$q(inactive).hasAttribute('data-claim-visit'),false,'older void opens history directly');
+ await canceled.click(inactive);
+ assert.deepEqual(canceled.opened,[]);
+ assert.equal(canceled.ctx.claimCurrent.id,older.id);
+ assert.match(canceled.ctx.claimPrimaryActionMarkup(corrected,{canceled_claim_recovery:recovery}),/data-claim-intent="resubmit"[^>]*>Resubmit claim/);
+ assert.doesNotMatch(canceled.ctx.claimPrimaryActionMarkup(older,{tracking:{submissions:[{status:'prepared',id:id(300)}]}}),/Resubmit claim|data-claim-existing-submission/);
+ await canceled.click(resubmit);
+ assert.deepEqual(canceled.opened,[['chart'],[corrected.patient_id,recovery.encounter_id],['resubmit',recovery]]);
+ canceled.opened.length=0;
+ const changed={...recovery,account_version:10};
+ canceled.routes.set(claimsBase+'/'+corrected.id,()=>({claim:corrected,canceled_claim_recovery:changed}));
+ await assert.rejects(canceled.click(resubmit),/posted charges changed/);
+ assert.deepEqual(canceled.opened,[],'a stale recovery link cannot open or prepare a different account version');
+ assert(canceled.calls.every(([,method])=>method==='GET'));
+ console.log('PASS canceled recovery opens the exact corrected encounter while older voids stay in history');
+
  const refresh=fixture();
  refresh.setRemittances([payment(30,'staged')],'older',[payment(36,'posted')]);
  await refresh.ctx.showClaimsWorkspace({filter:'posted'});
@@ -257,5 +288,5 @@ const waitFor=async test=>{
  assert.equal(refresh.stageCounts()['remittance-review'],1);
  console.log('PASS quiet refresh preserves details, loaded pages, and session isolation');
 
- for(const item of [f,empty,actions,readOnly,visit,guided,refresh])item.dom.window.close();
+ for(const item of [f,empty,actions,readOnly,visit,guided,canceled,refresh])item.dom.window.close();
 })().catch(error=>{console.error(error);process.exitCode=1;});

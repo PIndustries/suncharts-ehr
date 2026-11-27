@@ -439,21 +439,44 @@ async function prepareVisitClaim(){
  await loadEncounterRevenueStatus(account,true);
  if(current()&&result.outcome==='prepared')notice('Claim prepared from this encounter. Nothing was sent.');
 }
+async function visitResubmitFromWorklist(recovery){
+ const visit=activeVisit?.id,patient=selected,identity=me,account=encounterChargeAccount();
+ const current=()=>activeVisit?.id===visit&&selected===patient&&me===identity&&chartSection==='visits';
+ const changed='The posted charges or claim changed. Refresh this encounter and review its current claim.';
+ if(visit!==recovery.encounter_id||account?.id!==recovery.account_id||account.version!==recovery.account_version)throw new Error(changed);
+ await loadEncounterRevenueStatus(account,true,{prepare:false});
+ if(!current())return;
+ const data=encounterRevenueState.data,summary=data?.summary;
+ if(data?.stale||data?.error||summary?.patient_id!==patient||summary.visit?.id!==visit||
+  summary.account?.id!==account.id||summary.account.version!==recovery.account_version)throw new Error(changed);
+ const original=visitBillingCanceledClaim(summary,visitBillingStateContext());
+ if(original?.id!==recovery.claim_id||original.version!==recovery.version)throw new Error(summary.canceled_claim_blocked||changed);
+ setEncounterSection('charges');
+ encounterStepsSync();
+ const button=$('visit-page-host')?.querySelector('[data-encounter-claim-status] [data-visit-claim-resend]');
+ if(!button||button.dataset.visitClaimResend!==original.id||button.dataset.canceledClaimVersion!==String(original.version))throw new Error(changed);
+ await visitClaimResend(button,recovery.account_version);
+}
 // Prepare from the exact cancelled claim the user saw, then open only its replacement draft.
-async function visitClaimResend(button){
+async function visitClaimResend(button,accountVersion=null){
  const patient=selected,identity=me,visit=activeVisit?.id,account=encounterChargeAccount();
  const current=()=>selected===patient&&me===identity&&activeVisit?.id===visit&&encounterChargeAccount()?.id===account?.id&&chartSection==='visits';
  const scoped=summary=>summary?.patient_id===patient&&summary.visit?.id===visit&&summary.account?.id===account?.id;
  const data=encounterRevenueState.data,original=visitBillingCanceledClaim(data?.summary,visitBillingStateContext());
  if(!account?.id||!current()||!scoped(data?.summary)||!original||
   original.id!==button.dataset.visitClaimResend||String(original.version)!==button.dataset.canceledClaimVersion)return;
+ const reviewedVersion=accountVersion??data.summary.account.version;
+ if(!Number.isSafeInteger(reviewedVersion)||reviewedVersion<1||reviewedVersion!==account.version||reviewedVersion!==data.summary.account.version){
+  notice('The posted charges changed. Refresh this encounter before resubmitting.',true);
+  return;
+ }
  button.disabled=true;
  button.textContent='Preparing draft…';
  try{
   let result,prepareError;
   try{
    result=await api(`/api/v1/patients/${encodeURIComponent(patient)}/billing/accounts/${encodeURIComponent(account.id)}/claims/prepare`,'POST',
-    {again:true,canceled_claim_id:original.id,canceled_claim_version:original.version});
+    {again:true,canceled_claim_id:original.id,canceled_claim_version:original.version,canceled_account_version:reviewedVersion});
   }catch(error){if(error.signedOut)throw error;prepareError=error;}
   if(!current())return;
   // Finish any pre-existing read before reloading the authoritative result of the prepare.

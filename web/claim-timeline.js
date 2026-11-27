@@ -315,7 +315,7 @@ function claimCurrentLine(claim={},context={}){
  const now=context.now||new Date(),status=String(claim.status||'draft').toLowerCase();
  const since=at=>timestampOf(at);
  const waiting=from=>{const parsed=since(from),days=parsed?dayGap(parsed,now):null;return parsed?`since ${timelineDate(parsed)}${days===null?'':`, ${days} ${days===1?'day':'days'}`}`:'and we are still waiting';};
- if(status==='void')return 'This claim was voided. Nothing further is expected.';
+ if(status==='void')return 'This claim was canceled.';
  if(status==='draft')return 'This claim has not been sent yet.';
  if(status==='ready')return 'Ready to send to the clearinghouse.';
  if(status==='rejected'){

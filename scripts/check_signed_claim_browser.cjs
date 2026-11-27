@@ -51,8 +51,11 @@ async function check(browser,viewport,variant){
   await page.waitForSelector(dialog,{visible:true});
   if(ambiguous)await page.waitForSelector(dialog+' [data-check="practice-billing_npi"]',{visible:true});
   else if(!unmatched)assert.equal(await page.$(dialog+' [data-check="practice-billing_npi"]'),null,'A single group may use its eligible rendering clinician NPI');
+  if(unmatched)await page.waitForSelector(dialog+' [data-check="practice-rendering_npi"]',{visible:true});
+  const info=dialog+' [data-signed-claim-all-fields]';
+  assert.equal(await page.$eval(info,details=>details.open),false,'saved fields stay out of the way');
+  await page.locator(info+' > summary').click();
   if(unmatched){
-   await page.waitForSelector(dialog+' [data-check="practice-rendering_npi"]',{visible:true});
    assert.doesNotMatch(await page.$eval(dialog,n=>n.innerText),/1245319599|1234567893/,'The wrong provider cannot supply this encounter NPI');
   }else{
    assert.equal(await page.$(dialog+' [data-check="practice-rendering_npi"]'),null);
@@ -163,8 +166,17 @@ async function checkClaimResponse(browser,viewport,returned=false,held=false){
    assert.equal(await page.$eval(field,input=>input.value),'50');
    assert.equal(await page.$(details+' [data-denial-action]'),null);
    assert.match(await page.$eval(details,node=>node.innerText),/64405.*20553/s);
-   await page.locator(field).fill('50 XS');
+   assert.equal(await page.$eval(field,input=>input.readOnly),false);
+   assert.match(await page.$eval(details+' #held-modifier-help',node=>node.innerText),/signed note documents separate structures/);
+   const xs=details+' [data-modifier-toggle="XS"]';
+   assert.equal(await page.$eval(xs,button=>button.getAttribute('aria-pressed')),'false');
+   assert.deepEqual(writes,[],'showing modifier options never changes the claim');
+   const screenshotDir=process.env.CLAIM_DETAILS_SCREENSHOT_DIR;
+   if(screenshotDir)await (await page.$(details)).screenshot({path:path.join(screenshotDir,`held-claim-modifiers-${viewport.width}.png`)});
+   await page.locator(xs).click();
    await page.waitForFunction(()=>document.querySelector('[data-held-save-status]')?.textContent==='Saved');
+   assert.equal(await page.$eval(xs,button=>button.getAttribute('aria-pressed')),'true');
+   assert.equal(await page.$eval(field,input=>input.value),'50 XS');
    assert.deepEqual(writes,[{path:correctionPath,body:{report_id:source.report_id,submission_id:source.submission_id,line_index:0,modifiers:['50','XS']}}]);
    await page.locator(details+' [data-held-review]').click();
    assert.match(await page.$eval(details,node=>node.innerText),/SYN-CLAIMMD-467.*50, XS/s);
@@ -256,7 +268,7 @@ async function checkClaimResponse(browser,viewport,returned=false,held=false){
   throw error;
  }finally{await ctx.close();}
 }
-async function checkReadyClaim(browser,viewport,delegated=false,canceled=false){
+async function checkReadyClaim(browser,viewport,delegated=false,canceled=false,canceledSource='encounter',blocked=''){
  const context=await browser.createBrowserContext(),page=await context.newPage(),errors=[],writes=[];
  const signed={...visit,status:'signed',signed_at:appointment.ends_at};
  const billing=fixture(patientPath+'/billing',signed,'insured',null,{});
@@ -271,12 +283,26 @@ async function checkReadyClaim(browser,viewport,delegated=false,canceled=false){
   encounter:authorization?{prior_authorization_number:authorization}:{}};
  const claim={...billing.claims[0],patient_id:patient.id,account_id:account.id,control_number:'SYN-READY',payer_name:payer.content.name,
   status:viewport.isMobile?'draft':'ready',version:1,content,snapshot:{account,patient}};
+ if(blocked==='field'){
+  claim.content.place_of_service='';
+  claim.status='ready';
+  claim.can_return_to_draft=true;
+ }
  billing.claims=[claim];
  const summary={...billing.summary,claim,viewer:{delegated},insurance:{...billing.summary.insurance,insurer:payer.content.name}};
  billing.summary=summary;
  const claimEndpoint='/api/v1/billing/claims/'+claim.id;
  const prepareEndpoint=patientPath+'/billing/accounts/'+account.id+'/claims/prepare';
- const original={...claim,id:id(833),status:'void',version:4,control_number:'SYN-CANCELLED'};
+ if(canceled){
+  account.version=2;
+  summary.account={...summary.account,version:account.version};
+ }
+ const original={...claim,id:id(833),status:'void',version:4,control_number:'SYN-CANCELLED',
+  snapshot:{...claim.snapshot,account:{...account,version:1}}};
+ const older={...original,id:id(834),control_number:'SYN-OLDER-CANCELLATION'};
+ const correction={claim_id:original.id,account_id:account.id,encounter_id:signed.id,version:original.version,account_version:account.version};
+ const worklistOriginal={...original,visit_id:signed.id,patient_name:'Example, Avery',service_date:account.service_date,
+  total_cents:account.total_cents,canceled_claim_recovery:correction};
  const beforeResubmit={...summary,state:'claim_cancelled',claim:null,canceled_claim:{id:original.id,version:original.version}};
  if(canceled)billing.claims=[original];
  const handoffEndpoint=patientPath+'/billing/visits/'+signed.id+'/claim-handoff';
@@ -299,12 +325,14 @@ async function checkReadyClaim(browser,viewport,delegated=false,canceled=false){
   page.on('request',request=>void (async()=>{
    const url=new URL(request.url()),route=url.pathname;
    if(url.origin!==origin)return request.abort();
+   if(canceled&&route==='/api/v1/billing/claimmd/'+partner.id+'/uploaded-files/sync'&&request.method()==='POST')
+    return request.respond({status:200,contentType:'application/json',body:'{}'});
    if(request.method()!=='GET'){
     const body=JSON.parse(request.postData()||'{}'),version=request.headers()['if-match'];
     writes.push({method:request.method(),route,body,version});
     if(canceled&&route===prepareEndpoint){
      assert.equal(request.method(),'POST');
-     assert.deepEqual(body,{again:true,canceled_claim_id:original.id,canceled_claim_version:original.version});
+     assert.deepEqual(body,{again:true,canceled_claim_id:original.id,canceled_claim_version:original.version,canceled_account_version:account.version});
      billing.claims=[original,claim];
      return request.respond({status:200,contentType:'application/json',body:JSON.stringify({outcome:'prepared',claim_id:claim.id})});
     }
@@ -318,6 +346,11 @@ async function checkReadyClaim(browser,viewport,delegated=false,canceled=false){
     if(route===handoffEndpoint)return request.respond({status:200,contentType:'application/json',body:JSON.stringify({
      outcome:'needs_review',visit_id:signed.id,account_id:account.id,signed:true,visit_version:signed.version
     })});
+    if(blocked==='field'&&route===claimEndpoint+'/actions'&&body.action==='return_to_draft'){
+     assert.equal(version,JSON.stringify(String(claim.version)));
+     claim.status='draft';claim.version++;claim.can_return_to_draft=false;
+     return request.respond({status:200,contentType:'application/json',body:JSON.stringify(claim)});
+    }
     if(delegated&&route===claimEndpoint+'/actions'&&body.action==='ready'){
      assert.equal(version,JSON.stringify(String(claim.version)));
      claim.status='ready';claim.version++;
@@ -339,28 +372,48 @@ async function checkReadyClaim(browser,viewport,delegated=false,canceled=false){
    let data;
    if(route===patientPath+'/billing')data=billing;
    else if(route===patientPath+'/billing/visit-summary')data=canceled&&billing.claims.length===1?beforeResubmit:summary;
+   else if(canceled&&route==='/api/v1/billing/claims')data={items:[older,worklistOriginal],total:2};
+   else if(canceled&&route==='/api/v1/billing/claims/'+original.id)data={claim:original,canceled_claim_recovery:correction,preflight_issues:[],tracking:{}};
+   else if(canceled&&route==='/api/v1/billing/era-automation')data={feeds:[],items:[],events:[]};
+   else if(canceled&&route==='/api/v1/billing/claimmd/'+partner.id+'/operations')data={records:[]};
    else if(route===patientPath+'/demographics')data={patient_id:patient.id,content:{address:{line1:'100 Synthetic Avenue',city:'Trenton',region:'NJ',postal_code:'08608'}}};
    else if(route==='/api/v1/billing/payers')data={items:[payer],total:1};
    else if(delegated&&route==='/auth/me')data={...staff,delegated:true,delegated_role:'partner_admin'};
-   else if(delegated&&route==='/api/v1/billing/claimmd/status')data={configured:true,connected:true,active:partner};
-   else if(route===claimEndpoint)data={claim,preflight_issues:claim.content.place_of_service?[]:['Two-digit place of service is required'],submission_issues:submissionIssues,submission_defaults:submissionDefaults,tracking:{}};
+   else if((delegated||blocked)&&route==='/api/v1/billing/claimmd/status')data={configured:blocked!=='connection',connected:blocked!=='connection',active:blocked==='connection'?null:partner};
+   else if(route===claimEndpoint)data={claim,can_return_to_draft:claim.can_return_to_draft,preflight_issues:claim.content.place_of_service?[]:['Two-digit place of service is required'],submission_issues:submissionIssues,submission_defaults:submissionDefaults,tracking:{}};
    else if(route.startsWith('/api/')||route.startsWith('/auth/'))data=fixture(route,signed,'insured',null,{});
    else if(/^\/$|\.(css|js|png|svg|webp|woff2?|ico)$/.test(route))return request.continue();
    else return request.abort();
    return request.respond({status:200,contentType:'application/json',body:JSON.stringify(data)});
   })().catch(async error=>{errors.push(error.message);if(!request.isInterceptResolutionHandled())await request.abort().catch(()=>{});}));
   const section=delegated&&viewport.isMobile?'charges':'visit';
-  await page.goto(origin+'/#/patients/'+patient.id+'/encounter/'+signed.id+'/'+section);
+  const start=canceledSource==='worklist'?'/claims':canceledSource==='history'?'/claims/'+original.id:
+   '/patients/'+patient.id+'/encounter/'+signed.id+'/'+section;
+  await page.goto(origin+'/#'+start);
   const trigger='[data-encounter-step-number="1"] [data-signed-claim-summary] [data-open-signed-claim-details]';
   const dialog='dialog[data-signed-claim-details][open]',overview=dialog+' [data-signed-claim-overview]';
   const send=overview+' [data-signed-claim-send]',preview=overview+' [data-encounter-claim-form]';
   if(canceled){
-   const next='[data-encounter-next]';
-   await page.waitForFunction(selector=>document.querySelector(selector)?.textContent==='Resubmit claim',{},next);
-   await page.waitForSelector('[data-visit-claim-resend][data-encounter-next-source]',{visible:true});
+   let action;
+   if(canceledSource==='encounter'){
+    const next='[data-encounter-next]';
+    await page.waitForFunction(selector=>document.querySelector(selector)?.textContent==='Resubmit claim',{},next);
+    await page.waitForSelector('[data-visit-claim-resend][data-encounter-next-source]',{visible:true});
+    // A charge deep link can start below the toolbar on mobile.
+    action=viewport.isMobile&&delegated?'[data-visit-claim-resend]':next;
+   }else{
+    const pane=canceledSource==='worklist'?'[data-claim-worklist]':'#claims-detail';
+    action=pane+' [data-claim-open="'+original.id+'"][data-claim-intent="resubmit"]';
+    await page.waitForSelector(action,{visible:true});
+    assert.equal(await page.$eval(action,button=>button.textContent),'Resubmit claim');
+    assert.equal(await page.$(pane+' [data-claim-open="'+older.id+'"]'),null);
+    if(canceledSource==='history'){
+     assert.match(await page.$eval(pane,node=>node.innerText),/Canceled before sending/);
+     assert.doesNotMatch(await page.$eval(pane,node=>node.innerText),/Now: Finish the claim/);
+    }
+   }
    assert.deepEqual(writes,[],'loading a canceled claim does not prepare or send');
-   // A charge deep link can start below the toolbar on mobile. Its inline action is visible there.
-   await page.locator(viewport.isMobile&&delegated?'[data-visit-claim-resend]':next).click();
+   await page.locator(action).click();
    await page.waitForSelector(dialog+'[data-signed-claim-details="'+claim.id+'"]',{visible:true});
    assert.deepEqual(writes.map(write=>write.route),[prepareEndpoint],'resubmit creates only the exact replacement draft');
    const review=overview+(delegated?' [data-signed-claim-native-review]':' [data-signed-claim-send]');
@@ -378,10 +431,37 @@ async function checkReadyClaim(browser,viewport,delegated=false,canceled=false){
    await page.waitForSelector(dialog,{hidden:true});
    assert.deepEqual(writes.map(write=>write.route),delegated&&viewport.isMobile?[prepareEndpoint,claimEndpoint+'/actions']:[prepareEndpoint]);
    assert.deepEqual(errors,[]);
-   console.log(viewport.width+'px PASS canceled claim creates an exact new draft, with separate '+(delegated?'delegated':'direct')+' consent and no delivery on close');
+   console.log(viewport.width+'px PASS canceled claim from '+canceledSource+' creates an exact new draft, with separate '+(delegated?'delegated':'direct')+' consent and no delivery on close');
    return;
   }
   await page.locator(trigger).click();
+  if(blocked){
+   const edit=overview+' [data-signed-claim-edit-ready]';
+   const place=dialog+' [data-signed-claim-fix="place_of_service"]';
+   if(blocked==='connection'){
+    await page.waitForSelector(dialog+' [data-check="claimmd-connection"]',{visible:true});
+    assert.equal(await page.$(send),null);
+    assert.equal(await page.$(edit),null);
+    assert.deepEqual(writes,[]);
+   }else{
+    await page.waitForSelector(edit,{visible:true});
+    assert.equal(await page.$(send),null);
+    assert.equal(await page.$(place),null);
+    assert.deepEqual(writes,[]);
+    await page.locator(edit).click();
+    await page.waitForSelector(place,{visible:true});
+    assert.equal(await page.$eval(place+' input',input=>input===document.activeElement),true);
+    await page.locator(place+' input').fill('11');
+    await page.waitForSelector(send,{visible:true});
+    assert.deepEqual(writes.map(({route,method})=>[method,route]),[['POST',claimEndpoint+'/actions'],['PUT',claimEndpoint]]);
+    assert.equal(writes[1].body.content.place_of_service,'11');
+   }
+   await page.keyboard.press('Escape');
+   await page.waitForSelector(dialog,{hidden:true});
+   assert.deepEqual(errors,[]);
+   console.log(viewport.width+'px PASS '+(blocked==='field'?'reopens the exact ready claim, focuses and autosaves the missing field':'no send shown without a Claim.MD connection'));
+   return;
+  }
   if(delegated){
    const review=overview+' [data-signed-claim-native-review]',form=dialog+' #claimmd-submit-form';
    const permissions=['signature_on_file','benefits_assigned','release_authorized','routine_professional_reviewed'];
@@ -542,8 +622,13 @@ async function checkReadyClaim(browser,viewport,delegated=false,canceled=false){
   }
   console.log(viewport.width+'px '+theme+' PASS one-sheet claim review, same-sheet attestation, nested preview'+(viewport.isMobile?', autosave, conflict recovery and focused inline fix':', changed-address guard and explicit handoff'));
  }catch(error){
-  console.error(viewport.width,'ready',errors,writes,await page.evaluate(()=>({
-   notice:document.getElementById('notice')?.textContent,dialogs:[...document.querySelectorAll('dialog[open]')].map(node=>node.innerText.slice(0,900))
+  console.error(viewport.width,canceled?canceledSource:'ready',errors,writes,await page.evaluate(()=>({
+   route:location.hash,heading:document.getElementById('page-title')?.textContent,
+   worklist:document.getElementById('claims-tool')?.textContent.trim().slice(0,650),
+   hidden:document.getElementById('claims-tool')?.closest('[hidden]')?.id,
+   notice:document.getElementById('notice')?.textContent,dialogs:[...document.querySelectorAll('dialog[open]')].map(node=>node.innerText.slice(0,900)),
+   claimState:typeof encounterRevenueState==='undefined'?null:encounterRevenueState.data?.summary?.state,
+   claimSource:[...document.querySelectorAll('[data-visit-claim-resend]')].map(button=>[button.dataset.visitClaimResend,button.dataset.canceledClaimVersion])
   })));
   throw error;
  }finally{await context.close();}
@@ -553,15 +638,29 @@ async function checkReadyClaim(browser,viewport,delegated=false,canceled=false){
  const browser=await puppeteer.launch({...target,headless:true,pipe:true,args:['--disable-background-networking','--disable-component-update','--no-first-run']});
  try{
   for(const viewport of [{width:1280,height:900},{width:390,height:844,isMobile:true,hasTouch:true}]){
+   if(process.env.BLOCKED_CLAIM_ONLY==='1'){
+    await checkReadyClaim(browser,viewport,false,false,'encounter','field');
+    await checkReadyClaim(browser,viewport,false,false,'encounter','connection');
+    continue;
+   }
+   if(process.env.CANCELED_CLAIM_ONLY==='1'){
+    await checkReadyClaim(browser,viewport,true,true,'worklist');
+    await checkReadyClaim(browser,viewport,false,true,'history');
+    continue;
+   }
    await checkClaimResponse(browser,viewport,false,true);
    if(process.env.HELD_CLAIM_ONLY==='1')continue;
    for(const variant of ['linked-clinician','several-groups','unmatched-clinician'])await check(browser,viewport,variant);
    await checkClaimResponse(browser,viewport);
    await checkClaimResponse(browser,viewport,true);
    await checkReadyClaim(browser,viewport);
+   await checkReadyClaim(browser,viewport,false,false,'encounter','field');
+   await checkReadyClaim(browser,viewport,false,false,'encounter','connection');
    await checkReadyClaim(browser,viewport,true);
    await checkReadyClaim(browser,viewport,false,true);
    await checkReadyClaim(browser,viewport,true,true);
+   await checkReadyClaim(browser,viewport,true,true,'worklist');
+   await checkReadyClaim(browser,viewport,false,true,'history');
   }
  }finally{await browser.close();}
 })().catch(e=>{console.error(e);process.exitCode=1;});

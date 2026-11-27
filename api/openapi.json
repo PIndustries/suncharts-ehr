@@ -41548,7 +41548,7 @@
     "/api/v1/patients/{p}/billing/accounts/{id}/claims/prepare": {
       "post": {
         "summary": "Prepare a draft insurance claim from the posted visit or its locally canceled original; never sends a claim",
-        "description": "Provide again=true together with the canceled claim ID and version to copy that exact original into a new draft. This requires a signed encounter, posted charges for the same coverage, and no prior delivery or payer activity. A delegated session needs the source ID and version when copying.",
+        "description": "Provide again=true together with the canceled claim ID and version to copy that exact original into a new draft. This requires a signed encounter, posted charges for the same coverage, and no prior delivery or payer activity. A delegated session needs the source ID and version when copying. Provide the current account version to reject changes to the posted charges since review.",
         "operationId": "prepareVisitClaim",
         "requestBody": {
           "required": false,
@@ -41566,6 +41566,10 @@
                     "format": "uuid"
                   },
                   "canceled_claim_version": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "canceled_account_version": {
                     "type": "integer",
                     "minimum": 1
                   }
@@ -47292,6 +47296,10 @@
             },
             "maxItems": 100
           },
+          "can_return_to_draft": {
+            "type": "boolean",
+            "description": "Whether staff can reopen this ready original claim for editing. The versioned action rechecks access and any existing submission or delivery evidence."
+          },
           "can_confirm_self_policyholder": {
             "type": "boolean",
             "description": "Whether this unsent draft has matching patient and policy holder details and a complete patient address on file for staff confirmation. Writes also recheck version, access and artifact evidence."
@@ -47317,6 +47325,12 @@
           "tracking": {
             "$ref": "#/components/schemas/ClaimTracking"
           },
+          "canceled_claim_recovery": {
+            "oneOf": [
+              {"$ref": "#/components/schemas/CanceledClaimRecovery"},
+              {"type": "null"}
+            ]
+          },
           "submission_defaults": {
             "type": "object",
             "additionalProperties": true,
@@ -47327,6 +47341,7 @@
           "claim",
           "preflight_issues",
           "can_confirm_self_policyholder",
+          "can_return_to_draft",
           "transport"
         ]
       },
@@ -47338,6 +47353,7 @@
             "enum": [
               "confirm_self_policyholder",
               "ready",
+              "return_to_draft",
               "void_draft",
               "record_submission",
               "record_acceptance",
@@ -47347,7 +47363,7 @@
               "reverse",
               "withdraw_crossover"
             ],
-            "description": "confirm_self_policyholder corrects the claim-only relationship and policy holder address on a matching unsent original primary draft, without changing the chart, insurance, posted charges, or ledger. withdraw_crossover only withdraws submitted/accepted/rejected crossover tracking without an active ERA head or non-void descendant; history remains. Normal outbound/manual submission events are refused for tracking records."
+            "description": "confirm_self_policyholder corrects the claim-only relationship and policy holder address on a matching unsent original primary draft, without changing the chart, insurance, posted charges, or ledger. return_to_draft reopens an unlinked ready original with no generated submission or recorded delivery. withdraw_crossover only withdraws submitted/accepted/rejected crossover tracking without an active ERA head or non-void descendant; history remains. Normal outbound/manual submission events are refused for tracking records."
           },
           "reason": {
             "type": "string",
@@ -47918,6 +47934,19 @@
         },
         "required": ["outcome", "claim_id", "submission_id", "submission_version", "claim_version", "partner_id", "partner_version", "job_id", "delivery_status", "route_key"]
       },
+      "CanceledClaimRecovery": {
+        "type": "object",
+        "description": "The newest locally voided original and the current posted account that can be used to prepare one new draft for review.",
+        "additionalProperties": false,
+        "properties": {
+          "claim_id": {"type": "string", "format": "uuid"},
+          "version": {"type": "integer", "minimum": 1},
+          "account_id": {"type": "string", "format": "uuid"},
+          "account_version": {"type": "integer", "minimum": 1},
+          "encounter_id": {"type": "string", "format": "uuid"}
+        },
+        "required": ["claim_id", "version", "account_id", "account_version", "encounter_id"]
+      },
       "ClaimWorklist": {
         "type": "object",
         "description": "Tenant-scoped claim summary page with patient_name, payer_name, coverage_priority, total_cents, lifecycle and boolean crossover_tracking_only; at most 100 items. Each item also carries visit_id, encounter_number and service_date (the date of service on the claim's account). Tracking-only submitted rows represent a received secondary response, not an EHR transmission.",
@@ -47952,6 +47981,9 @@
                   },
                   "claim_handoff": {
                     "$ref": "#/components/schemas/ClaimDeliveryEvidence"
+                  },
+                  "canceled_claim_recovery": {
+                    "$ref": "#/components/schemas/CanceledClaimRecovery"
                   },
                   "remittance_posted": {
                     "type": "boolean",

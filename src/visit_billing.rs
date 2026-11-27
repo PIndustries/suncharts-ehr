@@ -350,7 +350,7 @@ pub(crate) async fn patients_owe(
         &balances(tx, tenant, patients, None, test).await?,
     ))
 }
-/// The state name of a visit's billing, from its balance row. `draft_needs_details` says
+/// The state name of a visit's billing, from its balance row. `claim_needs_details` says
 /// whether the open draft claim fails the readiness checks.
 /// What an insurance claim cannot go without, read from the draft charges: a diagnosis on the
 /// encounter, and one linked to every charge line. A self-pay encounter needs neither, and an
@@ -376,10 +376,10 @@ pub(crate) fn before_posting(insured: bool, lines: &Value, on_encounter: usize) 
 }
 pub(crate) fn state_of(
     row: &Value,
-    draft_needs_details: bool,
+    claim_needs_details: bool,
     claims_visible: bool,
 ) -> (&'static str, &'static str) {
-    state_of_with_claimmd(row, draft_needs_details, claims_visible, &Value::Null)
+    state_of_with_claimmd(row, claim_needs_details, claims_visible, &Value::Null)
 }
 /// The same, with the claim's Claim.MD position. A correction the clearinghouse holds waits on
 /// the practice, not the other way round, so the card stops saying "nothing to do until they
@@ -387,7 +387,7 @@ pub(crate) fn state_of(
 /// been given the claim yet and staff may have to release it in Claim.MD themselves.
 pub(crate) fn state_of_with_claimmd(
     row: &Value,
-    draft_needs_details: bool,
+    claim_needs_details: bool,
     claims_visible: bool,
     claimmd: &Value,
 ) -> (&'static str, &'static str) {
@@ -425,7 +425,7 @@ pub(crate) fn state_of_with_claimmd(
         None if row["electronic"] != true => ("insurance_outside", "staff"),
         None if row["any_void"] == true => ("claim_cancelled", "staff"),
         None => ("prepare_claim", "staff"),
-        Some("draft") if draft_needs_details => ("fix_claim", "staff"),
+        Some("draft" | "ready") if claim_needs_details => ("fix_claim", "staff"),
         Some("draft" | "ready") => ("send_claim", "staff"),
         Some("submitted" | "accepted") if row["response_to_review"].is_string() => {
             ("post_response", "staff")
@@ -444,16 +444,16 @@ pub(crate) fn state_of_with_claimmd(
         _ => settled(),
     }
 }
-/// State names for a page of balance rows: one extra query for the open drafts.
+/// State names for a page of balance rows: one extra query for open unsent claims.
 pub(crate) async fn states(
     tx: &mut Transaction<'_, Postgres>,
     a: &Actor,
     rows: &[Value],
     claims_visible: bool,
 ) -> Result<std::collections::HashMap<Uuid, &'static str>> {
-    let drafts: Vec<Uuid> = rows
+    let open_claims: Vec<Uuid> = rows
         .iter()
-        .filter(|row| row["claim_status"] == "draft")
+        .filter(|row| matches!(row["claim_status"].as_str(), Some("draft" | "ready")))
         .filter_map(|row| {
             row["claim_id"]
                 .as_str()
@@ -461,13 +461,13 @@ pub(crate) async fn states(
         })
         .collect();
     let mut needs = std::collections::HashSet::new();
-    if claims_visible && !drafts.is_empty() {
+    if claims_visible && !open_claims.is_empty() {
         #[cfg(test)]
         query_log::count(a.tenant_id);
         let claims: Vec<claims::Claim> =
             sqlx::query_as("SELECT * FROM ehr_claims WHERE tenant_id=$1 AND id=ANY($2)")
                 .bind(a.tenant_id)
-                .bind(&drafts)
+                .bind(&open_claims)
                 .fetch_all(&mut **tx)
                 .await?;
         for claim in claims {
@@ -480,11 +480,11 @@ pub(crate) async fn states(
         .iter()
         .filter_map(|row| {
             let id = Uuid::parse_str(row["id"].as_str()?).ok()?;
-            let draft = row["claim_id"]
+            let needs_details = row["claim_id"]
                 .as_str()
                 .and_then(|v| Uuid::parse_str(v).ok())
                 .is_some_and(|claim| needs.contains(&claim));
-            Some((id, state_of(row, draft, claims_visible).0))
+            Some((id, state_of(row, needs_details, claims_visible).0))
         })
         .collect())
 }
@@ -833,9 +833,9 @@ pub(crate) async fn summarize(
         None => Value::Null,
     };
 
-    // The current draft's readiness, with the same checks the manual flow runs.
+    // Check unsent claims against the same frozen values the manual flow reviews.
     let mut issues: Vec<Value> = vec![];
-    if let Some(c) = open.filter(|c| c.status() == "draft") {
+    if let Some(c) = open.filter(|c| matches!(c.status(), "draft" | "ready")) {
         let id = Uuid::parse_str(c.row["id"].as_str().unwrap_or(""))
             .map_err(|_| Error::Invalid("invalid claim"))?;
         let claim = claims::claim_row(tx, a, id).await?;
@@ -1446,12 +1446,73 @@ async fn delegated(tx: &mut Transaction<'_, Postgres>, a: &Actor) -> Result<bool
 struct CanceledClaimSource {
     id: Uuid,
     version: i64,
+    account_version: Option<i64>,
 }
 
 const CANCELED_CHANGED: &str =
     "The canceled claim changed. Reopen this encounter before preparing another claim.";
 const CANCELED_DELIVERY: &str =
     "Prior delivery or payer activity needs review before a new claim can be prepared.";
+
+#[derive(serde::Serialize)]
+pub(crate) struct CanceledClaimRecovery {
+    claim_id: Uuid,
+    version: i64,
+    account_id: Uuid,
+    account_version: i64,
+    encounter_id: Uuid,
+}
+
+/// Only the newest void on the current posted account can offer recovery in the
+/// worklist. The draft creation path repeats the checks while holding the tenant lock.
+pub(crate) async fn canceled_claim_recoveries(
+    tx: &mut Transaction<'_, Postgres>,
+    a: &Actor,
+    ids: &[Uuid],
+) -> Result<std::collections::HashMap<Uuid, CanceledClaimRecovery>> {
+    let mut recovery = std::collections::HashMap::new();
+    if ids.is_empty()
+        || a.scheduling().is_err()
+        || !crate::access_policies::allows(tx, a, "billing", "create").await?
+        || !crate::access_policies::allows(tx, a, "claims", "create").await?
+    {
+        return Ok(recovery);
+    }
+    let candidates: Vec<(Uuid, Uuid, Uuid, Uuid)> = sqlx::query_as(
+        "SELECT c.id,b.id,b.patient_id,b.visit_id
+         FROM ehr_claims c
+         JOIN billing_accounts b ON b.tenant_id=c.tenant_id AND b.id=c.account_id AND b.patient_id=c.patient_id
+         WHERE c.tenant_id=$1 AND c.id=ANY($2) AND c.status='void'
+           AND b.status='posted' AND b.visit_id IS NOT NULL AND b.coverage_snapshot IS NOT NULL
+           AND NOT EXISTS (SELECT 1 FROM ehr_claims current
+               WHERE current.tenant_id=c.tenant_id AND current.account_id=c.account_id
+                 AND (current.status<>'void' OR (current.created_at,current.id)>(c.created_at,c.id)))",
+    )
+    .bind(a.tenant_id)
+    .bind(ids)
+    .fetch_all(&mut **tx)
+    .await?;
+    for (claim_id, account_id, patient_id, encounter_id) in candidates {
+        let account = claims::account(tx, a, account_id, Some(patient_id)).await?;
+        let claim = claims::claim_row(tx, a, claim_id).await?;
+        if canceled_claim_block_reason(tx, a, &account, &claim)
+            .await?
+            .is_none()
+        {
+            recovery.insert(
+                claim_id,
+                CanceledClaimRecovery {
+                    claim_id,
+                    version: claim.version,
+                    account_id,
+                    account_version: account.version,
+                    encounter_id,
+                },
+            );
+        }
+    }
+    Ok(recovery)
+}
 
 async fn canceled_claim_block_reason(
     tx: &mut Transaction<'_, Postgres>,
@@ -1584,6 +1645,14 @@ async fn prepare_claim_with_source(
     if account.status != "posted" {
         return skipped("charges_not_posted");
     }
+    if canceled
+        .and_then(|source| source.account_version)
+        .is_some_and(|version| version != account.version)
+    {
+        return Err(Error::Conflict(
+            "The posted charges changed. Reopen this encounter before preparing a new claim.",
+        ));
+    }
     let Some(snapshot) = account.coverage_snapshot.as_ref() else {
         return skipped("self_pay");
     };
@@ -1654,12 +1723,10 @@ async fn prepare_claim_with_source(
                     "The canceled claim cannot be copied. Review the saved claim history.",
                 )
             })?;
-        // Use the currently posted procedures and diagnoses. Keep a separately saved Box 23
-        // value from the canceled claim for these same charges and coverage.
-        if !previous_content
-            .encounter
-            .prior_authorization_number
-            .is_empty()
+        // Keep a claim-only authorization for unchanged charges. When the posted
+        // lines changed, use the current encounter's recorded authorization.
+        if content.encounter.prior_authorization_number.is_empty()
+            && previous.snapshot["account"]["content"]["lines"] == b.content["lines"]
         {
             content.encounter.prior_authorization_number = previous_content
                 .encounter
@@ -1873,6 +1940,7 @@ struct Prepare {
     again: bool,
     canceled_claim_id: Option<Uuid>,
     canceled_claim_version: Option<i64>,
+    canceled_account_version: Option<i64>,
 }
 async fn prepare(
     a: Actor,
@@ -1881,11 +1949,21 @@ async fn prepare(
     body: Option<Json<Prepare>>,
 ) -> Result<Json<Value>> {
     let request = body.map(|Json(v)| v).unwrap_or_default();
-    let canceled = match (request.canceled_claim_id, request.canceled_claim_version) {
-        (Some(id), Some(version)) if request.again && version > 0 => {
-            Some(CanceledClaimSource { id, version })
+    let canceled = match (
+        request.canceled_claim_id,
+        request.canceled_claim_version,
+        request.canceled_account_version,
+    ) {
+        (Some(id), Some(version), account_version)
+            if request.again && version > 0 && account_version.is_none_or(|v| v > 0) =>
+        {
+            Some(CanceledClaimSource {
+                id,
+                version,
+                account_version,
+            })
         }
-        (None, None) => None,
+        (None, None, None) => None,
         _ => {
             return Err(Error::Invalid(
                 "Preparing a new draft requires the canceled claim and its current version",
@@ -2021,6 +2099,13 @@ mod db_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_released_unsent_claim_with_blocking_issues_still_needs_details() {
+        let row = json!({"posted":true,"insured":true,"electronic":true,"claim_status":"ready"});
+        assert_eq!(state_of(&row, true, true), ("fix_claim", "staff"));
+        assert_eq!(state_of(&row, false, true), ("send_claim", "staff"));
+    }
 
     #[test]
     fn claim_provider_preserves_the_assigned_clinician() {

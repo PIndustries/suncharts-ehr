@@ -844,6 +844,21 @@ async fn claim_handoff_http_signs_once_and_queues_one_insured_submission_on_repl
     let queued = read_list().await;
     let row = &queued["items"][0];
     assert_eq!(row["status"], "ready");
+    assert_eq!(
+        f.detail(&row["id"]).await["can_return_to_draft"],
+        false,
+        "the queued claim already has an artifact"
+    );
+    let (reopen_status, _) = f
+        .call(
+            &f.owner,
+            "POST",
+            &format!("/api/v1/billing/claims/{}/actions", id(&row["id"])),
+            json!({"action":"return_to_draft","reason":"Synthetic attempt to edit queued claim"}),
+            Some(version(row)),
+        )
+        .await;
+    assert_eq!(reopen_status, StatusCode::CONFLICT);
     assert_eq!(row["claim_handoff"]["outcome"], "queued");
     assert_eq!(
         row["claim_handoff"]["submission_id"],
@@ -3012,6 +3027,113 @@ fn synthetic_lines(code: &str, cents: i64) -> Value {
 }
 
 #[tokio::test]
+async fn charge_correction_void_exposes_the_current_account_for_one_new_review() {
+    let f = setup().await;
+    let (patient, _, visit) = f.visit(true).await;
+    let (_, policy) = f.coverage(patient, "primary", "SYN-P", None).await;
+    let posted = f
+        .post(
+            patient,
+            &f.charges(patient, visit, Some(id(&policy)), 85000).await,
+        )
+        .await;
+    let account = id(&posted);
+    let (_, initial) = f.prepare(&f.owner, patient, account, json!({})).await;
+    let original = f.claim(&initial["claim_id"]).await;
+    let original_id = id(&original);
+    let mut old_claim = original["content"].clone();
+    old_claim["encounter"]["prior_authorization_number"] = json!("SYN-OLD-PROCEDURES");
+    f.ok(
+        "PUT",
+        &format!("/api/v1/billing/claims/{original_id}"),
+        json!({"content":old_claim,"reason":"Synthetic original authorization"}),
+        Some(version(&original)),
+    )
+    .await;
+
+    // Model a committed correction that voided its old draft before a new one was prepared.
+    let mut corrected = posted["content"].clone();
+    corrected["lines"] = synthetic_lines("99214", 92000);
+    let mut tx = f.db.begin().await.unwrap();
+    sqlx::query("SET LOCAL suncharts.billing_correction = 'on'")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE billing_accounts SET content=$3,total_cents=$4,version=version+1 WHERE tenant_id=$1 AND id=$2")
+        .bind(f.owner.tenant_id)
+        .bind(account)
+        .bind(&corrected)
+        .bind(92000_i64)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    assert_eq!(
+        crate::visit_billing::void_draft_claims_after_correction(
+            &mut tx,
+            &f.owner,
+            account,
+            "Charge correction",
+        )
+        .await
+        .unwrap(),
+        1
+    );
+    tx.commit().await.unwrap();
+
+    let canceled = f.claim(&original["id"]).await;
+    assert_eq!(canceled["status"], "void");
+    let recovery = json!({
+        "claim_id":original_id,"version":version(&canceled),"account_id":account,
+        "account_version":version(&posted) + 1,"encounter_id":visit
+    });
+    let list = f
+        .ok("GET", "/api/v1/billing/claims", json!(null), None)
+        .await;
+    assert_eq!(list["items"][0]["canceled_claim_recovery"], recovery);
+    assert_eq!(list["items"][0]["total_cents"], 85000);
+    assert_eq!(
+        f.detail(&canceled["id"]).await["canceled_claim_recovery"],
+        recovery
+    );
+    assert_eq!(
+        f.summary(&f.owner, patient, visit).await["charges_cents"],
+        92000
+    );
+    let mut request = json!({"again":true,"canceled_claim_id":original_id,"canceled_claim_version":version(&canceled),"canceled_account_version":version(&posted)});
+    let (status, _) = f.prepare(&f.owner, patient, account, request.clone()).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    request["canceled_account_version"] = recovery["account_version"].clone();
+    let (status, draft) = f.prepare(&f.owner, patient, account, request.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{draft}");
+    assert_eq!(draft["outcome"], "prepared");
+    let (status, retried) = f.prepare(&f.owner, patient, account, request).await;
+    assert_eq!(status, StatusCode::OK, "{retried}");
+    assert_eq!(retried["outcome"], "exists");
+    assert_eq!(draft["claim_id"], retried["claim_id"]);
+    let draft = f.claim(&draft["claim_id"]).await;
+    assert_eq!(draft["status"], "draft");
+    assert_eq!(
+        draft["snapshot"]["account"]["content"]["lines"][0]["code"],
+        "99214"
+    );
+    assert_eq!(draft["snapshot"]["account"]["total_cents"], 92000);
+    assert!(
+        draft["content"]["encounter"]["prior_authorization_number"]
+            .as_str()
+            .unwrap_or_default()
+            .is_empty(),
+        "a claim-only authorization was recorded for different procedures"
+    );
+    assert_eq!(f.claim(&original["id"]).await, canceled);
+    assert!(f.detail(&canceled["id"]).await["canceled_claim_recovery"].is_null());
+    assert_eq!(
+        f.count("SELECT count(*) FROM edi_delivery_jobs WHERE tenant_id=$1")
+            .await,
+        0
+    );
+}
+
+#[tokio::test]
 async fn posted_charges_can_be_corrected_and_the_trail_is_kept() {
     let f = setup().await;
     let (p, _, visit) = f.visit(true).await;
@@ -3474,5 +3596,147 @@ async fn dead_ends_statement_delivery_records_only_confirmed_portal_messages() {
         .await
         .0,
         StatusCode::NOT_FOUND
+    );
+}
+
+#[tokio::test]
+async fn only_the_current_unsent_ready_original_can_return_to_draft() {
+    let f = setup().await;
+    f.directory(true).await;
+    let billing_name = "Synthetic Development Clinic — DO NOT TRANSMIT";
+    sqlx::query("UPDATE practice_facilities SET name=$2 WHERE tenant_id=$1")
+        .bind(f.owner.tenant_id)
+        .bind(billing_name)
+        .execute(&f.db)
+        .await
+        .unwrap();
+    let (patient, _, visit) = f.visit(true).await;
+    let (payer, policy) = f.coverage(patient, "primary", "SYN-P", None).await;
+    let payer_name = "Synthetic Local RCM Test — DO NOT TRANSMIT";
+    let mut payer_content = payer["content"].clone();
+    payer_content["name"] = json!(payer_name);
+    f.ok(
+        "PUT",
+        &format!("/api/v1/billing/payers/{}", id(&payer)),
+        json!({"content":payer_content,"reason":"Synthetic dash formatting"}),
+        Some(version(&payer)),
+    )
+    .await;
+    let account = f
+        .post(
+            patient,
+            &f.charges(patient, visit, Some(id(&policy)), 10000).await,
+        )
+        .await;
+    let (status, prepared) = f.prepare(&f.owner, patient, id(&account), json!({})).await;
+    assert_eq!(status, StatusCode::OK, "{prepared}");
+    let claim_id = &prepared["claim_id"];
+    let initial = f.detail(claim_id).await;
+    assert_eq!(initial["preflight_issues"], json!([]));
+    let claim = &initial["claim"];
+    assert_eq!(claim["content"]["billing_provider_name"], billing_name);
+    assert_eq!(
+        claim["snapshot"]["account"]["coverage_snapshot"]["payer"]["content"]["name"],
+        payer_name
+    );
+
+    let path = format!("/api/v1/billing/claims/{}", id(claim_id));
+    let actions = format!("{path}/actions");
+    let release = json!({"action":"ready","reason":"Reviewed synthetic draft"});
+    let ready = f
+        .ok("POST", &actions, release.clone(), Some(version(claim)))
+        .await;
+    sqlx::query(
+        "UPDATE practice_facilities SET name='Synthetic Renamed Clinic' WHERE tenant_id=$1",
+    )
+    .bind(f.owner.tenant_id)
+    .execute(&f.db)
+    .await
+    .unwrap();
+    let detail = f.detail(claim_id).await;
+    assert_eq!(detail["can_return_to_draft"], true);
+    assert_eq!(detail["preflight_issues"], json!([]));
+    assert_eq!(
+        detail["claim"]["content"]["billing_provider_name"],
+        billing_name
+    );
+
+    let reopen = json!({"action":"return_to_draft","reason":"Edit claim details"});
+    assert_eq!(
+        f.call(
+            &f.owner,
+            "POST",
+            &actions,
+            reopen.clone(),
+            Some(version(claim))
+        )
+        .await
+        .0,
+        StatusCode::CONFLICT
+    );
+    let reopened = f
+        .ok("POST", &actions, reopen.clone(), Some(version(&ready)))
+        .await;
+    assert_eq!(reopened["status"], "draft");
+    assert_eq!(version(&reopened), version(&ready) + 1);
+    assert_eq!(reopened["snapshot"], ready["snapshot"]);
+    assert_eq!(reopened["content"], ready["content"]);
+    let (actor, evidence): (Uuid, Value) = sqlx::query_as(
+        "SELECT actor_id,evidence FROM claim_revisions WHERE tenant_id=$1 AND claim_id=$2 AND version=$3",
+    )
+    .bind(f.owner.tenant_id)
+    .bind(id(claim_id))
+    .bind(version(&reopened))
+    .fetch_one(&f.db)
+    .await
+    .unwrap();
+    assert_eq!(actor, f.owner.sub);
+    assert_eq!(
+        evidence,
+        json!({"action":"return_to_draft","network_transmitted":false})
+    );
+
+    let mut corrected_content = reopened["content"].clone();
+    corrected_content["encounter"]["prior_authorization_number"] = json!("SYN-CORRECTED");
+    let corrected = f
+        .ok(
+            "PUT",
+            &path,
+            json!({"content":corrected_content,"reason":"Correct synthetic claim"}),
+            Some(version(&reopened)),
+        )
+        .await;
+    let ready = f
+        .ok("POST", &actions, release, Some(version(&corrected)))
+        .await;
+    let sent = f.ok(
+        "POST",
+        &actions,
+        json!({"action":"record_submission","reason":"Record synthetic external send","event_date":Utc::now().date_naive(),"reference":"SYN-RECEIPT"}),
+        Some(version(&ready)),
+    ).await;
+    // Simulate older records with an incorrect current status and preserved sending evidence.
+    sqlx::query("UPDATE ehr_claims SET status='ready' WHERE tenant_id=$1 AND id=$2")
+        .bind(f.owner.tenant_id)
+        .bind(id(claim_id))
+        .execute(&f.db)
+        .await
+        .unwrap();
+    assert_eq!(f.detail(claim_id).await["can_return_to_draft"], false);
+    assert_eq!(
+        f.call(&f.owner, "POST", &actions, reopen, Some(version(&sent)))
+            .await
+            .0,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        f.count("SELECT count(*) FROM edi_submissions WHERE tenant_id=$1")
+            .await,
+        0
+    );
+    assert_eq!(
+        f.count("SELECT count(*) FROM edi_delivery_jobs WHERE tenant_id=$1")
+            .await,
+        0
     );
 }
