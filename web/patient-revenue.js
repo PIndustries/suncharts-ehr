@@ -1589,6 +1589,10 @@ function renderEncounterInvoices(){
 // form without recording or charging anything.
 const collectMethods=[['cash','Cash'],['check','Check'],['reader','Card reader'],['saved','Card on file'],['link','Payment link']];
 let collectDialog=null;
+// Keep pending writes and uncertain cash retries with the appointment if a chart is replaced.
+const encounterTenderRequests=new Map();
+function encounterTenderKey(scope){return JSON.stringify([scope.tenant,scope.patient,scope.appointment]);}
+function encounterTenderRequest(scope){return scope&&encounterTenderRequests.get(encounterTenderKey(scope));}
 // One payment can be taken in parts — card, then cash, then a check — against one amount to
 // collect. Each method starts at what is left; the window lists what was taken.
 let collectSession={target:null,owedAtOpen:null,taken:[],group:null,encounters:[],current:null};
@@ -1842,7 +1846,10 @@ function encounterCollectProblem(state){
  if(!currentEncounterCollect(scope))return 'Open the payment window for the current encounter.';
  if(!scope.appointment)return 'Link an appointment to this encounter to take a payment.';
  if(!scope.canCollect)return scope.status;
- if(collectSession.recording)return '';
+ const request=encounterTenderRequest(scope);
+ if(request?.running||request?.refreshing)return 'Checking the payment and current balance…';
+ if(request?.retryCash)return 'The last recording is unconfirmed. Retry that same payment before starting another.';
+ if(request)return 'Refresh the encounter balance before taking another payment.';
  if(typeof navigator!=='undefined'&&navigator.onLine===false)return 'You’re offline. Connect to take a payment.';
  if(encounterRevenueState.data?.stale||encounterRevenueState.data?.error)return 'The current balance could not be confirmed.';
  if(!state?.availability)return 'Checking payment options…';
@@ -1875,26 +1882,117 @@ function paintEncounterCollectModal(state){
   button.disabled=!encounterCollectTenderAvailable(key,state);
   button.hidden=!['cash','check'].includes(key)&&state.availability?.available===false&&!state.error;
  }
+ const request=encounterTenderRequest(scope),busy=request?.running||request?.refreshing;
+ for(const button of dialog.querySelectorAll('[data-sheet-close]'))button.disabled=!!busy;
+ const followup=dialog.querySelector('[data-collect-reconcile]');
+ if(followup){
+  const action=request?.retryCash?'retry':'refresh';
+  const text=request?.retryCash?'Retry same recording':'Refresh balance';
+  const old=followup.querySelector('button');
+  if(request&&!busy&&(!old||old.dataset.encounterTenderReconcile!==action))
+   followup.innerHTML=`<button type="button" data-encounter-tender-reconcile="${action}">${text}</button>`;
+  else if((!request||busy)&&old)followup.replaceChildren();
+ }
  for(const control of dialog.querySelectorAll('[data-collect-encounter],[data-collect-all]')){
   control.disabled=!!collectSession.recording||!!problem||control.dataset.collectPaid==='true';
  }
  collectInitialMethod(state);
 }
+function paintActiveEncounterTender(request){
+ const scope=collectSession.encounter;
+ if(collectDialog&&currentEncounterCollect(scope)&&encounterTenderRequest(scope)===request)
+  paintEncounterCollectModal(hostedCopayStateFor(scope.appointment));
+}
+async function refreshEncounterTender(request,scope=collectSession.encounter){
+ if(!currentEncounterCollect(scope)||encounterTenderRequest(scope)!==request||request.running||request.refreshing||request.retryCash)return;
+ request.refreshing=true;
+ paintActiveEncounterTender(request);
+ try{
+  // A read already in progress can have started before the tender was recorded.
+  if(encounterRevenueState.pending)await encounterRevenueState.pending;
+  if(!currentEncounterCollect(scope))return;
+  await loadEncounterRevenueStatus(encounterChargeAccount(),true);
+  if(!currentEncounterCollect(scope))return;
+  const data=encounterRevenueState.data,summary=data?.summary;
+  if(data?.error||data?.stale||summary?.patient_id!==scope.patient||summary.visit?.id!==scope.visit||summary.visit?.appointment_id!==scope.appointment)return;
+  if(request.receipts.some(receipt=>receipt.appointment_id===scope.appointment&&!summary.receipts?.some(item=>item.id===receipt.id)))return;
+  const state=hostedCopayStateFor(scope.appointment);
+  if(request.cardRetry&&state!==request.cardState){
+   state.uncertain=true;state.retry=request.cardRetry.body;state.retryPanel=request.cardRetry.panel;
+  }
+  if(request.card&&state!==request.cardState)await loadHostedCopays(scope.appointment,true);
+  if(!currentEncounterCollect(scope))return;
+  encounterTenderRequests.delete(encounterTenderKey(scope));
+  if(collectSession!==request.session&&collectSession.encounter===scope){
+   const balance=summary.account?.status==='posted'?summary.patient?.owes_now_cents:summary.patient?.copay_due_cents;
+   const due=Number.isSafeInteger(balance)&&balance>0?balance:0;
+   collectSession.target=due;collectSession.owedAtOpen=due;
+   const encounter=collectSession.encounters.find(row=>row.appointment===scope.appointment);
+   if(encounter)encounter.owes=due;
+   if(due===0){
+    scope.canCollect=false;
+    scope.status=balance===0?(summary.account?.status==='posted'?'No patient amount due.':'No copay due.'):'The current balance could not be confirmed.';
+    collectDialog?.querySelector('.collect-methods')?.setAttribute('hidden','');
+    collectPanelTarget()?.replaceChildren();
+   }
+   collectEncountersPaint();
+  }
+ }finally{
+  request.refreshing=false;
+  if(collectDialog&&currentEncounterCollect(collectSession.encounter))
+   paintEncounterCollectModal(hostedCopayStateFor(collectSession.encounter.appointment));
+ }
+}
+async function executeEncounterTender(request,action){
+ if(request.running)return;
+ request.running=true;
+ paintActiveEncounterTender(request);
+ try{return await action(request);}
+ finally{
+  request.running=false;
+  if(request.cardState?.uncertain&&request.cardState.retry)
+   request.cardRetry={body:request.cardState.retry,panel:request.cardState.retryPanel};
+  if(request.retryCash)paintActiveEncounterTender(request);
+  else await refreshEncounterTender(request);
+ }
+}
 async function runEncounterCollectTender(form,key,action){
  if(!form.hasAttribute?.('data-encounter-collect'))return action();
  const dialog=collectDialog,session=collectSession,scope=session.encounter;
- if(session.recording)return;
- if(!dialog?.contains(form)||!currentEncounterCollect(scope)||scope.appointment!==form.dataset.appointment)
+ if(!dialog?.contains(form)||dialog.dataset.closing||!currentEncounterCollect(scope)||scope.appointment!==form.dataset.appointment)
   throw new Error('Open the payment window for the current encounter.');
+ if(encounterTenderRequest(scope)?.running)return;
  const state=hostedCopayStateFor(scope.appointment);
  if(!encounterCollectTenderAvailable(key,state))
   throw new Error(encounterCollectProblem(state)||'This payment method is unavailable.');
- session.recording=true;
- paintEncounterCollectModal(state);
- try{return await action();}
- finally{
-  session.recording=false;
-  if(collectDialog===dialog)paintEncounterCollectModal(state);
+ const card=!['cash','check'].includes(key);
+ const request={session,scope,card,cardState:card?state:null,receipts:[]};
+ encounterTenderRequests.set(encounterTenderKey(scope),request);
+ return executeEncounterTender(request,action);
+}
+async function sendEncounterCash(request,plan){
+ const scope=collectSession.encounter;
+ try{
+  for(const body of plan.bodies.slice(plan.saved.length)){
+   if(!currentEncounterCollect(scope)||encounterTenderRequest(scope)!==request)
+    throw new Error('Reopen the original encounter to finish recording this payment.');
+   const receipt=await api(`/api/v1/patients/${encodeURIComponent(scope.patient)}/billing/copays`,'POST',body);
+   if(!receipt?.id||receipt.patient_id!==scope.patient||receipt.appointment_id!==body.appointment_id)
+    throw new Error('The returned receipt could not be verified.');
+   plan.saved.push(receipt);request.receipts.push(receipt);
+  }
+ }catch(error){
+  if([400,403,404,422].includes(error.status)){
+   request.retryCash=null;
+   if(plan.saved.length&&currentEncounterCollect(scope)&&collectSession===request.session)
+    collectPartTaken(plan.bodies.slice(0,plan.saved.length).reduce((sum,body)=>sum+body.amount_cents,0),plan.label,plan.saved.at(-1),scope.appointment);
+  }else request.retryCash=plan;
+  throw error;
+ }
+ request.retryCash=null;
+ if(currentEncounterCollect(scope)&&collectSession===request.session){
+  const total=plan.bodies.reduce((sum,body)=>sum+body.amount_cents,0);
+  collectPartTaken(total,plan.label,plan.saved.at(-1),scope.appointment);
  }
 }
 function openCollectModal(){
@@ -1908,21 +2006,23 @@ function openCollectModal(){
  const known=scoped&&!data.error&&!data.stale&&!review&&Number.isSafeInteger(balance)&&balance>=0;
  const due=known&&balance>0?balance:null;
  const canCollect=!!(current&&appointment.patient_id===selected&&!['cancelled','canceled','no_show'].includes(appointment.status)&&due&&billingCan('create'));
- const scope={patient:selected,identity:me,visit:visit?.id,appointment:current,canCollect,
+ const scope={patient:selected,tenant:me?.tenant_id||'',identity:me,visit:visit?.id,appointment:current,canCollect,
   status:review?'Review the payment history before collecting.':!known?'The current balance could not be confirmed.':balance===0?(posted?'No patient amount due.':'No copay due.'):!canCollect?'Payment collection is unavailable for this encounter.':''};
  const home=panel.parentNode,marker=document.createComment('visit-billing-collect');home.insertBefore(marker,panel);
  const head=document.createElement('div');head.dataset.collectHead='';panel.prepend(head);
  collectSession={target:due,owedAtOpen:due||0,copayOnly:!posted&&due>0,taken:[],group:crypto.randomUUID(),encounters:canCollect?[{appointment:current,owes:due,paid:0,on:true}]:[],current,encounter:scope};
- head.innerHTML=`<div data-collect-owed>${known?collectOwedMarkup({showDue:false}):''}</div><div data-collect-encounters></div><div data-collect-progress></div><p data-collect-availability role="status">${esc(current?scope.status:'Link an appointment to this encounter to take a payment.')}</p>${canCollect?`<nav class="invoice-tabs collect-methods" role="tablist" aria-label="Payment method">${collectMethods.map(([key,label])=>`<button type="button" role="tab" data-collect-method="${key}" aria-selected="false" disabled>${label}</button>`).join('')}</nav><div data-collect-holder></div>`:''}`;
+ head.innerHTML=`<div data-collect-owed>${known?collectOwedMarkup({showDue:false}):''}</div><div data-collect-encounters></div><div data-collect-progress></div><p data-collect-availability role="status">${esc(current?scope.status:'Link an appointment to this encounter to take a payment.')}</p><div data-collect-reconcile></div>${canCollect?`<nav class="invoice-tabs collect-methods" role="tablist" aria-label="Payment method">${collectMethods.map(([key,label])=>`<button type="button" role="tab" data-collect-method="${key}" aria-selected="false" disabled>${label}</button>`).join('')}</nav><div data-collect-holder></div>`:''}`;
  panel.hidden=false;
  const dialog=sheetOpen(canCollect?'Take payment':'Patient payments',panel);dialog.classList.add('sheet-wide','collect-sheet');collectDialog=dialog;
  const badge=collectTestBadgeMarkup();if(badge){const heading=dialog.querySelector('.sheet-head h3');if(heading)heading.insertAdjacentHTML('afterend',badge);}
- dialog.addEventListener('close',()=>{collectDialog=null;if(marker.parentNode){panel.hidden=true;head.remove();const slot=$('encounter-hosted-copay-reader');if(slot&&!slot.querySelector('[data-reader-payment="waiting"],[data-reader-payment="finishing"]'))slot.replaceChildren();marker.parentNode.insertBefore(panel,marker);marker.remove();}else panel.remove();if(dialog.dataset.refresh&&currentEncounterCollect(scope))void collectRefresh();},{once:true});
- if(canCollect){
+ dialog.canCloseSheet=()=>{const request=encounterTenderRequest(scope);return !(request?.running||request?.refreshing);};
+ dialog.addEventListener('close',()=>{if(collectDialog===dialog)collectDialog=null;if(marker.parentNode){panel.hidden=true;head.remove();const slot=$('encounter-hosted-copay-reader');if(slot&&!slot.querySelector('[data-reader-payment="waiting"],[data-reader-payment="finishing"]'))slot.replaceChildren();marker.parentNode.insertBefore(panel,marker);marker.remove();}else panel.remove();if(dialog.dataset.refresh&&currentEncounterCollect(scope))void collectRefresh();},{once:true});
+ const request=encounterTenderRequest(scope);
+ if(canCollect||request){
   const state=hostedCopayStateFor(current);
   paintEncounterCollectModal(state);
-  void loadHostedCopays(current);
-  void collectLoadEncounters(dialog,selected);
+  if(request)void refreshEncounterTender(request,scope);
+  if(canCollect){void loadHostedCopays(current);void collectLoadEncounters(dialog,selected);}
  }
  return true;
 }
@@ -1978,21 +2078,28 @@ async function submitCollectCash(form){
  form.collectRecording=true;button.disabled=true;button.textContent='Recording…';
  // Money for several encounters is recorded once for each, under the one payment.
  const parts=collectParts(amount)||[{appointment_id:form.dataset.appointment,amount_cents:amount}],group=collectGroupField();
+ const occurredOn=collectToday(),reference=String(form.elements.reference?.value||'').trim();
+ const bodies=parts.map((part,index)=>({request_id:index?crypto.randomUUID():form.dataset.request,
+  appointment_id:part.appointment_id,coverage_id:part.appointment_id===form.dataset.appointment?form.dataset.coverage||null:null,
+  amount_cents:part.amount_cents,method,reference,occurred_on:occurredOn,
+  reason:method==='external'?'Payment received outside SunCharts':method==='check'?'Check received at the desk':'Cash received at the desk',received_confirmed:true,...group}));
  let receipt,done=0;
  try{
+  if(form.hasAttribute?.('data-encounter-collect')){
+   await runEncounterCollectTender(form,method,request=>sendEncounterCash(request,{bodies,saved:[],label}));
+   return;
+  }
   await runEncounterCollectTender(form,method,async()=>{
    if(form.dataset.panel==='insurance-collect-payment')await checkInsuranceCopayTender(form.dataset.panel,form.dataset.appointment,method);
-   for(const [index,part] of parts.entries()){
-    if(encounter&&(!currentEncounterCollect(encounter)||collectDialog!==dialog))throw new Error('Open the payment window for the current encounter.');
-    const own=part.appointment_id===form.dataset.appointment;
-    receipt=await api(`/api/v1/patients/${encodeURIComponent(patient)}/billing/copays`,'POST',{request_id:index?crypto.randomUUID():form.dataset.request,appointment_id:part.appointment_id,coverage_id:own?form.dataset.coverage||null:null,amount_cents:part.amount_cents,method,reference:String(form.elements.reference?.value||'').trim(),occurred_on:collectToday(),reason:method==='external'?'Payment received outside SunCharts':method==='check'?'Check received at the desk':'Cash received at the desk',received_confirmed:true,...group});
-    done+=part.amount_cents;
+   for(const body of bodies){
+    receipt=await api(`/api/v1/patients/${encodeURIComponent(patient)}/billing/copays`,'POST',body);
+    done+=body.amount_cents;
    }
   });
  }catch(error){
   // What was recorded before the failure is kept and shown; the rest is still left to pay.
   if(done>0&&collectDialog===dialog)collectPartTaken(done,label,receipt,form.dataset.appointment);
-  else{button.disabled=false;button.textContent=`Record ${money(amount)} ${label}`;}
+  else{button.disabled=!!encounterTenderRequest(encounter);button.textContent=`Record ${money(amount)} ${label}`;}
   throw error;
  }finally{form.collectRecording=false;}
  if(collectDialog===dialog)collectPartTaken(amount,label,receipt,form.dataset.appointment);
@@ -2009,6 +2116,15 @@ async function collectRefresh(){
 if(typeof document!=='undefined'){
  document.addEventListener('click',event=>{
   const tab=event.target?.closest?.('[data-collect-method]');if(tab?.dataset?.collectMethod){event.preventDefault();return collectMethod(tab.dataset.collectMethod);}
+  const reconcile=event.target?.closest?.('[data-encounter-tender-reconcile]');
+  if(reconcile&&collectDialog?.contains(reconcile)){
+   event.preventDefault();
+   const current=collectSession.encounter,request=encounterTenderRequest(current);
+   if(!request||!currentEncounterCollect(current)||request.running||request.refreshing)return;
+   const retry=request.retryCash;
+   void run(()=>retry?executeEncounterTender(request,()=>sendEncounterCash(request,retry)):refreshEncounterTender(request,current));
+   return;
+  }
   const receipt=event.target?.closest?.('[data-collect-receipt]');if(receipt?.dataset?.collectReceipt){event.preventDefault();void run(()=>printPaymentGroupReceiptFromCollect(receipt.dataset.collectReceipt,receipt));return;}
  });
  document.addEventListener('submit',event=>{if(event.target?.id!=='collect-cash-form')return;event.preventDefault();run(()=>submitCollectCash(event.target));});
@@ -2203,7 +2319,6 @@ function encounterApplyTemplateCodes(dialog){
  if(lines.length)added+=chargeLinesAppend(lines).length;
  state.textContent=added===selectedCodes.length?'Selected codes added. Review the codes and fees.':'Some codes could not be added. Review the encounter.';
  encounterTemplateCodesPaint(dialog);
- if(typeof diagnosisSuggestCheck==='function')diagnosisSuggestCheck();
 }
 function encounterOpenCodesDialog(launcher,area='codes'){
  const dialog=$('visit-page-host')?.querySelector('[data-encounter-codes-dialog]');
@@ -2216,6 +2331,7 @@ function encounterOpenCodesDialog(launcher,area='codes'){
   dialog.showModal();
  }
  encounterTemplateCodesPaint(dialog);
+ if(typeof diagnosisSuggestCheck==='function')diagnosisSuggestCheck();
  const body=dialog.querySelector('.sheet-body');
  const diagnosisField=body.querySelector('#visit-diagnoses-form input[name="code"]:not([disabled]):not([readonly])');
  const enteringFirst=area==='codes'&&(diagnosisField?!diagnosisField.value.trim():!encounterSavedCodes(activeVisit,null).diagnoses?.length);

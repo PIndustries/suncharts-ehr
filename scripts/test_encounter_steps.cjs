@@ -105,7 +105,10 @@ for(const options of [{},{selfPay:true},{signed:true},{signed:true,sent:true},{s
  assert(!disclosure.open);
  assert.equal(f.page.querySelector('[data-open-encounter-codes]').textContent,'Edit codes');
  assert.equal(disclosure.querySelector('#encounter-billing-editor'),editor);
+ let suggestionsChecked=0;
+ w.diagnosisSuggestCheck=()=>{assert.equal(disclosure.open,true);suggestionsChecked++;};
  f.page.querySelector('[data-open-encounter-codes]').click();
+ assert.equal(suggestionsChecked,1,'opening the Codes dialog requests eligible suggestions without an extra click');
  const amount=editor.querySelector('[name="amount"]');amount.value='175.00';
  f.sync();
  assert(disclosure.open);

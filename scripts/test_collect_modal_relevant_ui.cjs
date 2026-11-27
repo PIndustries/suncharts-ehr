@@ -4,6 +4,8 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('nod
 const {JSDOM}=require('jsdom');
 const root=path.resolve(__dirname,'..');
 const source=fs.readFileSync(path.join(root,'web/patient-revenue.js'),'utf8');
+const sharedSheets=fs.readFileSync(path.join(root,'web/claims.js'),'utf8');
+const sheetSource=sharedSheets.slice(sharedSheets.indexOf('function sheetOpen('),sharedSheets.indexOf('// Extra detail on an encounter'));
 const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const wait=()=>new Promise(resolve=>setImmediate(resolve));
 
@@ -18,6 +20,8 @@ function fixture({due=6500,draft=false,available=true,operations=[]}={}){
  const summary={patient_id:patient.id,visit,account,patient:{copay_cents:2500,copay_due_cents:draft?due:0,copay_paid_cents:draft?0:2500,owes_now_cents:draft?0:due,unapplied_cents:0},receipts:[],insurance:{insured:true}};
  const find=selector=>d.querySelector(selector);
  w.HTMLElement.prototype.scrollIntoView=function(){};
+ w.HTMLDialogElement.prototype.showModal=function(){this.open=true;};
+ w.HTMLDialogElement.prototype.close=function(){this.open=false;this.dispatchEvent(new w.Event('close'));};
  Object.assign(ctx,{
   me:{role:'owner'},selected:patient.id,chartSection:'visits',encounterSection:'charges',activeVisit:visit,
   workspace:{patient,appointments:[appointment],visits:[visit],billing:{accounts:[account],entries:[],copays:[],coverages:[coverage]}},
@@ -35,13 +39,9 @@ function fixture({due=6500,draft=false,available=true,operations=[]}={}){
   readerChoiceMarkup:readers=>`<input type="hidden" name="reader" value="${readers[0].id}">`,
   savedCardChoiceMarkup:found=>`<input type="hidden" name="card" value="${found.cards[0].setup_id}">`,
   stopReaderPayment(){},flashUpdated(){},testPaymentLabel:()=>'Test payment',
-  sheetOpen(title,panel){
-   const dialog=d.createElement('dialog');dialog.open=true;
-   dialog.innerHTML=`<header class="sheet-head"><h3>${esc(title)}</h3></header>`;
-   dialog.append(panel);d.body.append(dialog);return dialog;
-  },
-  sheetClose(dialog){dialog.dispatchEvent(new w.Event('close'));dialog.remove();}
+  matchMedia:()=>({matches:true})
  });
+ vm.runInContext(sheetSource,ctx);
  vm.runInContext(source,ctx);
  vm.runInContext(`encounterRevenueState={patient:selected,identity:me,visit:"visit",account:"account",version:1,data:{summary:${JSON.stringify(summary)}}};`,ctx);
  return {
@@ -127,6 +127,72 @@ function fixture({due=6500,draft=false,available=true,operations=[]}={}){
   await assert.rejects(saved.ctx.pending,/Open the payment window for the current encounter/);
   assert.equal(requests.length,1);
  }finally{saved.close();}
+
+ const reopening=fixture({available:false});
+ try{
+  const posts=[];
+  let release,allowRefresh;
+  const response=new Promise(resolve=>{release=resolve;});
+  const refresh=new Promise(resolve=>{allowRefresh=resolve;});
+  const read=reopening.ctx.api;
+  reopening.ctx.api=async(path,method,body)=>{
+   if(method!=='POST')return read(path,method,body);
+   posts.push(body);return response;
+  };
+  const receipt={id:'recorded',patient_id:'patient',appointment_id:'appt'};
+  reopening.ctx.loadEncounterRevenueStatus=async()=>{
+   await refresh;
+   vm.runInContext(`encounterRevenueState.data.summary.receipts=[${JSON.stringify(receipt)}];encounterRevenueState.data.summary.patient.owes_now_cents=0;`,reopening.ctx);
+  };
+  const original=await reopening.open();
+  original.querySelector('[data-collect-submit]').click();await wait();
+  assert.equal(posts.length,1);
+  assert.ok(original.querySelector('[data-sheet-close]').disabled);
+  original.querySelector('[data-sheet-close]').click();
+  original.dispatchEvent(new reopening.w.Event('cancel',{cancelable:true}));
+  original.dispatchEvent(new reopening.w.MouseEvent('click',{bubbles:true}));
+  assert.ok(original.open,'close, Escape and backdrop cannot dismiss a pending write');
+  original.close();original.remove(); // The chart can still be replaced independently of user dismissal.
+  const second=await reopening.open();
+  assert.notEqual(second,original);
+  assert.match(second.querySelector('[data-collect-availability]').textContent,/Checking the payment and current balance/);
+  assert.equal(second.querySelector('form'),null);
+  assert.ok(Array.from(second.querySelectorAll('[data-collect-method]')).every(button=>button.disabled));
+  release(receipt);await wait();
+  assert.match(second.querySelector('[data-collect-availability]').textContent,/Checking the payment and current balance/);
+  assert.equal(second.querySelector('form'),null);
+  allowRefresh();await wait();
+  assert.match(second.querySelector('[data-collect-availability]').textContent,/No patient amount due/);
+  assert.equal(second.querySelector('form'),null);
+  assert.equal(posts.length,1);
+ }finally{reopening.close();}
+
+ const uncertain=fixture({available:false});
+ try{
+  const posts=[];
+  const receipt={id:'same-request-receipt',patient_id:'patient',appointment_id:'appt'};
+  const read=uncertain.ctx.api;
+  uncertain.ctx.api=async(path,method,body)=>{
+   if(method!=='POST')return read(path,method,body);
+   posts.push(body);
+   if(posts.length===1)throw new Error('Connection interrupted');
+   return receipt;
+  };
+  uncertain.ctx.loadEncounterRevenueStatus=async()=>{
+   if(posts.length>1)vm.runInContext(`encounterRevenueState.data.summary.receipts=[${JSON.stringify(receipt)}];encounterRevenueState.data.summary.patient.owes_now_cents=0;`,uncertain.ctx);
+  };
+  const original=await uncertain.open();
+  original.querySelector('[data-collect-submit]').click();
+  await assert.rejects(uncertain.ctx.pending,/Connection interrupted/);
+  original.querySelector('[data-sheet-close]').click();
+  const again=await uncertain.open();
+  assert.equal(again.querySelector('[data-collect-submit]'),null);
+  again.querySelector('[data-encounter-tender-reconcile="retry"]').click();
+  await uncertain.ctx.pending;
+  assert.equal(posts.length,2);
+  assert.equal(posts[1],posts[0],'retry sends the identical body and request ID');
+  assert.match(again.querySelector('[data-collect-availability]').textContent,/No patient amount due/);
+ }finally{uncertain.close();}
 
  const unavailable=fixture({available:false});
  try{

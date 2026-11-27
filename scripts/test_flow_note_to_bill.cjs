@@ -102,6 +102,17 @@ async function main(){
  assert(f.requests.at(-2).path.endsWith('/note'),'Sign saves unsaved typing first');
  assert(!app.includes('Save your current note before signing'));
  console.log('PASS autosave fires; Sign saves unsaved text without an extra confirmation');
+ f=fixture();f.node('note-save-status');f.node('note-message');
+ f.ctx.activeVisit.note=f.ctx.formData(f.note);
+ for(const field of Object.values(f.note.elements))field.value='';
+ await f.ctx.visitNoteFlush();
+ assert.equal(f.node('note-save-status').textContent,'Not saved');
+ assert.match(f.node('note-message').textContent,/Enter text in at least one note field/);
+ assert.equal(f.requests.length,0,'an all-empty edit cannot replace a recorded note');
+ f.note.elements.plan.value='Synthetic follow-up';
+ await f.ctx.visitNoteFlush();
+ assert.equal(f.node('note-save-status').textContent,'Saved');
+ assert.equal(f.ctx.activeVisit.note.plan,'Synthetic follow-up');
  f=fixture();let focused=false,scrolled=false,invalid=false;
  f.note.elements.objective={value:'',focus:()=>focused=true,scrollIntoView:()=>scrolled=true,setAttribute:()=>invalid=true,removeAttribute:()=>invalid=false};
  f.node('note-message');await f.ctx.signClick({dataset:{action:'sign-bill'}});

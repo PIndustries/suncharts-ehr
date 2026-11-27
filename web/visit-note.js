@@ -244,7 +244,7 @@ document.addEventListener('invalid',event=>{
 },true);
 async function visitNoteSaveInputs({signing=false,focusVitals=false}={}){
  const visit=activeVisit?.id,identity=me,patient=selected;
- let roomingRefused=false,vitalsNeedReview=false;
+ let roomingRefused=false,vitalsNeedReview=false,noteNeedsText=false;
  const current=()=>activeVisit?.id===visit&&me===identity&&selected===patient&&activeVisit.status!=='signed';
  while(current()){
   let changed=false;
@@ -283,12 +283,23 @@ async function visitNoteSaveInputs({signing=false,focusVitals=false}={}){
   }
   if(!current())return;
   const form=$('note-form');
-  if(form&&canDraftNote(activeVisit)&&!noteMatchesSaved(formData(form),activeVisit.note)&&hasVisitNoteText(form)){
-   await saveVisitNote(form,formData(form));changed=true;
+  const note=form&&canDraftNote(activeVisit)?formData(form):null;
+  const hasText=note&&hasVisitNoteText(form);
+  noteNeedsText=Boolean(note&&!hasText&&noteSectionKeys.some(key=>String(activeVisit.note?.[key]||'').trim()));
+  if(hasText&&!noteMatchesSaved(note,activeVisit.note)){
+   await saveVisitNote(form,note);changed=true;
   }
   if(!changed)break;
  }
- if(current())visitNoteSaveStatus(vitalsNeedReview?'Vitals need review':'Saved');
+ if(!current())return;
+ if(noteNeedsText){
+  visitNoteSaveStatus('Not saved');
+  showVisitNoteMessage('Enter text in at least one note field to save.');
+ }else if(vitalsNeedReview)visitNoteSaveStatus('Vitals need review');
+ else{
+  const fresh=$('note-form')?.querySelector?.('[data-note-autosave-retry]')&&!noteSectionKeys.some(key=>String(activeVisit.note?.[key]||'').trim());
+  visitNoteSaveStatus(fresh?'Autosave on':'Saved');
+ }
 }
 function visitNoteFlush({signing=false,focusVitals=false}={}){
  clearTimeout(visitNoteSaveTimer);visitNoteSaveTimer=null;

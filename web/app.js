@@ -535,7 +535,10 @@ function keepNoteDraft(){
 // Saves the note. If the encounter moved on, the current record is loaded first: a change that left the note text alone is retried once, a change to the note itself is shown and never overwritten.
 async function saveVisitNote(form,data){
  // A draft is kept with any section filled; a note with nothing in it says so beside the buttons.
- if(!hasVisitNoteText(form)){showVisitNoteMessage('Write something in the note before saving.');return;}
+ if(!hasVisitNoteText(form)){
+  if(form.querySelector?.('[data-note-autosave-retry]'))visitNoteSaveStatus('Not saved');
+  showVisitNoteMessage('Write something in the note before saving.');return;
+ }
  hideVisitNoteMessage();
  const id=activeVisit.id,identity=me;
  for(let attempt=0;;attempt++){
