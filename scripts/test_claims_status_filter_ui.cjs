@@ -101,15 +101,17 @@ const waitFor=async test=>{
  f.setClaims(claims,'claims cursor',[claim(12,'accepted',{claimmd_position:{needs_correction:true}})]);
  f.setRemittances(remittances,'payments cursor',[payment(36,'posted'),payment(37,'staged')]);
  await f.ctx.showClaimsWorkspace();
- assert.deepEqual(f.stageCounts(),{send:2,wait:2,fix:3,'remittance-review':2,posted:1});
+ assert.deepEqual(f.stageCounts(),{action:5,send:2,wait:2,fix:3,'remittance-review':2,posted:1});
  assert.deepEqual(Array.from(f.ctx.document.querySelectorAll('[data-claim-status]'),button=>button.firstChild.textContent.trim()),
-  ['To send','Waiting','Needs correction','Remittance to review','Posted']);
- assert.equal(f.stage('send').getAttribute('aria-pressed'),'true');
+  ['Needs action','To send','Waiting','Needs correction','Remittance to review','Posted']);
+ assert.equal(f.stage('action').getAttribute('aria-pressed'),'true');
  assert.equal(f.$('nav-claims').getAttribute('aria-current'),'page');
  assert.ok(f.paths().includes(claimsBase+'?after=claims%20cursor'));
  assert.ok(!f.paths().includes(claimsBase+'/status-counts'));
  assert.ok(!f.paths().some(path=>path.startsWith(claimsBase+'/')),'worklist payment state comes from the list response');
- hasIds(f,'claim',[1,2]);hasIds(f,'era',[]);
+ hasIds(f,'claim',[1,2,5,6,12]);hasIds(f,'era',[]);
+ assert.equal(f.$q('[data-claim-waiting]').hidden,false);
+ assert.equal(f.$q('[data-claim-waiting-count]').textContent,'2');
  const queries=f.calls.length;
  f.stage('wait').focus();f.stage('wait').click();
  assert.equal(f.ctx.document.activeElement,f.stage('wait'));
@@ -131,19 +133,19 @@ const waitFor=async test=>{
  f.stage('posted').click();
  await f.click('[data-era-next]');
  assert.ok(f.paths().includes(eraBase+'?after=payments%20cursor'));
- assert.deepEqual(f.stageCounts(),{send:2,wait:2,fix:3,'remittance-review':3,posted:2});
+ assert.deepEqual(f.stageCounts(),{action:5,send:2,wait:2,fix:3,'remittance-review':3,posted:2});
  hasIds(f,'era',[32,36]);assert.equal(f.$q('[data-era-more]').hidden,true);
  assert.deepEqual(f.panels,['automation','recoupments','batch']);
  assert.ok(f.$q('[data-era-source]'));assert.ok(f.$q('[data-payment-settings]'));
  await f.ctx.showClaimsWorkspace({filter:'send'});hasIds(f,'claim',[1,2]);
  await f.ctx.showClaimsWorkspace({filter:'payments'});hasIds(f,'era',[30,31,32,33,34,35,36,37]);
- console.log('PASS five stages, precise counts and states, shortcuts, older remittances, and legacy management');
+ console.log('PASS action-first worklist, precise counts and states, shortcuts, older remittances, and legacy management');
 
  const empty=fixture({claimRows:[],remittanceRows:[payment(35,'unrecognized')]});
  empty.setRemittances([payment(35,'unrecognized')],'next',[payment(32,'posted')]);
  await empty.ctx.showClaimsWorkspace();
- assert.deepEqual(empty.stageCounts(),{send:0,wait:0,fix:0,'remittance-review':0,posted:0});
- assert.match(empty.$q('[data-claim-worklist]').textContent,/No claims to send/);
+ assert.deepEqual(empty.stageCounts(),{action:0,send:0,wait:0,fix:0,'remittance-review':0,posted:0});
+ assert.match(empty.$q('[data-claim-worklist]').textContent,/No claims need staff action/);
  empty.stage('fix').click();assert.match(empty.$q('[data-claim-worklist]').textContent,/No claims need correction/);
  empty.stage('posted').click();assert.match(empty.$q('[data-era-worklist]').textContent,/No posted remittances in the loaded records/);
  await empty.click('[data-era-next]');hasIds(empty,'era',[32]);
@@ -188,6 +190,43 @@ const waitFor=async test=>{
  assert.deepEqual(visit.opened,[['chart'],[id(101),id(400)],['charges'],[id(1),id(201)]]);
  console.log('PASS exact claim, encounter and remittance IDs, Back and Forward, and writer-only remittance actions');
 
+ const hold=claim(61,'submitted',{service_date:'2026-11-27',snapshot:{account:{content:{visit_id:id(461)}}},claimmd_position:{needs_correction:true,correction:{at:'2026-11-25T08:00:00Z',line:{index:0,code:'64405'}}}});
+ const zip=claim(62,'draft',{service_date:'2026-11-21',status_at:'2026-11-27T09:00:00Z',snapshot:{account:{content:{visit_id:id(462)}}},worklist_issue:{field:'subscriber_address',part:'postal_code',message:'Policyholder ZIP code is missing'}});
+ const unconfirmed=claim(63,'ready',{claim_handoff:{delivery_status:'unknown',outcome:'waiting',attempt_at:'2026-11-26T12:00:00Z'},snapshot:{account:{content:{visit_id:id(463)}}}});
+ const matched=payment(64,'reconciled');
+ const paidRow=claim(64,'accepted',{worklist_remittance:{id:matched.id,at:'2026-11-27T09:15:00Z',row_index:0}});
+ const guided=fixture({claimRows:[zip,paidRow,unconfirmed,hold,claim(65,'submitted')],remittanceRows:[matched]});
+ guided.ctx.document.body.insertAdjacentHTML('beforeend','<div id="visit-page-host"></div>');
+ const visits=[];
+ guided.ctx.visitOpenCurrentEncounterClaim=async (...args)=>{visits.push(JSON.parse(JSON.stringify(args)));return true;};
+ await guided.ctx.showClaimsWorkspace();
+ hasIds(guided,'claim',[61,63,62]);
+ assert.deepEqual(Array.from(guided.ctx.document.querySelectorAll('[data-claim-worklist] tbody tr time'),node=>node.dateTime),['2026-11-25T08:00:00Z','2026-11-26T12:00:00Z','2026-11-27T09:00:00Z','2026-11-27T09:15:00Z'],'active evidence, rather than service date, orders the queue');
+ assert.equal(guided.$q('[data-claim-waiting-count]').textContent,'1');
+ guided.$q('[data-view-waiting-claims]').click();hasIds(guided,'claim',[65]);
+ for(const [row,label,intent] of [
+  [hold,'Fix 64405',{kind:'correction',procedure:'64405',line:0}],
+  [zip,'Add ZIP code',{kind:'missing',field:'subscriber_address',part:'postal_code'}],
+  [unconfirmed,'Check delivery',{kind:'delivery'}]
+ ]){
+  await guided.ctx.showClaimsWorkspace({filter:'action'});
+  const button=`[data-claim-open="${row.id}"]`;
+  assert.equal(guided.$q(button).textContent,label);
+  await guided.click(button);
+  assert.deepEqual(visits.at(-1),[row.id,row.account_id,intent]);
+ }
+ await guided.ctx.showClaimsWorkspace({filter:'action'});
+ const remitPath=eraBase+'/'+matched.id;
+ const remitLink=`[data-claim-worklist] [data-era-open="${matched.id}"]`;
+ guided.routes.set(remitPath,()=>({remittance:{...matched,matches:[],document:{claims:[]}},postings:[],issues:[]}));
+ await assert.rejects(guided.click(remitLink),/payment match changed/);
+ guided.routes.set(remitPath,()=>({remittance:{...matched,document_hash:'synthetic-hash',matches:[{claim_id:paidRow.id,row_index:0,claim_version:2,account_version:2,writeoff_adjustments:[]}],document:{claims:[{control_number:paidRow.control_number,patient_name:'Synthetic Patient',paid_cents:2000,charged_cents:10000,patient_responsibility_cents:0,adjustments:[],services:[]}],total_paid_cents:2000,payment_date:'2026-11-27',payer_code:'SYN',currency:'USD'}},postings:[],issues:[]}));
+ await guided.click(remitLink);
+ assert.equal(guided.ctx.eraCurrent.id,matched.id);
+ assert.equal(guided.ctx.document.activeElement.dataset.row,'0');
+ assert(guided.calls.every(([,method])=>method==='GET'),'the worklist opens decisions without carrying them out');
+ console.log('PASS exact worklist actions, evidence age, and matched payment focus');
+
  const refresh=fixture();
  refresh.setRemittances([payment(30,'staged')],'older',[payment(36,'posted')]);
  await refresh.ctx.showClaimsWorkspace({filter:'posted'});
@@ -213,10 +252,10 @@ const waitFor=async test=>{
  await refresh.ctx.showClaimsWorkspace();
  resolveStale({items:[payment(99,'posted')],next_cursor:null});
  await staleRefresh;
- assert.equal(refresh.stage('send').getAttribute('aria-pressed'),'true');
+ assert.equal(refresh.stage('action').getAttribute('aria-pressed'),'true');
  hasIds(refresh,'claim',[50]);assert.equal(refresh.stageCounts().posted,0);
  assert.equal(refresh.stageCounts()['remittance-review'],1);
  console.log('PASS quiet refresh preserves details, loaded pages, and session isolation');
 
- for(const item of [f,empty,actions,readOnly,visit,refresh])item.dom.window.close();
+ for(const item of [f,empty,actions,readOnly,visit,guided,refresh])item.dom.window.close();
 })().catch(error=>{console.error(error);process.exitCode=1;});

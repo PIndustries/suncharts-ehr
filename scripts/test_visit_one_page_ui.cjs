@@ -105,7 +105,7 @@ async function close(fixture){
   assert.equal(host.dataset.stepsVisit,encounter.id);
   assert.equal(f.run('chartSection'),'visits');
   assert.equal(host.dataset.stepViewed,'1');
-  assert.deepEqual([...host.querySelectorAll('[data-encounter-step-open]')].map(node=>node.textContent.trim()),['Visit','Payment']);
+  assert.deepEqual([...host.querySelectorAll('[data-encounter-step-open]')].map(node=>node.textContent.trim()),['Visit','✓ Codes','Payment']);
   await f.wait(()=>find('[data-encounter-claim-status]')?.hidden,'self-pay has no claim action');
   assert.ok(find('#encounter-rooming-vitals'));
   assert.ok(find('[data-open-visit-followup]'));

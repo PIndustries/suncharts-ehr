@@ -20,7 +20,7 @@ const context={
   calls.push(args);
   if(args[0].endsWith('/delivery')){
    if(failDelivery)throw new Error('Synthetic network error');
-   return {id:'job',submission_id:'prepared-submission',route_key:'claimmd'};
+   return {id:'job',submission_id:'prepared-submission',route_key:'claimmd',status:'queued'};
   }
   return {id:'prepared-submission',version:3,claim_id:wrongClaim?'wrong-claim':'synthetic-claim',claim_version:7,partner_id:'native-partner',partner_version:4};
  },
@@ -31,7 +31,8 @@ vm.runInContext(fs.readFileSync('web/claimmd-native.js','utf8'),context);
 vm.runInContext("claimMdConnectionState={connected:true,active:{id:'setting',partner_id:'native-partner',partner_version:4,route_key:'claimmd'}}",context);
 
 (async()=>{
- const form={dataset:{request:'prepare-only-request'}};
+ const results=[];
+ const form={dataset:{request:'prepare-only-request'},claimAfterQueue:result=>results.push(result)};
  context.form=form;context.submitter={value:'prepare'};
  await vm.runInContext('submitClaimMdForm(form,submitter)',context);
  assert.equal(calls.length,1,'prepare-only must make exactly one local API call');
@@ -51,17 +52,38 @@ vm.runInContext("claimMdConnectionState={connected:true,active:{id:'setting',par
  assert.equal(calls[0][0],'/api/v1/billing/claims/synthetic-claim/837p');
  assert.equal(calls[1][0],'/api/v1/billing/submissions/prepared-submission/delivery');
  assert.equal(calls[1][2].route_key,'claimmd');assert.equal(calls[1][3],3);
- assert.match(notices.at(-1),/on its way to the clearinghouse/);
+ assert.match(notices.at(-1),/Queued for Claim.MD/);
+ assert.equal(results.at(-1).outcome,'queued');
+ assert.equal(results.at(-1).job_id,'job');
+ assert.equal(form.claimSubmissionClosed,true);
+ await vm.runInContext('submitClaimMdForm(form,submitter)',context);
+ assert.equal(calls.length,2,'a stale control cannot create a second delivery attempt');
 
  calls.length=0;notices.length=0;
- context.form={dataset:{request:'retry-837p'}};failDelivery=true;
- await assert.rejects(vm.runInContext('submitClaimMdForm(form,submitter)',context),/Synthetic network error/);
- assert.equal(notices.length,0,'a failed response never announces that the claim was queued');
+ context.form={dataset:{request:'retry-837p'},claimAfterQueue:result=>results.push(result)};failDelivery=true;
+ await vm.runInContext('submitClaimMdForm(form,submitter)',context);
+ assert.match(notices.at(-1),/Check delivery/);
+ assert.equal(results.at(-1).outcome,'unconfirmed');
+ assert.equal(results.at(-1).submission_id,'prepared-submission');
  failDelivery=false;
  await vm.runInContext('submitClaimMdForm(form,submitter)',context);
- assert.equal(calls[0][2].request_id,calls[2][2].request_id);
- assert.equal(calls[1][2].request_id,calls[3][2].request_id,'retry reuses the same delivery request');
+ assert.equal(calls.length,2,'an unknown outcome only offers a status check for the existing attempt');
 
+ context.hint={outcome:'queued',submission_id:'prepared-submission',job_id:'job',route_key:'claimmd'};
+ context.detail={claim:{id:'synthetic-claim'},tracking:{submissions:[
+  {id:'prepared-submission',delivery_job:{id:'job',submission_id:'prepared-submission',route_key:'claimmd',
+   status:'delivered',confirmed_at:'2026-11-27T12:00:00Z',receipt_reference:'claimmd-file:1'}},
+  {id:'other-submission',delivery_job:{id:'other',submission_id:'other-submission',route_key:'claimmd',
+   status:'delivered',receipt_reference:'claimmd-file:2'}}
+ ]}};
+ const read=()=>vm.runInContext('claimMdDeliveryAttempt(detail,hint)',context);
+ assert.equal(read().receipt_reference,'claimmd-file:1');
+ context.detail.tracking.submissions[0].delivery_job.receipt_reference='';
+ assert.equal(read().outcome,'waiting','a delivered flag by itself is insufficient');
+ context.detail.tracking.submissions.shift();
+ assert.equal(read().outcome,'queued','another transmission cannot prove receipt for the scoped job');
+
+ context.form={dataset:{request:'wrong-claim'}};
  calls.length=0;wrongClaim=true;
  await assert.rejects(vm.runInContext('submitClaimMdForm(form,submitter)',context),/does not match this review/);
  assert.equal(calls.length,1,'an unexpected claim artifact is never queued');

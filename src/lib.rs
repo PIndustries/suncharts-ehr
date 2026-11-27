@@ -19,6 +19,7 @@ pub mod care_pathways;
 pub mod checkout;
 mod claim_cob;
 pub mod claimmd;
+mod claimmd_correction;
 pub mod claimmd_eligibility;
 pub mod claimmd_extended;
 pub mod claimmd_operations;

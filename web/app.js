@@ -1897,6 +1897,7 @@ if(typeof document!=='undefined'&&document.addEventListener)document.addEventLis
     if(['sign','sign-bill'].includes(button.dataset.action)){
       if(!canSignNote())throw new Error('A clinician must sign this note.');
       const patient=selected,visitId=activeVisit?.id,signer=me;
+      const reviewAfterSign=button.dataset.reviewAfterSign!==undefined;
       const handoff=button.dataset.action==='sign-bill'&&button.dataset.claimHandoff;
       if(!handoff&&button.dataset.action==='sign-bill'&&$('visit-page-host')?.dataset?.encounterSteps!==undefined){
         const data=encounterRevenueState.data,summary=data?.summary;
@@ -1940,6 +1941,12 @@ if(typeof document!=='undefined'&&document.addEventListener)document.addEventLis
         restorePosition?.();
         if(button.dataset.action==='sign-bill')await visitNoteBill();else notice(signNextPlan().done);
       }finally{restorePosition?.();}
+      if(reviewAfterSign&&selected===patient&&activeVisit?.id===visitId&&me===signer){
+        await loadEncounterRevenueStatus(encounterChargeAccount(),false,{prepare:false});
+        if(selected!==patient||activeVisit?.id!==visitId||me!==signer||chartSection!=='visits'||inRecordArea())return;
+        encounterStepsSync();
+        visitReviewOpen();
+      }
     }
   });
 });

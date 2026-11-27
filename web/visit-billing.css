@@ -859,3 +859,16 @@ dialog.encounter-codes-dialog[open]{display:flex;flex-direction:column}
 
 dialog[data-encounter-codes-dialog] #visit-diagnoses-form button[type="submit"],
 dialog[data-encounter-codes-dialog] #visit-diagnoses > [data-diagnosis-refresh]:not([data-diagnosis-recovery]){display:none}
+
+.signed-claim-delivery-timeline{display:grid;gap:0;list-style:none;margin:12px 0;padding:0}
+.signed-claim-delivery-timeline li{display:grid;grid-template-columns:minmax(132px,1fr) minmax(0,2fr);gap:4px 12px;padding:8px 0;border-top:1px solid var(--line)}
+.signed-claim-delivery-timeline small{grid-column:2;color:var(--muted)}
+.signed-claim-inline-fix [data-claim-fix-recovery][hidden]{display:none}
+.signed-claim-inline-fix input,.signed-claim-held-editor input{margin-top:4px}
+.signed-claim-inline-fix[data-claim-fix-part=postal_code] input,.signed-claim-held-editor input{max-width:18rem}
+.signed-claim-held-editor>h3{margin-top:0}
+.signed-claim-held-editor>button{margin-block:8px;margin-inline-end:8px}
+@media(max-width:440px){
+ .signed-claim-delivery-timeline li{grid-template-columns:minmax(0,1fr)}
+ .signed-claim-delivery-timeline small{grid-column:1}
+}

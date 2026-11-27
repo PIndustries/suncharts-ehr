@@ -6363,6 +6363,129 @@ async fn claimmd_clearinghouse_rejection_sets_the_claim_rejected() {
 }
 
 #[tokio::test]
+async fn claimmd_held_modifier_correction_reviews_the_exact_existing_submission() {
+    let (r, db, a, _) = setup().await;
+    let (c, p, out, receipt) = delivered_claimmd_claim(&r, &a).await;
+    let control = c["control_number"].clone();
+    let mut warning = claimmd_status_claim(&control, 1, "A", "CLMMD", "");
+    warning["messages"] = json!([{
+        "responseid":1, "status":"W", "mesgid":"WARN",
+        "message":"NCCI - Procedure Code [99213] requires an appropriate modifier when procedure [20553] present."
+    }]);
+    let forwarded = claimmd_status_claim(&control, 2, "A", "SYNPAYER", "PAYER123");
+    let (config, server, _) = claimmd_feed(
+        &a,
+        &p,
+        ClaimMdFeed {
+            receipt,
+            pages: [
+                ("0".into(), claimmd_page(vec![warning])),
+                ("1".into(), claimmd_page(vec![forwarded])),
+            ]
+            .into_iter()
+            .collect(),
+            empty: json!({}),
+        },
+    )
+    .await;
+    let ledger = claimmd_ledger(&db, &a, &c).await;
+    queue_provider(&r, &a, &out).await;
+    assert!(suncharts_engine::delivery::process_one(&db, &config)
+        .await
+        .unwrap());
+    assert!(suncharts_engine::retrieval::poll_one(&db, &config)
+        .await
+        .unwrap());
+
+    let state = claimmd_page_state(&r, &a, &c).await;
+    assert_eq!(state["claim_status"], "submitted");
+    assert_eq!(state["position"]["correction"]["line"]["code"], "99213");
+
+    let id = c["id"].as_str().unwrap().parse::<Uuid>().unwrap();
+    let path = format!("/api/v1/billing/claims/{id}/claimmd-correction");
+    let (status, initial) = schedule_call(&r, &a, "GET", &path, Value::Null, None).await;
+    assert_eq!(status, 200, "{initial}");
+    assert_eq!(initial["source"]["submission_id"], out["id"]);
+    assert_eq!(initial["source"]["external_claim_id"], "902000001");
+    assert!(initial["draft"].is_null());
+    let version = initial["claim_version"].as_i64().unwrap();
+    let change = json!({
+        "report_id":initial["source"]["report_id"],
+        "submission_id":initial["source"]["submission_id"],
+        "line_index":initial["source"]["line"]["index"],
+        "modifiers":["59"],
+    });
+    let mut wrong_line = change.clone();
+    wrong_line["line_index"] = json!(1);
+    let (status, _) = schedule_call(&r, &a, "PUT", &path, wrong_line, Some(version)).await;
+    assert_eq!(status, 409);
+    let mut review = change.clone();
+    review["reviewed"] = json!(true);
+    let (status, _) = schedule_call(&r, &a, "POST", &path, review.clone(), Some(version)).await;
+    assert_eq!(status, 409, "review requires the saved exact-line draft");
+
+    let (status, saved) = schedule_call(&r, &a, "PUT", &path, change.clone(), Some(version)).await;
+    assert_eq!(status, 200, "{saved}");
+    assert_eq!(saved["draft"]["modifiers"], json!(["59"]));
+    assert!(saved["draft"]["reviewed_at"].is_null());
+    assert_eq!(saved["claim_version"], version + 1);
+    let (status, replay) = schedule_call(&r, &a, "PUT", &path, change, Some(version)).await;
+    assert_eq!(status, 200);
+    assert_eq!(replay, saved, "a repeated autosave leaves one draft event");
+
+    let (status, reviewed) =
+        schedule_call(&r, &a, "POST", &path, review.clone(), Some(version + 1)).await;
+    assert_eq!(status, 200, "{reviewed}");
+    assert_eq!(reviewed["claim_version"], version + 2);
+    assert!(reviewed["draft"]["reviewed_at"].is_string());
+    assert_eq!(reviewed["portal_url"], "https://www.claim.md/login/");
+    let (status, replay) = schedule_call(&r, &a, "POST", &path, review, Some(version + 1)).await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        replay, reviewed,
+        "a repeated review leaves one handoff event"
+    );
+
+    let (submissions, jobs, frozen): (i64, i64, Value) = sqlx::query_as(
+        "SELECT (SELECT count(*) FROM edi_submissions WHERE tenant_id=$1 AND claim_id=$2), (SELECT count(*) FROM edi_delivery_jobs j JOIN edi_submissions s ON s.tenant_id=j.tenant_id AND s.id=j.submission_id WHERE j.tenant_id=$1 AND s.claim_id=$2), snapshot FROM ehr_claims WHERE tenant_id=$1 AND id=$2",
+    )
+    .bind(a.tenant_id)
+    .bind(id)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(
+        (submissions, jobs),
+        (1, 1),
+        "portal handoff creates no new file or upload"
+    );
+    assert_eq!(frozen, c["snapshot"]);
+    assert_eq!(claimmd_ledger(&db, &a, &c).await, ledger);
+    assert_eq!(
+        claimmd_page_state(&r, &a, &c).await["position"]["needs_correction"],
+        true
+    );
+
+    // Simulate the payer accepting the corrected record after the staff portal handoff.
+    // Reconcile the existing claim through the usual provider response feed.
+    sqlx::query("UPDATE edi_connections SET next_poll_at=now() WHERE tenant_id=$1")
+        .bind(a.tenant_id)
+        .execute(&db)
+        .await
+        .unwrap();
+    assert!(suncharts_engine::retrieval::poll_one(&db, &config)
+        .await
+        .unwrap());
+    let reconciled = claimmd_page_state(&r, &a, &c).await;
+    assert_eq!(reconciled["claim_status"], "accepted");
+    assert_eq!(reconciled["position"]["needs_correction"], false);
+    let (status, _) = schedule_call(&r, &a, "GET", &path, Value::Null, None).await;
+    assert_eq!(status, 409);
+    assert_eq!(claimmd_ledger(&db, &a, &c).await, ledger);
+    server.abort();
+}
+
+#[tokio::test]
 async fn claimmd_warning_needs_correcting_is_applied_once_and_settled_by_a_later_answer() {
     let (r, db, a, _) = setup().await;
     let (c, p, out, receipt) = delivered_claimmd_claim(&r, &a).await;

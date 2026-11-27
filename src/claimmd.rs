@@ -426,7 +426,7 @@ fn file_receipt_id(value: &Value) -> Option<&str> {
     })
 }
 
-fn claim_receipt_id(value: &Value) -> Option<String> {
+pub(crate) fn claim_receipt_id(value: &Value) -> Option<String> {
     id(value).filter(|value| value.parse::<u64>().is_ok_and(|value| value > 0))
 }
 

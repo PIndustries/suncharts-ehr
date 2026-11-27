@@ -20,7 +20,7 @@ const box=vm.createContext({
 vm.runInContext(`let patientBannerClaim={patient:null,claim:null,bar:'',now:''};\n${bannerSource.slice(bannerStart)}`,box);
 vm.runInContext(revenueSource.slice(modelStart,modelEnd),box);
 const chips=vm.runInContext('JSON.stringify(encounterStepChips)',box);
-assert.deepEqual(JSON.parse(chips),[[1,'Visit'],[2,'Payment']]);
+assert.deepEqual(JSON.parse(chips),[['1','Visit'],['codes','Codes'],['claim','Claim'],['2','Payment']]);
 const summary={state:'post_charges',insurance:{insured:false},charges_cents:28000,balance_cents:28000,account:{status:'draft'},patient:{owes_now_cents:0}};
 function state(over={}){return JSON.parse(JSON.stringify(box.encounterStepsModel({...summary,...over},visit)));}
 let model=state();

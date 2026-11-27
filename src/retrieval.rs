@@ -683,7 +683,23 @@ pub(crate) async fn claim_tracking(
     a: &Actor,
     claim: &crate::claims::Claim,
 ) -> Result<Value> {
-    let submissions: Vec<Value> = sqlx::query_scalar("SELECT jsonb_build_object('id',s.id,'status',s.status,'technical_status',s.technical_status,'payer_outcome',s.payer_outcome,'created_at',s.created_at) FROM edi_submissions s WHERE s.tenant_id=$1 AND s.claim_id=$2 ORDER BY s.created_at,s.id")
+    let submissions: Vec<Value> = sqlx::query_scalar(
+        "SELECT jsonb_build_object('id',s.id,'status',s.status,'technical_status',s.technical_status,
+          'payer_outcome',s.payer_outcome,'created_at',s.created_at,'delivery_job',j.details)
+         FROM edi_submissions s
+         LEFT JOIN LATERAL (
+            SELECT jsonb_strip_nulls(jsonb_build_object(
+                'id',d.id,'submission_id',d.submission_id,'status',d.status,'route_key',d.route_key,
+                'created_at',d.created_at,'receipt_reference',d.receipt_reference,
+                'claim_md',coalesce(c.adapter='claim_md',d.receipt_reference LIKE 'claimmd-%',false),
+                'confirmed_at',CASE WHEN d.status='delivered' THEN e.created_at END)) AS details
+            FROM edi_delivery_jobs d
+            LEFT JOIN edi_connections c ON c.tenant_id=d.tenant_id AND c.route_key=d.route_key
+            LEFT JOIN edi_delivery_events e ON e.tenant_id=d.tenant_id AND e.job_id=d.id AND e.version=d.version
+            WHERE d.tenant_id=s.tenant_id AND d.submission_id=s.id
+            ORDER BY (d.status<>'cancelled') DESC,d.created_at DESC,d.id DESC LIMIT 1
+         ) j ON true
+         WHERE s.tenant_id=$1 AND s.claim_id=$2 ORDER BY s.created_at,s.id")
         .bind(a.tenant_id).bind(claim.id).fetch_all(&mut **tx).await?;
     let mut reports: Vec<Value> = sqlx::query_scalar("SELECT jsonb_build_object('id',r.id,'submission_id',r.native_id,'received_at',r.received_at,'sent',coalesce(r.original_text,r.parse_summary::text),'evidence',r.parse_summary) FROM edi_remote_reports r JOIN edi_submissions s ON s.tenant_id=r.tenant_id AND s.id=r.native_id WHERE r.tenant_id=$1 AND s.claim_id=$2 AND r.native_kind='submission' AND r.format='claimmd_status' ORDER BY r.received_at DESC,CASE WHEN r.metadata->>'response_id' ~ '^[0-9]{1,20}$' THEN (r.metadata->>'response_id')::numeric END DESC,r.id DESC LIMIT 200")
         .bind(a.tenant_id).bind(claim.id).fetch_all(&mut **tx).await?;

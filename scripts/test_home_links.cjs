@@ -47,7 +47,7 @@ async function main(){
  }
  for(const action of ['claims-send','claims-fix','claims-wait']){
   const filter=action.slice('claims-'.length);
-  await click(action);assert.equal(c.location.hash,filter==='send'?'#/claims':`#/claims/${filter}`);
+  await click(action);assert.equal(c.location.hash,`#/claims/${filter}`);
   assert.deepEqual(calls.at(-1),['claims-filter',{'claims-send':'send','claims-fix':'fix','claims-wait':'wait'}[action]]);
  }
  await click('billing');assert.equal(c.location.hash,'#/billing/overview');assert.deepEqual(JSON.parse(JSON.stringify(calls.at(-1))),['billing',{patientId:null,tab:'overview'}]);

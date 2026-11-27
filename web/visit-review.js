@@ -28,7 +28,7 @@ function visitReviewFormValue(value,max=34){
 // One plain sentence, the group it is put right in, and whether the server or Claim.MD would
 // refuse the claim until it is fixed.
 function visitReviewCheck(key,options={}){
-  return {key,group:options.group||'claim',level:options.blocking?'must':'note',text:options.text||'A detail needs a look.',
+  return {key,group:options.group||'claim',level:options.blocking?'must':'note',text:options.text||'A detail needs a look.',part:options.part||null,
     action:options.action||'',attribute:options.attribute||'',fix:options.fix||''};
 }
 function visitReviewAccount(){
@@ -225,7 +225,7 @@ function visitReviewServerChecks(s){
   const group=visitBillingMissingGroups.find(g=>g.fields.includes(code))||visitBillingMissingGroups.find(g=>g.keywords.test(text));
   const key=visitReviewIssueKeys[code]||`server-${code||index}`;
   const area=key.startsWith('practice-')?'practice':key.startsWith('patient-')?'patient':key.startsWith('insurance-')?'insurance':group?.key||'claim';
-  out.push(visitReviewCheck(key,{group:area,blocking:true,
+  out.push(visitReviewCheck(key,{group:area,blocking:true,part:issue?.part,
    text:code==='diagnosis_codes'?'The claim needs its diagnosis codes.':native?text:`The claim is missing ${text}.`,
    action:group?.action||'Fix claim details',attribute:group?.attribute||`data-visit-review-fix="claim" data-visit-claim-fix="${esc(claim.id||'')}"`}));
  });
@@ -382,6 +382,8 @@ function visitSignedClaimInlineField(check,s,ctx){
  if(visitSignedClaimNeedsPatientAddress(check,claim))return null;
  if(s.practice_directory?.billing_organizations?.length>1&&!String(claim.content?.billing_npi||'').trim()&&
   ['practice-billing_npi','practice-tax','practice-name','practice-address'].includes(check.key))return null;
+ if(check.key==='insurance-subscriber_address'&&check.part==='postal_code')
+  return ['subscriber_address','Policyholder ZIP code','inputmode="numeric" autocomplete="postal-code" pattern="[0-9]{5}(-?[0-9]{4})?" maxlength="10"','postal_code'];
  return visitSignedClaimEditFields[check.key]||null;
 }
 function visitSignedClaimIssueAction(check,s,ctx) {
@@ -431,6 +433,7 @@ function visitSignedClaimChecks(s,ctx,sent){
 function visitEncounterClaimStatus(s,ctx,sent){
  let label='Claim details';
  const handoff=visitHandoffEvidence(s),checks=visitSignedClaimChecks(s,ctx,sent);
+ const correction=s.claimmd?.correction||s.insurance?.claimmd?.correction;
  const blocking=visitReviewMustFix(checks),missing=blocking.find(row=>['no-charges','no-services'].includes(row.key))||blocking[0];
  const unsigned=visitReviewVisitUnsigned(s);
  // Procedure and diagnosis entry have one launcher in Visit. Keep coding fixes inside Claim details.
@@ -440,7 +443,8 @@ function visitEncounterClaimStatus(s,ctx,sent){
  let line=status.headline,hint='',action='',feedback='';
  if(handoff){
   line=visitHandoffStatus(handoff);hint=visitHandoffDetail(handoff);
-  if(visitHandoffCanResume(handoff)&&missing)action=codeIssue?'':visitSignedClaimIssueAction(missing,s,ctx);
+  if(visitSignedClaimHasAttempt(handoff)&&handoff.outcome!=='delivered')label='Check delivery';
+  else if(visitHandoffCanResume(handoff)&&missing)action=codeIssue?'':visitSignedClaimIssueAction(missing,s,ctx);
   else if(visitHandoffCanResume(handoff)&&visitHandoffMode(s,visitReviewAccount())==='queue')action=visitReviewButton('Resume claim submission','class="primary" data-visit-handoff-resume');
  }else if(!ctx.claimsAllowed){line='Claims access is required for this encounter.';}
  else if(s.state==='claim_cancelled'){
@@ -451,6 +455,7 @@ function visitEncounterClaimStatus(s,ctx,sent){
  }else if(sent){
   hint=status.detail;
   if(s.state==='post_response')hint='Review the payment in the Payment section.';
+  if(s.state==='claimmd_correction')label=visitCanCorrectHeldClaim(ctx)&&correction?.line?.code?'Fix '+correction.line.code:'Review response';
   if(s.state==='claim_rejected')label='Review returned claim';
   if(s.state==='denied')label='Review payer decision';
  }else if(unsigned){
@@ -462,14 +467,34 @@ function visitEncounterClaimStatus(s,ctx,sent){
  }else if(ready){
   line=ready.title;hint=ready.next;label=ready.finalSend||ready.manualReview?'Review claim':'Claim details';
  }else if(status.action&&!status.action.includes('data-visit-review-open'))action=status.action;
- const details=visitReviewButton(label,`${!action&&ctx.claimsAllowed?'class="primary" ':''}data-open-signed-claim-details aria-haspopup="dialog"`);
+ const correctionAttrs=visitCanCorrectHeldClaim(ctx)&&s.state==='claimmd_correction'&&correction?.line
+  ?` data-signed-claim-held-code="${esc(correction.line.code)}" data-signed-claim-held-line="${esc(correction.line.index)}"`:'';
+ const deliveryAttrs=label==='Check delivery'?' data-signed-claim-open-delivery':'';
+ const details=visitReviewButton(label,`${!action&&ctx.claimsAllowed?'class="primary" ':''}data-open-signed-claim-details aria-haspopup="dialog"${correctionAttrs}${deliveryAttrs}`);
  return `<div data-encounter-claim-summary ${unsigned?'':'data-signed-claim-summary'}><div id="claim-screen-footer" class="signed-claim-summary" tabindex="-1"><div ${handoff?'data-claim-handoff-status ':''}role="${ctx.error?'alert':'status'}"><strong>${esc(line)}</strong>${hint?`<p class="muted signed-claim-hint">${esc(hint)}</p>`:''}${feedback}</div><div class="actions">${action}${ctx.claimsAllowed&&!unsigned&&s.state!=='claim_cancelled'?details:''}</div></div></div>`;
+}
+function visitCanCorrectHeldClaim(ctx){
+ return ctx.canWrite&&ctx.claimsAllowed&&(typeof workspaceResourceAllowed!=='function'||workspaceResourceAllowed('claims','edit'));
+}
+function visitSignedClaimHasAttempt(attempt){
+ return !!attempt&&(['queued','waiting','delivered','unconfirmed'].includes(attempt.outcome)||attempt.outcome==='blocked'&&!!attempt.job_id);
+}
+function visitSignedClaimDeliveryStage(attempt){
+ if(!visitSignedClaimHasAttempt(attempt))return null;
+ const received=attempt.outcome==='delivered'&&!!attempt.receipt_reference;
+ const queued=attempt.outcome==='queued';
+ return {
+  tone:queued||received?'neutral':'warning',
+  title:received?'Claim.MD received':queued?'Queued for Claim.MD':attempt.outcome==='blocked'?'Delivery needs review':'Delivery unconfirmed',
+  next:received?'Waiting for the payer response.':queued?'SunCharts will update this claim when Claim.MD responds.':'Check the existing attempt for a receipt.',
+  attempt,received
+ };
 }
 // Summarize the recorded clearinghouse and payer evidence separately. A rejected claim can
 // have a clearinghouse receipt without ever having a payer receipt.
 function visitSignedClaimStage(s,detail){
  const claim=detail?.claim||s.claim||{},tracking=detail?.tracking||{};
- const position=detail?.claimmd_position||claim.claimmd_position||s.claimmd||{};
+ const position=detail?.claimmd_position||claim.claimmd_position||s.claimmd||s.insurance?.claimmd||{};
  const reports=(tracking.reports||[]).map(row=>row.evidence||{});
  const received=reports.some(row=>row.senderid==='CLMMD'&&String(row.message?.status||row.status).toUpperCase()==='A');
  const payerAccepted=claim.payer_acceptance_recorded||claim.status==='accepted'||claim.status==='adjudicated'||(typeof claimResendPlan==='function'
@@ -495,12 +520,19 @@ function visitSignedClaimStage(s,detail){
   claim.status==='adjudicated'?tracking.remittance_posted?(tracking.paid_cents>0?'Payment posted':'Payer response posted'):'Payer response received':
   payerAccepted?'Acceptance recorded':held?'No payer acceptance on file':
   claim.status==='submitted'?'Waiting for a response':'No payer response recorded';
- if(held)return {tone:'warning',title:'Clearinghouse correction needed',reason:position.correction?.message||position.message||s.claimmd?.message||'',delivery,payer,next:'Review the clearinghouse response before resubmitting.'};
+ if(held)return {tone:'warning',title:'Clearinghouse correction needed',reason:position.correction?.message||position.message||s.claimmd?.message||'',correction:position.correction,delivery,payer,next:'Review the clearinghouse response before resubmitting.'};
  if(rejected){
   const title=typeof visitBillingReturnTitle==='function'?visitBillingReturnTitle(claim):returnedBeforeAcceptance?'Returned before payer acceptance':'Claim returned after payer acceptance';
   return {tone:'warning',title,reason:responseReason||'',delivery,payer,next:'Review the response and correct the claim before resubmitting.'};
  }
  if(denied)return {tone:'warning',title:'Payer denial',reason:responseReason||'',delivery,payer,next:s.state==='denied'?'Review the payer’s response before choosing how to resolve the balance.':'See Payment for the current balance.'};
+ const attempt=detail?.delivery_attempt||
+  (typeof claimMdDeliveryAttempt==='function'?claimMdDeliveryAttempt(detail,handoff):handoff);
+ const currentDelivery=visitSignedClaimDeliveryStage(attempt);
+ if(currentDelivery){
+  if(payerAccepted)return {...currentDelivery,title:claim.status==='adjudicated'?'Payer response received':'Payer accepted the claim',next:'',delivery,payer};
+  return {...currentDelivery,delivery,payer};
+ }
  if(claim.status==='submitted'&&!payerAccepted&&(received||position.acknowledged)){
   return {tone:'neutral',title:'Received by the clearinghouse',reason:'',delivery,payer,next:'Waiting for payer acceptance.'};
  }
@@ -583,20 +615,31 @@ function visitSignedClaimOverview(s,ctx,sent,detail,ready=null,checking=false){
  const blocking=!sent&&!ready&&visitReviewMustFix(visitSignedClaimChecks(s,ctx,false)).length;
  const stage=checking?{tone:'neutral',title:'Checking claim details…',next:''}:ready?{tone:'neutral',title:ready.title,next:ready.next}:
   blocking&&claim.id&&!handoff?{tone:'warning',title:'Needs information',next:'Review the highlighted fields before sending.'}:
-  handoff?{tone:'neutral',title:visitHandoffStatus(handoff),next:visitHandoffDetail(handoff)}:visitSignedClaimStage(s,detail);
+  visitSignedClaimStage(s,detail);
  const reviewType=stage.tone==='warning'?'response':'delivery';
- const review=sent&&claim.id&&ctx.claimsAllowed?visitReviewButton(reviewType==='response'?'Review response':'View delivery history',`class="primary" data-signed-claim-review="${reviewType}"`):'';
+ const correction=stage.correction?.line;
+ const fix=visitCanCorrectHeldClaim(ctx)&&correction&&Number.isInteger(correction.index)&&correction.code?
+  visitReviewButton('Fix '+correction.code,`class="primary" data-signed-claim-fix-held="${esc(correction.index)}" data-procedure="${esc(correction.code)}"`):'';
+ const attempt=stage.attempt;
+ const review=attempt&&!stage.received?visitReviewButton('Check delivery','class="primary" data-signed-claim-check-delivery'):
+  sent&&claim.id&&ctx.claimsAllowed?visitReviewButton(reviewType==='response'?'Review response':'View delivery history',`data-signed-claim-review="${reviewType}"`):'';
+ const when=value=>value&&(typeof displayDateTime==='function'?displayDateTime(value):visitBillingDate(value));
+ const timeline=attempt?`<ol class="signed-claim-delivery-timeline" aria-label="Claim delivery">
+  <li><strong>${esc((attempt.queued_at||attempt.attempt_at)?'Queued':'Delivery attempt')}</strong> ${esc(when(attempt.queued_at||attempt.attempt_at)||'')}</li>
+  <li><strong>${stage.received?'Claim.MD received':'Clearinghouse receipt'}</strong> ${esc(stage.received?when(attempt.received_at)||'Recorded':'Waiting for confirmation')}${stage.received?`<small>Receipt ${esc(attempt.receipt_reference)}</small>`:''}</li>
+  <li><strong>Payer response</strong> ${esc(stage.payer||'Waiting for clearinghouse receipt')}</li>
+ </ol>`:'';
  const authorization=visitSignedClaimAuthorization({...s,claim},ctx,sent,checking);
  const finalReview=ready?.finalSend&&Array.isArray(claim.preflight_issues);
  const finalSend=finalReview?visitReviewButton('Send claim to Claim.MD','class="primary" data-signed-claim-send aria-describedby="signed-claim-attestation"'):'';
  const manualReview=ready?.manualReview&&Array.isArray(claim.preflight_issues)?visitReviewButton('Review and send','class="primary" data-signed-claim-native-review'):'';
- const readyActions=claim.id&&!sent&&!checking&&ctx.claimsAllowed?`<div class="actions signed-claim-ready-actions">${finalSend||manualReview||(ready?.action?visitReviewButton(ready.action,`class="primary" data-signed-claim-continue ${ready.attribute}`):'')}${visitReviewButton('Preview claim form',`data-encounter-claim-form="${esc(claim.id)}"`)}</div>`:'';
+ const readyActions=claim.id&&!sent&&!checking&&!attempt&&!blocking&&ctx.claimsAllowed?`<div class="actions signed-claim-ready-actions">${finalSend||manualReview||(ready?.action?visitReviewButton(ready.action,`class="primary" data-signed-claim-continue ${ready.attribute}`):'')}${visitReviewButton('Preview claim form',`data-encounter-claim-form="${esc(claim.id)}"`)}</div>`:'';
  return `<div class="signed-claim-identity">${name?`<p class="signed-claim-person">${esc(name)}</p>`:''}${claim.control_number?`<p class="muted">Claim ${esc(claim.control_number)}</p>`:''}</div>
  <dl class="signed-claim-meta">${info('Payer',insurer)}${info('Service date',dateValue)}${info('Billed',Number.isSafeInteger(total)?money(total):null)}${authorization}</dl>
  <section class="signed-claim-stage" data-tone="${stage.tone}" aria-label="Claim status">
  <h4>${esc(stage.title)}</h4>${stage.reason?`<p class="signed-claim-reason">${esc(stage.reason)}</p>`:''}
- ${sent?`<dl class="signed-claim-stage-facts">${info('Clearinghouse',stage.delivery)}${info('Payer response',stage.payer)}</dl>`:''}
- ${stage.next?`<p class="signed-claim-next">${esc(stage.next)}</p>`:''}${finalReview?visitSignedClaimAttestation(claim,account):''}${readyActions||review}
+ ${timeline||(sent?`<dl class="signed-claim-stage-facts">${info('Clearinghouse',stage.delivery)}${info('Payer response',stage.payer)}</dl>`:'')}
+ ${stage.next?`<p class="signed-claim-next">${esc(stage.next)}</p>`:''}${finalReview?visitSignedClaimAttestation(claim,account):''}${fix||readyActions||review}
  </section>`;
 }
 function visitSignedClaimDetailBody(s,ctx,sent,ready=visitSignedClaimReady(s,ctx,sent),checking=false){
@@ -611,11 +654,12 @@ function visitSignedClaimDetailBody(s,ctx,sent,ready=visitSignedClaimReady(s,ctx
   remaining.delete(check);
   const inline=visitSignedClaimInlineField(check,s,ctx);
   if(inline){
-   const [name,label,attributes]=inline;
-   return `<form class="signed-claim-issue signed-claim-inline-fix" data-check="${esc(check.key)}" data-check-level="must" data-signed-claim-fix="${esc(name)}">
-   <label>${esc(label)}<input name="value" value="${esc(content[name]??'')}" ${attributes} required aria-invalid="true" aria-describedby="claim-fix-${esc(name)}"></label>
+   const [name,label,attributes,part='']=inline;
+   return `<form class="signed-claim-issue signed-claim-inline-fix" data-check="${esc(check.key)}" data-check-level="must" data-signed-claim-fix="${esc(name)}" data-claim-fix-part="${esc(part)}">
+   <label>${esc(label)}<input name="value" value="${esc(part==='postal_code'?'':content[name]??'')}" ${attributes} required aria-invalid="true" aria-describedby="claim-fix-${esc(name)}"></label>
    <p id="claim-fix-${esc(name)}" data-claim-warning>${esc(check.text)}</p>
-   <button type="submit">Update ${esc(label)}</button><p class="signed-claim-inline-error" role="alert" hidden></p>
+   <p data-claim-fix-status role="status" hidden></p>
+   <div class="actions" data-claim-fix-recovery hidden><button type="submit">Retry saving</button><button type="button" data-claim-fix-discard>Discard unsaved change</button></div>
    </form>`;
   }
   const action=visitSignedClaimIssueAction(check,s,ctx);
@@ -637,6 +681,8 @@ function visitSignedClaimDetailBody(s,ctx,sent,ready=visitSignedClaimReady(s,ctx
  const memberIssues=issues(match('member-id'));
  const insurerIssues=issues(check=>check.group==='insurance'&&!check.key.includes('subscriber'));
  const subscriberAddressIssues=issues(match('insurance-subscriber_address'));
+ const subscriber=claim?.submission_defaults?.subscriber_address;
+ const subscriberAddress=subscriber?.line1?[subscriber.line1,subscriber.line2,subscriber.city,[subscriber.state,subscriber.postal_code].filter(Boolean).join(' ')].filter(Boolean).join(', '):content.subscriber_address;
  const subscriberIssues=issues(check=>check.group==='insurance');
  const patientIssues=issues(check=>check.group==='patient');
  const placeIssues=issues(match('place-of-service')),orgIssues=issues(match('practice-tax','practice-name')),billingAddressIssues=issues(match('practice-address'));
@@ -652,12 +698,147 @@ function visitSignedClaimDetailBody(s,ctx,sent,ready=visitSignedClaimReady(s,ctx
  const cached=typeof claimDetailCache==='function'?claimDetailCache(claim):null;
  return `<div data-signed-claim-overview>${visitSignedClaimOverview(s,ctx,sent,sent?cached:null,ready,checking)}</div>
  <details class="signed-claim-disclosure" data-inline data-signed-claim-information${sent||ready||checking?'':' open'}><summary>Claim information</summary>
- <dl class="signed-claim-fields">${insurerIssues||editableCoverage?field('Insurance',visitBillingInsurer(s),insurerIssues,editableCoverage):''}${field('Member ID',coverage.member_id,memberIssues)}${subscriberIssues?field('Policy holder',coverage.subscriber_name,subscriberIssues):''}${subscriberAddressIssues?field('Policy holder address',content.subscriber_address,subscriberAddressIssues):''}${patientIssues?field('Patient address',content.patient_address,patientIssues):''}${field('Rendering provider',rendering,providerIssues)}${field('Rendering NPI',renderNpi,renderIssues)}${field('Billing organization',org,orgIssues)}${billingAddressIssues?field('Billing address',content.billing_address,billingAddressIssues):''}${field('Billing NPI',usesRendering?(billingNpi?billingNpi+' · Uses the rendering clinician’s NPI':'Uses the rendering clinician’s NPI'):billingNpi,billingIssues)}${field('Place of service',content.place_of_service||account.content?.claim_details?.place_of_service||defaults.place_of_service,placeIssues,placeIssues?'':editClaim)}</dl>
+ <dl class="signed-claim-fields">${insurerIssues||editableCoverage?field('Insurance',visitBillingInsurer(s),insurerIssues,editableCoverage):''}${field('Member ID',coverage.member_id,memberIssues)}${subscriberIssues?field('Policy holder',coverage.subscriber_name,subscriberIssues):''}${subscriberAddressIssues?field('Policy holder address',subscriberAddress,subscriberAddressIssues):''}${patientIssues?field('Patient address',content.patient_address,patientIssues):''}${field('Rendering provider',rendering,providerIssues)}${field('Rendering NPI',renderNpi,renderIssues)}${field('Billing organization',org,orgIssues)}${billingAddressIssues?field('Billing address',content.billing_address,billingAddressIssues):''}${field('Billing NPI',usesRendering?(billingNpi?billingNpi+' · Uses the rendering clinician’s NPI':'Uses the rendering clinician’s NPI'):billingNpi,billingIssues)}${field('Place of service',content.place_of_service||account.content?.claim_details?.place_of_service||defaults.place_of_service,placeIssues,placeIssues?'':editClaim)}</dl>
  <section><h4>Diagnoses &amp; procedures</h4>${diagnoses.length?`<p>${esc(diagnoses.join(', '))}</p>`:''}${services?`<ul>${services}</ul>`:''}${codingChecks}${coding}</section>${rest}${options}</details>
  <details class="signed-claim-disclosure" data-inline data-signed-claim-activity${ready?' hidden':''}><summary>${sent?'Claim history and activity':'Claim options'}</summary><p class="muted" data-signed-claim-activity-status role="status" hidden></p><div data-claim-secondary-host></div></details>
  ${denial||form?`<details class="signed-claim-disclosure" data-inline data-signed-claim-other><summary>${denial?'Other claim actions':'Claim form'}</summary><div class="actions">${denial}${form}</div></details>`:''}`;
 }
-function visitOpenSignedClaimDetails(button){
+function visitSignedHeldModifierList(value){
+ return String(value||'').toUpperCase().split(/[\s,]+/).filter(Boolean);
+}
+function mountVisitSignedHeldEditor(dialog,node,{claimId,current,ctx,panels}){
+ const section=document.createElement('section');
+ section.hidden=true;section.className='signed-claim-held-editor';
+ node.append(section);
+ let record,draftInput,status,timer,work,sourceLine,version,reviewing=false;
+ const pathname=`${visitReviewClaimsBase()}/${encodeURIComponent(claimId)}/claimmd-correction`;
+ const modifiers=()=>visitSignedHeldModifierList(draftInput?.value);
+ const valid=()=>modifiers().length<=4&&modifiers().every(code=>/^[A-Z0-9]{2}$/.test(code))&&new Set(modifiers()).size===modifiers().length;
+ const same=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
+ const dirty=()=>!section.hidden&&!!draftInput&&!same(modifiers(),record.draft?.modifiers||visitSignedHeldModifierList(record.source.line.modifiers));
+ const match=next=>next.source?.line?.index===sourceLine.index&&next.source.line.code===sourceLine.code&&
+  (!record||next.source.submission_id===record.source.submission_id&&next.source.report_id===record.source.report_id);
+ const save=async()=>{
+  clearTimeout(timer);
+  if(!current()||!valid())return false;
+  if(work)return work;
+  if(!dirty())return true;
+  status.textContent='Saving…';
+  work=(async()=>{
+   try{
+    while(current()&&dirty()&&valid()){
+     const next=await api(pathname,'PUT',{report_id:record.source.report_id,submission_id:record.source.submission_id,
+      line_index:sourceLine.index,modifiers:modifiers()},version);
+     if(!current()||!match(next))return false;
+     record=next;version=next.claim_version;
+    }
+    status.textContent=dirty()?'Complete the modifiers to save them.':'Saved';
+    return current()&&!dirty();
+   }catch(error){
+    if(current())status.textContent=visitClaimErrorText(error);
+    return false;
+   }
+  })().finally(()=>work=null);
+  return work;
+ };
+ const show=()=>{
+  const {source,draft,portal_url}=record;
+  const original=visitSignedHeldModifierList(source.line.modifiers);
+  const entered=draft?.modifiers||original;
+  const reviewed=!!draft?.reviewed_at,changed=!!draft&&!same(original,entered);
+  const label=entered.length?entered.join(', '):'None';
+  const related=source.related_lines?.map(line=>[line.code,line.description].filter(Boolean).join(' · ')).join(', ');
+  let portal;
+  try{portal=new URL(portal_url);if(portal.origin!=='https://www.claim.md')portal=null;}catch{}
+  section.innerHTML=`
+   <h3 tabindex="-1">Fix procedure ${esc(source.line.code)}</h3>
+   <p>${esc(source.message)}</p>
+   <dl class="signed-claim-stage-facts">
+    <div><dt>Affected procedure</dt><dd>${esc([source.line.code,source.line.description].filter(Boolean).join(' · '))}</dd></div>
+    <div><dt>Original modifiers</dt><dd>${esc(original.join(', ')||'None')}</dd></div>
+    ${related?`<div><dt>Related procedure</dt><dd>${esc(related)}</dd></div>`:''}
+   </dl>
+   ${reviewing||reviewed?`<div class="signed-claim-stage">
+    <h4>${reviewed?'Continue in Claim.MD':'Review the correction'}</h4>
+    <dl class="signed-claim-stage-facts"><div><dt>Claim.MD claim ID</dt><dd>${esc(source.external_claim_id)}</dd></div><div><dt>Updated modifiers</dt><dd>${esc(label)}</dd></div></dl>
+    ${reviewed?`<p>Apply these modifiers to the existing held claim in Claim.MD, then submit it there. SunCharts will record the next status from Claim.MD.</p>
+     ${portal?`<a class="button primary" href="${esc(portal.href)}" target="_blank" rel="noopener noreferrer">Continue in Claim.MD</a>`:''}`:
+      '<p>Confirm these modifiers agree with the signed note and payer requirements.</p><button type="button" class="primary" data-held-confirm>Confirm correction</button>'}
+   </div>`:
+    `<label>Modifiers<input data-held-modifiers value="${esc(entered.join(' '))}" maxlength="23" autocomplete="off" aria-describedby="held-modifier-help"></label>
+     <p class="muted" id="held-modifier-help">Enter up to four two-character modifiers separated by spaces.</p>
+     <button type="button" class="primary" data-held-review${changed?'':' disabled'}>Review correction</button>`}
+   <button type="button" data-held-back>${reviewing&&!reviewed?'Back to modifiers':'Back to claim'}</button>
+   <p role="status" data-held-save-status></p>`;
+  draftInput=section.querySelector('[data-held-modifiers]');status=section.querySelector('[data-held-save-status]');
+  draftInput?.addEventListener('input',()=>{
+   clearTimeout(timer);
+   const review=section.querySelector('[data-held-review]');
+   review.disabled=!valid()||same(modifiers(),original);
+   status.textContent=valid()?'':'Enter different two-character modifiers separated by spaces.';
+   if(valid()&&dirty())timer=setTimeout(()=>void save(),550);
+  });
+  (draftInput||section.querySelector('h3')).focus({preventScroll:true});
+ };
+ const close=async()=>{
+  if(!dirty()&&!work)return true;
+  if(!valid()){status.textContent='Enter up to four different two-character modifiers separated by spaces.';draftInput.focus();return false;}
+  if(!await save())return false;
+  return !dirty()||save();
+ };
+ const open=async(line)=>{
+  if(!current()||!visitCanCorrectHeldClaim(ctx)||!claimId||!line?.code||!Number.isInteger(line.index)||!section.hidden)return;
+  section.hidden=false;
+  section.innerHTML='<p role="status">Loading the held procedure…</p>';
+  sourceLine=line;record=null;reviewing=false;
+  for(const panel of panels)panel.hidden=true;
+  try{
+   const next=await api(pathname);
+   if(!current())return;
+   if(!match(next))throw new Error('The clearinghouse response changed. Review the current response before making corrections.');
+   record=next;version=next.claim_version;show();
+  }catch(error){
+   if(current()){
+    section.innerHTML='<p role="alert">'+esc(visitClaimErrorText(error))+'</p><button type="button" data-held-back>Back to claim</button>';
+   }
+  }
+ };
+ section.addEventListener('click',event=>{
+  const button=event.target.closest('button');
+  if(!button||!current())return;
+  event.stopPropagation();
+  if(button.hasAttribute('data-held-back')){
+   if(reviewing&&!record?.draft?.reviewed_at){reviewing=false;show();return;}
+   void close().then(closed=>{
+    if(!closed||!current())return;
+    section.hidden=true;draftInput=null;
+    panels[0].hidden=false;
+    (panels[0].querySelector('[data-signed-claim-fix-held]')||panels[0].querySelector('[data-signed-claim-review]'))?.focus();
+   });
+   return;
+  }
+  if(!event.isTrusted)return;
+  if(button.hasAttribute('data-held-review')){
+   button.disabled=true;
+   void close().then(saved=>{
+    if(!saved||!current()||same(record.draft?.modifiers||[],visitSignedHeldModifierList(record.source.line.modifiers)))return;
+    reviewing=true;show();
+   }).finally(()=>{if(button.isConnected)button.disabled=false;});
+  }
+  if(button.hasAttribute('data-held-confirm')){
+   button.disabled=true;
+   void api(pathname,'POST',{report_id:record.source.report_id,submission_id:record.source.submission_id,
+    line_index:sourceLine.index,modifiers:record.draft.modifiers,reviewed:true},version).then(next=>{
+    if(!current()||!match(next))return;
+    record=next;version=next.claim_version;show();
+   }).catch(error=>{if(current())status.textContent=visitClaimErrorText(error);})
+    .finally(()=>{if(button.isConnected)button.disabled=false;});
+  }
+ });
+ dialog.addEventListener('close',()=>clearTimeout(timer),{once:true});
+ return {open,close,dirty:()=>dirty()||!!work,hasControl:button=>section.contains(button)};
+}
+function visitOpenSignedClaimDetails(button,intent={}){
  const stored=encounterRevenueState.data?.summary,ctx=visitReviewContext(),person=selected,visit=typeof activeVisit==='undefined'?null:activeVisit?.id,identity=me;
  if(!stored||!ctx.claimsAllowed||stored.visit?.id!==visit||stored.patient_id!==person)return;
  const existing=document.querySelector('dialog[data-signed-claim-details][open]:not([data-closing])');
@@ -675,7 +856,11 @@ function visitOpenSignedClaimDetails(button){
  const current=()=>dialog.isConnected&&dialog.open&&!dialog.dataset.closing&&person===selected&&visit===activeVisit?.id&&identity===me&&encounterRevenueState.data?.summary?.claim?.id===claimId;
  const matched=claim=>current()&&claim?.id===claimId&&claim.patient_id===person&&claim.account_id===accountId;
  const overview=node.querySelector('[data-signed-claim-overview]');
+ const activity=dialog.querySelector('[data-signed-claim-activity]');
+ overview.setAttribute('aria-live','polite');
+ let deliveryAttempt=visitHandoffEvidence(s),deliveryTimer,deliveryReading;
  const information=node.querySelector('[data-signed-claim-information]');
+ const heldEditor=mountVisitSignedHeldEditor(dialog,node,{claimId,current,ctx,panels:[overview,information,activity]});
  const auth=overview.querySelector('[data-signed-claim-auth-field]');
  const input=auth?.querySelector('[data-signed-claim-auth]');
  const authStatus=auth?.querySelector('[data-signed-claim-auth-status]');
@@ -685,8 +870,10 @@ function visitOpenSignedClaimDetails(button){
  manualReviewPane.innerHTML='<div data-signed-claim-native-host></div><div class="actions"><button type="button" data-signed-claim-native-back>Back to claim</button></div>';
  const manualReviewHost=manualReviewPane.firstElementChild;
  node.append(manualReviewPane);
- let authWork,authTimer,savedDetail,reviewedEncounter,manualReviewStatus,actionPending=false,replaying=false,finalizing=false;
+ let inlineTimer,inlineWork,authWork,authTimer,savedDetail,reviewedEncounter,manualReviewStatus,actionPending=false,replaying=false,finalizing=false;
  const dirty=()=>input&&input.value.trim()!==input.defaultValue.trim();
+ const inlineFields=()=>[...information.querySelectorAll('[data-signed-claim-fix] input')];
+ const unsavedInline=()=>inlineFields().filter(field=>field.value.trim()!==field.defaultValue.trim());
  const showReviewError=message=>{
   let status=overview.querySelector('[data-signed-claim-review-error]');
   if(!status){
@@ -697,6 +884,7 @@ function visitOpenSignedClaimDetails(button){
  };
  const repaint=()=>{
   const oldFocus=document.activeElement,wasEditing=oldFocus===input;
+  const focusedField=oldFocus?.form?.dataset?.signedClaimFix;
   const edits=new Map([...information.querySelectorAll('[data-signed-claim-fix] input')].filter(field=>field.value!==field.defaultValue)
    .map(field=>[field.form.dataset.signedClaimFix,field.value]));
   const template=document.createElement('template');
@@ -709,7 +897,7 @@ function visitOpenSignedClaimDetails(button){
   }
   overview.replaceChildren(...next.childNodes);
   information.replaceChildren(...template.content.querySelector('[data-signed-claim-information]').childNodes);
-  for(const field of information.querySelectorAll('[data-signed-claim-fix] input')){
+  for(const field of inlineFields()){
    if(edits.has(field.form.dataset.signedClaimFix))field.value=edits.get(field.form.dataset.signedClaimFix);
   }
   const submit=overview.querySelector('[data-signed-claim-send]');
@@ -720,6 +908,8 @@ function visitOpenSignedClaimDetails(button){
   }
   if(visitReviewMustFix(visitSignedClaimChecks(s,ctx,false)).length)information.open=true;
   if(wasEditing&&input.isConnected)input.focus({preventScroll:true});
+  if(focusedField)(inlineFields().find(field=>field.form.dataset.signedClaimFix===focusedField)||inlineFields()[0]||
+   overview.querySelector('[data-signed-claim-send],[data-signed-claim-native-review]'))?.focus({preventScroll:true});
   activity.hidden=!!ready;
  };
  const loadSavedClaim=async(expectedStatus=s.claim.status)=>{
@@ -728,7 +918,7 @@ function visitOpenSignedClaimDetails(button){
   savedDetail=detail;
   const claim={...s.claim,...detail.claim,can_confirm_self_policyholder:detail.can_confirm_self_policyholder===true,preflight_issues:detail.preflight_issues,
    submission_defaults:detail.submission_defaults,
-   submission_issues:visitHandoffMode(s,detail.claim.snapshot?.account)==='queue'&&!claimHasPreparedSubmission(detail)?detail.submission_issues:[]};
+   submission_issues:(visitHandoffMode(s,detail.claim.snapshot?.account)==='queue'||ctx.delegated&&s.insurance?.electronic===true)&&!claimHasPreparedSubmission(detail)?detail.submission_issues:[]};
   if(claimHasRecordedSubmission(detail)||claimHasPreparedSubmission(detail))claim.file_prepared=true;
   const state=s.state==='fix_claim'&&Array.isArray(detail.preflight_issues)&&!detail.preflight_issues.length?'send_claim':s.state;
   if(input&&!dirty()&&!authWork){input.value=String(claim.content?.encounter?.prior_authorization_number||'').trim();input.defaultValue=input.value;}
@@ -770,33 +960,128 @@ function visitOpenSignedClaimDetails(button){
   if(!current())return;
   clearTimeout(authTimer);
   if(!authWork)authStatus.textContent=dirty()?'Unsaved changes':'';
-  if(dirty())authTimer=setTimeout(()=>void flushAuthorization(),450);
+  if(dirty())authTimer=setTimeout(()=>{if(!inlineWork)void flushAuthorization();},450);
  });
+ const showInlineStatus=(field,message,recover=false)=>{
+  const status=field.form.querySelector('[data-claim-fix-status]');
+  status.textContent=message;status.hidden=!message;
+  field.form.querySelector('[data-claim-fix-recovery]').hidden=!recover;
+ };
+ const flushInline=(showInvalid=false)=>{
+  clearTimeout(inlineTimer);
+  if(inlineWork)return inlineWork;
+  inlineWork=(async()=>{
+   let field;
+   try{
+    if(!await flushAuthorization()||!current())return false;
+    while(current()&&(field=unsavedInline().find(candidate=>candidate.validity.valid))){
+     const form=field.form,claim=s.claim,fieldName=form.dataset.signedClaimFix;
+     const issue=visitSignedClaimChecks(s,ctx,false).find(check=>check.key===form.dataset.check);
+     const spec=issue&&visitSignedClaimInlineField(issue,s,visitReviewContext());
+     if(!spec||spec[0]!==fieldName||(spec[3]||'')!==form.dataset.claimFixPart)return false;
+     const entered=field.value.trim(),address=claim.submission_defaults?.subscriber_address;
+     if(spec[3]==='postal_code'&&(!address?.line1||!address.city||!address.state))return false;
+     const value=spec[3]==='postal_code'?[address.line1,address.line2,address.city,address.state+' '+entered].filter(Boolean).join(', '):entered;
+     showInlineStatus(field,'Saving…');
+     const saved=await api(`${visitReviewClaimsBase()}/${encodeURIComponent(claimId)}`,'PUT',{
+      content:{...claim.content,[fieldName]:value},reason:'Corrected a claim field during review'
+     },claim.version);
+     if(!matched(saved))return false;
+     field.defaultValue=entered;
+     s={...s,claim:{...claim,...saved}};
+     if(field.value.trim()===entered)await loadSavedClaim();
+    }
+    const remaining=unsavedInline()[0];
+    if(showInvalid&&remaining)showInlineStatus(remaining,'Complete this field to save it.',true);
+    return current()&&!remaining;
+   }catch(error){
+    if(current()){
+     if(field?.isConnected)showInlineStatus(field,visitClaimErrorText(error),true);
+     else showReviewError(visitClaimErrorText(error));
+    }
+    return false;
+   }
+  })().finally(()=>inlineWork=null);
+  return inlineWork;
+ };
  const finishClose=async()=>{
-  if(await flushAuthorization()&&current()){
+  if(await heldEditor.close()&&await flushInline(true)&&current()){
    sheetClose(dialog);
    void loadEncounterRevenueStatus(encounterChargeAccount(),true);
-  }else if(current()){input?.focus();}
+  }else if(current()){(unsavedInline()[0]||input)?.focus();}
  };
  dialog.addEventListener('cancel',event=>{
-  if(!actionPending&&!dirty()&&!authWork)return;
+  if(!actionPending&&!dirty()&&!authWork&&!inlineWork&&!unsavedInline().length&&!heldEditor.dirty())return;
   event.preventDefault();event.stopImmediatePropagation();
   if(!actionPending)void finishClose();
  },true);
- if(sent&&claimId){
+ const renderDelivery=(detail=null,focusStatus=false)=>{
+  overview.hidden=false;manualReviewPane.hidden=true;manualReviewHost.replaceChildren();
+  information.hidden=true;activity.hidden=true;
+  const focused=focusStatus||overview.contains(document.activeElement);
+  overview.innerHTML=visitSignedClaimOverview(s,ctx,true,{...detail,delivery_attempt:deliveryAttempt});
+  if(focused){
+   const focus=overview.querySelector('[data-signed-claim-check-delivery]')||overview.querySelector('.signed-claim-stage h4');
+   if(focus){if(focus.tagName==='H4')focus.tabIndex=-1;focus.focus({preventScroll:true});}
+  }
+ };
+ const trackDelivery=(delay=1500)=>{
+  clearTimeout(deliveryTimer);
+  if(deliveryAttempt?.outcome==='queued')deliveryTimer=setTimeout(()=>void refreshDelivery(),delay);
+ };
+ const applyDelivery=result=>{
+  if(!current()||!visitSignedClaimHasAttempt(result))return false;
+  deliveryAttempt=result;
+  visitHandoffLast={patient:person,visit,identity,result};
+  visitReviewPaint();
+  if(typeof encounterStepsSchedule==='function')encounterStepsSchedule();
+  renderDelivery(null,true);
+  trackDelivery();
+  return true;
+ };
+ const refreshDelivery=async()=>{
+  if(!current()||deliveryReading)return;
+  deliveryReading=true;
+  clearTimeout(deliveryTimer);
+  const button=overview.querySelector('[data-signed-claim-check-delivery]');
+  if(button)button.disabled=true;
+  try{
+   const detail=await api(`${visitReviewClaimsBase()}/${encodeURIComponent(claimId)}`);
+   if(!matched(detail?.claim))return;
+   deliveryAttempt=typeof claimMdDeliveryAttempt==='function'?claimMdDeliveryAttempt(detail,deliveryAttempt):deliveryAttempt;
+   if(visitHandoffLast?.result?.claim_id===claimId&&visitHandoffLast?.identity===identity&&deliveryAttempt){
+    visitHandoffLast={patient:person,visit,identity,result:deliveryAttempt};
+   }
+   renderDelivery(detail);
+   if(deliveryAttempt?.outcome==='unconfirmed')showReviewError('A delivery receipt is not yet recorded for this attempt.');
+   if(deliveryAttempt?.outcome!=='queued')void loadEncounterRevenueStatus(encounterChargeAccount(),true);
+  }catch(error){
+   if(current())showReviewError(visitClaimErrorText(error));
+  }finally{
+   deliveryReading=false;
+   if(button)button.disabled=false;
+   if(current())trackDelivery(8000);
+  }
+ };
+ if(visitSignedClaimHasAttempt(deliveryAttempt)){
+  renderDelivery(null,intent.kind==='delivery');
+  if(deliveryAttempt.outcome==='queued'||deliveryAttempt.outcome==='delivered')setTimeout(()=>void refreshDelivery(),0);
+ }else if(sent&&claimId){
   // The visit summary includes the claim ID. Read the matched, existing claim for its saved
   // response, without opening the claim editor or checking with the clearinghouse.
   void api(`${visitReviewClaimsBase()}/${encodeURIComponent(claimId)}`).then(detail=>{
    if(current()&&detail?.claim?.id===claimId&&detail.claim.patient_id===person&&detail.claim.account_id===accountId){
     const focused=overview.contains(document.activeElement);
     overview.innerHTML=visitSignedClaimOverview(s,ctx,sent,detail);
-    if(focused)overview.querySelector('[data-signed-claim-review]')?.focus({preventScroll:true});
+    const correction=detail.claimmd_position?.correction?.line;
+    if(intent.kind==='correction'&&correction?.index===intent.line&&correction.code===intent.procedure){
+     void heldEditor.open(correction);
+    }else if(focused)overview.querySelector('[data-signed-claim-fix-held],[data-signed-claim-review]')?.focus({preventScroll:true});
    }
   }).catch(()=>{
    if(current())overview.querySelector('.signed-claim-stage')?.insertAdjacentHTML('beforeend','<p class="muted">Saved responses could not be loaded. Open claim history and activity to try again.</p>');
   });
  }
- const activity=dialog.querySelector('[data-signed-claim-activity]');
  const activityStatus=activity.querySelector('[data-signed-claim-activity-status]');
  let activityLoad;
  const loadActivity=async()=>{
@@ -817,7 +1102,10 @@ function visitOpenSignedClaimDetails(button){
  };
  activity.addEventListener('toggle',()=>{if(activity.open)void loadActivity();});
  if(checking)void loadSavedClaim().then(()=>{
-  if(current())information.querySelector('[data-signed-claim-fix] input')?.focus({preventScroll:true});
+  if(!current())return;
+  const target=intent.kind==='missing'?inlineFields().find(field=>field.form.dataset.signedClaimFix===intent.field&&
+   field.form.dataset.claimFixPart===(intent.part||'')):inlineFields()[0];
+  target?.focus({preventScroll:true});
  }).catch(error=>{
   if(!current())return;
   repaint();
@@ -826,43 +1114,40 @@ function visitOpenSignedClaimDetails(button){
  const restore=()=>{if(typeof encounterClaimOptionsRestore==='function')encounterClaimOptionsRestore(dialog);};
  dialog.addEventListener('close',()=>{
   clearTimeout(authTimer);
+  clearTimeout(deliveryTimer);
+  clearTimeout(inlineTimer);
   restore();
   if(dialog.dataset.handoff||person!==selected||visit!==activeVisit?.id||identity!==me)return;
   if(!manualReviewPane.hidden)void loadEncounterRevenueStatus(encounterChargeAccount(),true);
   const launcher=button?.isConnected?button:$('visit-page-host')?.querySelector('[data-encounter-claim-status] [data-open-signed-claim-details]');
   launcher?.focus({preventScroll:true});
  },{once:true});
+ information.addEventListener('input',event=>{
+  const field=event.target;
+  if(!current()||event.isComposing||!field.form?.hasAttribute('data-signed-claim-fix'))return;
+  clearTimeout(inlineTimer);
+  if(!inlineWork)showInlineStatus(field,'');
+  if(field.validity.valid&&field.value.trim()!==field.defaultValue.trim())inlineTimer=setTimeout(()=>void flushInline(),550);
+ });
  dialog.addEventListener('submit',event=>{
-  const form=event.target.closest('[data-signed-claim-fix]');
-  if(!form)return;
+  if(!event.target.matches('[data-signed-claim-fix]'))return;
   event.preventDefault();event.stopImmediatePropagation();
-  if(!current()||actionPending)return;
-  const field=form.dataset.signedClaimFix,issue=visitSignedClaimChecks(s,ctx,false).find(check=>check.key===form.dataset.check);
-  if(!issue||visitSignedClaimInlineField(issue,s,visitReviewContext())?.[0]!==field)return;
-  const value=form.elements.value.value.trim();
-  if(!value){form.elements.value.focus();return;}
-  actionPending=true;
-  const submit=form.querySelector('button'),status=form.querySelector('[role="alert"]');
-  submit.disabled=true;status.hidden=true;
-  void (async()=>{
-   if(!await flushAuthorization()||!current())return;
-   const claim=s.claim;
-   const saved=await api(`${visitReviewClaimsBase()}/${encodeURIComponent(claimId)}`,'PUT',{
-    content:{...claim.content,[field]:value},reason:'Corrected a claim field during review'
-   },claim.version);
-   if(!matched(saved))return;
-   s={...s,claim:{...claim,...saved}};
-   await loadSavedClaim();
-   if(current())(information.querySelector('[data-signed-claim-fix] input')||overview.querySelector('[data-signed-claim-send]'))?.focus({preventScroll:true});
-  })().catch(error=>{
-   if(current()){status.textContent=visitClaimErrorText(error);status.hidden=false;form.elements.value.focus();}
-  }).finally(()=>{submit.disabled=false;actionPending=false;});
+  if(current()&&!actionPending)void flushInline(true);
  });
  // A native editor owns its own form and drafts. Return the original ancillary controls to their
  // owner before routing into that editor, including during a background refresh of claim details.
  dialog.addEventListener('click',event=>{
   const action=event.target.closest('button');
   if(person!==selected||visit!==activeVisit?.id||identity!==me){event.preventDefault();event.stopPropagation();restore();dialog.close();dialog.remove();return;}
+  if(action&&heldEditor.hasControl(action))return;
+  if(action?.hasAttribute('data-signed-claim-fix-held')){
+   event.preventDefault();event.stopImmediatePropagation();
+   void heldEditor.open({index:Number(action.dataset.signedClaimFixHeld),code:action.dataset.procedure});
+   return;
+  }
+  if(action?.hasAttribute('data-signed-claim-check-delivery')){
+   event.preventDefault();event.stopImmediatePropagation();void refreshDelivery();return;
+  }
   if(action?.hasAttribute('data-signed-claim-native-back')){
    event.preventDefault();event.stopImmediatePropagation();
    const form=manualReviewHost.querySelector('#claimmd-submit-form');
@@ -878,7 +1163,7 @@ function visitOpenSignedClaimDetails(button){
   if(action&&manualReviewHost.contains(action))return;
   const close=event.target===dialog||action?.hasAttribute('data-sheet-close');
   if(close&&actionPending){event.preventDefault();event.stopImmediatePropagation();return;}
-  if(close&&(dirty()||authWork)){event.preventDefault();event.stopImmediatePropagation();void finishClose();return;}
+  if(close&&(dirty()||authWork||inlineWork||unsavedInline().length||heldEditor.dirty())){event.preventDefault();event.stopImmediatePropagation();void finishClose();return;}
   if(retry&&action===retry){event.preventDefault();event.stopImmediatePropagation();void flushAuthorization();return;}
   if(action?.hasAttribute('data-signed-claim-auth-discard')){
    event.preventDefault();event.stopImmediatePropagation();
@@ -897,8 +1182,15 @@ function visitOpenSignedClaimDetails(button){
   const preview=action?.hasAttribute('data-encounter-claim-form');
   const policyHolder=action?.hasAttribute('data-signed-confirm-policyholder');
   const inlineFix=action?.closest('[data-signed-claim-fix]');
-  if(inlineFix&&!actionPending)return;
-  if(action&&!close&&!replaying&&(actionPending||dirty()||authWork||send||sendNow||openNative||preview&&claimId||policyHolder)){
+  if(inlineFix&&!actionPending){
+   if(action.hasAttribute('data-claim-fix-discard')){
+    const field=inlineFix.elements.value;
+    field.value=field.defaultValue;showInlineStatus(field,'');field.focus();
+    void loadSavedClaim().catch(error=>{if(current())showInlineStatus(field,visitClaimErrorText(error),true);});
+   }
+   return;
+  }
+  if(action&&!close&&!replaying&&(actionPending||dirty()||authWork||inlineWork||unsavedInline().length||send||sendNow||openNative||preview&&claimId||policyHolder)){
    event.preventDefault();event.stopImmediatePropagation();
    if(actionPending||openNative&&!event.isTrusted||sendNow&&(!event.isTrusted||!reviewedEncounter))return;
    actionPending=true;action.disabled=true;
@@ -908,12 +1200,12 @@ function visitOpenSignedClaimDetails(button){
     if(input)input.disabled=true;
    }
    void (async()=>{
-    if(!await flushAuthorization()||!current()){if(current())input?.focus();return;}
+    if(!await flushInline(true)||!current()){if(current())(unsavedInline()[0]||input)?.focus();return;}
     if(openNative){
      if(!visitSignedClaimReady(s,visitReviewContext(),false)?.manualReview||!Number.isSafeInteger(s.claim.version))return;
      const opened=await openClaimMdSubmissionReview(claimId,{
       accountId,current,releaseDraft:true,reviewHost:manualReviewHost,expectedVersion:s.claim.version,
-      afterQueue:()=>{if(current())sheetClose(dialog);}
+      afterQueue:result=>{if(current())applyDelivery(result);}
      });
      if(current()&&opened){
       manualReviewStatus=manualReviewHost.querySelector('#claimmd-submit-form').claimRecord.status;
@@ -931,7 +1223,7 @@ function visitOpenSignedClaimDetails(button){
      }
      await visitClaimHandoff(false,'queue',claimId,claim.version,{
       ...displayed,patient:person,visit,identity,synthetic:claim.content.synthetic_test===true,
-      completed:()=>{dialog.dataset.handoff='1';sheetClose(dialog);}
+      completed:result=>applyDelivery(result)
      });
      return;
     }
@@ -996,7 +1288,7 @@ function visitOpenSignedClaimDetails(button){
 
 // A worklist result must open the exact claim. Older claims for this visit remain available
 // in the claims workspace when the encounter is now showing a different claim.
-async function visitOpenCurrentEncounterClaim(claimId,accountId){
+async function visitOpenCurrentEncounterClaim(claimId,accountId,intent={}){
  const visit=activeVisit?.id,person=selected,identity=me;
  if(!$('visit-page-host')||!visit||!person||typeof encounterStepsSync!=='function')return false;
  const account=encounterChargeAccount();
@@ -1009,7 +1301,7 @@ async function visitOpenCurrentEncounterClaim(claimId,accountId){
  // Selecting the visit schedules its layout. Mount the claim controls before handing off to them.
  const launcher=()=> $('visit-page-host')?.querySelector('[data-encounter-claim-status] [data-open-signed-claim-details]');
  if(!launcher())encounterStepsSync();
- return !!visitOpenSignedClaimDetails(launcher());
+ return !!visitOpenSignedClaimDetails(launcher(),intent);
 }
 
 function visitReviewPanelMarkup(s,ctx={}){
@@ -1380,7 +1672,12 @@ document.addEventListener('click',event=>{
 },true);
 document.addEventListener('click',event=>{
   const button=event.target.closest?.('button');if(!button)return;
-  if(button.hasAttribute('data-open-signed-claim-details')){event.preventDefault();visitOpenSignedClaimDetails(button);return;}
+  if(button.hasAttribute('data-open-signed-claim-details')){
+   event.preventDefault();
+   const intent=button.dataset.signedClaimHeldCode?{kind:'correction',procedure:button.dataset.signedClaimHeldCode,line:Number(button.dataset.signedClaimHeldLine)}:
+    button.hasAttribute('data-signed-claim-open-delivery')?{kind:'delivery'}:{};
+   visitOpenSignedClaimDetails(button,intent);return;
+  }
   if(button.dataset.signedCoverage){
    const row=workspace?.billing?.coverages?.find(item=>item.id===button.dataset.signedCoverage);
    if(row&&visitReviewContext().canWrite){event.preventDefault();coverageEditor(row,null,{sheet:true,patient:workspace.patient});const field=$('coverage-form')?.elements?.[button.dataset.signedFocus];visitClaimHighlightInput(field,button.closest('[data-check]')?.querySelector('[data-claim-warning]')?.textContent);}
@@ -1437,14 +1734,17 @@ function visitHandoffEvidence(s){
  if(['correct_claim','claimmd_correction','claimmd_received','claim_rejected','denied','post_response','review_response','review_balance','patient_owes','patient_credit','paid_in_full','claim_cancelled'].includes(s?.state))return null;
  const local=visitHandoffLast;
  const server=s?.claim_handoff;
- if(server)return server;
+ const localCurrent=local&&local.identity===me&&typeof activeVisit!=='undefined'&&local.patient===selected&&local.visit===activeVisit?.id&&
+  s?.visit?.id===activeVisit?.id&&s?.patient_id===selected&&(!s?.claim?.id||!local.result.claim_id||s.claim.id===local.result.claim_id);
+ if(server&&!(localCurrent&&server.outcome==='prepared'&&visitSignedClaimHasAttempt(local.result)&&
+    (!local.result.submission_id||server.submission_id===local.result.submission_id)))return server;
  if(!local||typeof activeVisit==='undefined'||s?.visit?.id!==activeVisit?.id||s?.patient_id!==selected)return null;
  if(local&&local.identity===me&&local.patient===selected&&local.visit===activeVisit?.id&&
    (!s?.claim?.id||!local.result.claim_id||s.claim.id===local.result.claim_id))return local.result;
  return null;
 }
 function visitHandoffStatus(result){
- const names={queued:'Queued for Claim.MD',delivered:'Delivered to Claim.MD',waiting:'Delivery unconfirmed',needs_review:'Claim needs review',held:'Claim on hold',prepared:'Claim prepared',blocked:'Claim needs attention',recorded_externally:'Submission recorded externally',self_pay:'Self-pay',unconfirmed:'Handoff unconfirmed'};
+ const names={queued:'Queued for Claim.MD',delivered:'Claim.MD received',waiting:'Delivery unconfirmed',needs_review:'Claim needs review',held:'Claim on hold',prepared:'Claim prepared',blocked:'Claim needs attention',recorded_externally:'Submission recorded externally',self_pay:'Self-pay',unconfirmed:'Handoff unconfirmed'};
  return names[result?.outcome]||'Handoff unconfirmed';
 }
 function visitHandoffDetail(result){
@@ -1456,7 +1756,7 @@ function visitHandoffDetail(result){
   recorded_externally:'Check the recorded external submission for its delivery status.',self_pay:'Use patient billing for this encounter.',unconfirmed:'Refresh the encounter to check the saved signature and delivery status.'})[result?.outcome]||'Refresh the encounter to check its current claim status.';
 }
 function visitHandoffCanResume(result){
- return result&&!result.job_id&&['needs_review','prepared','blocked','unconfirmed'].includes(result.outcome);
+ return result&&!result.job_id&&['needs_review','prepared','blocked'].includes(result.outcome);
 }
 async function visitClaimHandoff(signing=false,requestedMode='queue',reviewClaimId=null,reviewClaimVersion=null,inlineReview=null){
  const patient=selected,visit=activeVisit?.id,identity=me;
@@ -1471,7 +1771,7 @@ async function visitClaimHandoff(signing=false,requestedMode='queue',reviewClaim
  if(!policy)throw new Error('A billing team member with claim access can submit this encounter.');
  const mode=requestedMode==='queue'&&policy==='queue'?'queue':'prepare';
  const existing=visitHandoffEvidence(summary);
- if(!signing&&existing&&(['waiting','queued','delivered','recorded_externally'].includes(existing.outcome)||existing.job_id&&existing.outcome==='blocked')){
+ if(!signing&&existing&&(['unconfirmed','waiting','queued','delivered','recorded_externally'].includes(existing.outcome)||existing.job_id&&existing.outcome==='blocked')){
   await loadEncounterRevenueStatus(account,true);
   if(current())notice(visitHandoffStatus(visitHandoffEvidence(encounterRevenueState.data?.summary)||existing));
   return false;
@@ -1537,10 +1837,13 @@ async function visitClaimHandoff(signing=false,requestedMode='queue',reviewClaim
    throw new Error('The server did not confirm the encounter handoff.');
  }catch(error){
   if(!current())return false;
-  result={outcome:'unconfirmed',reason:'Refresh the encounter to check its saved signature and delivery. '+visitClaimErrorText(error)};
+  result={outcome:'unconfirmed',claim_id:reviewClaimId,reason:'SunCharts did not receive confirmation. Check the existing attempt before sending again.'};
  }
  visitHandoffLast={patient,visit,identity,result};
- inlineReview?.completed();
+ if(inlineReview?.completed(result)===true){
+  void loadEncounterRevenueStatus(encounterChargeAccount(),true);
+  return ['queued','delivered'].includes(result.outcome);
+ }
  const restore=typeof encounterStepPosition==='function'?encounterStepPosition():null;
  try{
   if(result.signed&&signing&&typeof clearVisitNoteSession==='function')clearVisitNoteSession();

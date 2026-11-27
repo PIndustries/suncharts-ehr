@@ -117,8 +117,9 @@ async function check(browser,viewport,scenario){
   await page.waitForSelector(pos+' .collect-done',{visible:true});
   assert.equal(writes.length,1);
   assert.equal(await page.evaluate(()=>localStorage.getItem('suncharts.collectMethod')),'reader','A temporary cash fallback preserves the saved reader preference');
-  await page.keyboard.press('Escape');await page.waitForSelector(pos,{hidden:true});
-  await page.waitForFunction((selector,text)=>document.querySelector(selector)?.textContent===text,{},amount,insured?'No copay due':'No patient amount due');
+  await page.locator(pos+' .collect-done [data-sheet-close]:not([disabled])').click();
+  await page.waitForSelector(pos,{hidden:true});
+  await page.waitForFunction((selector,text)=>document.querySelector(selector)?.textContent===text,{},amount,insured?'Copay recorded':'No patient amount due');
   await page.locator(payment+' [data-open-encounter-payment-history]').click();
   await page.waitForSelector(history+'[open]',{visible:true});
   await page.waitForSelector(history+' [data-copay-receipt="'+record+'"]',{visible:true});

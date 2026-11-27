@@ -749,3 +749,23 @@ dialog.sheet-dialog:has(.receipt-sheet){width:min(680px,92vw);max-width:none}
 #clinical-lists .clinical-high-risk{color:#a4231b;font-weight:700}
 :root[data-theme=dark] #clinical-lists .allergy-alert{background:#482422;border-color:#a65c55;color:#ffbdb5}
 :root[data-theme=dark] #clinical-lists .clinical-high-risk{color:#ffbdb5}
+
+
+[data-encounter-quick-codes]:not([hidden]){
+ display:grid;
+ grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr));
+ gap:12px;
+ margin:0 0 12px;
+}
+[data-encounter-quick-codes] [data-note-quick-code]{
+ min-width:0;
+ padding:12px;
+ border:1px solid var(--line);
+ border-radius:8px;
+ background:var(--surface-soft);
+}
+[data-encounter-quick-codes] label,[data-encounter-quick-codes] input{width:100%}
+[data-encounter-quick-codes] [data-note-quick-results]{margin-top:8px}
+[data-encounter-quick-codes] [data-note-quick-results]:empty{display:none}
+[data-encounter-quick-codes] [data-note-quick-results] button{white-space:normal;text-align:left}
+@media(max-width:680px){[data-encounter-quick-codes]:not([hidden]){grid-template-columns:minmax(0,1fr)}}

@@ -958,14 +958,76 @@ async fn billing_rows_name_their_encounter_and_its_practice_number() {
         sqlx::query("INSERT INTO ehr_claims(tenant_id,id,patient_id,account_id,payer_id,control_number,frequency,content,snapshot,request_id,creation_hash) VALUES($1,$2,$3,$4,$5,$6,'original','{}',jsonb_build_object('account',jsonb_build_object('total_cents',10000,'content',jsonb_build_object('visit_id',$7::text,'service_date',$8::text))),$9,'synthetic')").bind(a.tenant_id).bind(claim).bind(patient).bind(account).bind(payer).bind(format!("SYN-ENC-{index}")).bind(visit.to_string()).bind(format!("2026-03-0{}", index + 1)).bind(Uuid::new_v4()).execute(&db).await.unwrap();
         claims.push((claim, *visit, index + 1));
     }
+
+    // The waiting period uses the first revision in the current status and the worklist
+    // links only a matching payer's unposted remittance row.
+    let accepted = claims[0].0;
+    let payment_revealed = claims[1].0;
+    sqlx::query(
+        "UPDATE ehr_claims SET status='accepted',version=3 WHERE tenant_id=$1 AND id=ANY($2)",
+    )
+    .bind(a.tenant_id)
+    .bind(vec![accepted, payment_revealed])
+    .execute(&db)
+    .await
+    .unwrap();
+    sqlx::query(r#"INSERT INTO claim_revisions(tenant_id,claim_id,version,snapshot,actor_id,reason,created_at) VALUES ($1,$2,1,'{"status":"draft"}',$3,'Fixture','2026-11-22 09:00:00Z'),($1,$2,2,'{"status":"accepted"}',$3,'Fixture','2026-11-23 08:00:00Z'),($1,$2,3,'{"status":"accepted"}',$3,'Fixture','2026-11-24 10:00:00Z')"#)
+        .bind(a.tenant_id)
+        .bind(accepted)
+        .bind(a.sub)
+        .execute(&db)
+        .await
+        .unwrap();
+    let other_payer = Uuid::new_v4();
+    sqlx::query("INSERT INTO ehr_payers(tenant_id,id,content,request_id,creation_hash) VALUES($1,$2,'{}',$3,'synthetic')")
+        .bind(a.tenant_id)
+        .bind(other_payer)
+        .bind(Uuid::new_v4())
+        .execute(&db)
+        .await
+        .unwrap();
+    let remittance = Uuid::new_v4();
+    for (record, remit_payer, matched_claim) in [
+        (remittance, payer, payment_revealed),
+        (Uuid::new_v4(), other_payer, accepted),
+    ] {
+        sqlx::query("INSERT INTO era_remittances(tenant_id,id,payer_id,trace,document,document_hash,status,matches,request_id,creation_hash) VALUES($1,$2,$3,$4,'{}','synthetic','reconciled',$5,$6,'synthetic')")
+            .bind(a.tenant_id)
+            .bind(record)
+            .bind(remit_payer)
+            .bind(format!("SYN-{record}"))
+            .bind(json!([{"claim_id":matched_claim,"row_index":4}]))
+            .bind(Uuid::new_v4())
+            .execute(&db)
+            .await
+            .unwrap();
+    }
     let (status, list) = call(&r, &a, "GET", "/api/v1/billing/claims", Value::Null, None).await;
     assert_eq!(status, StatusCode::OK, "{list}");
+    let accepted_row = by_id(&list["items"], "id", accepted);
+    assert_eq!(
+        accepted_row["status_at"]
+            .as_str()
+            .unwrap()
+            .parse::<chrono::DateTime<Utc>>()
+            .unwrap()
+            .timestamp(),
+        chrono::DateTime::parse_from_rfc3339("2026-11-23T08:00:00Z")
+            .unwrap()
+            .timestamp()
+    );
+    assert_eq!(accepted_row["worklist_remittance"], Value::Null);
+    let payment_row = by_id(&list["items"], "id", payment_revealed);
+    assert_eq!(payment_row["worklist_remittance"]["id"], json!(remittance));
+    assert_eq!(payment_row["worklist_remittance"]["row_index"], 4);
     for (claim, visit, number) in claims {
         let row = by_id(&list["items"], "id", claim);
         assert_eq!(row["visit_id"], json!(visit));
         assert_eq!(row["encounter_number"], number);
         assert_eq!(row["service_date"], format!("2026-03-0{number}"));
         assert_eq!(row["total_cents"], 10000);
+        assert!(row.get("content").is_none());
+        assert!(row.get("snapshot").is_none());
     }
     // Another practice sees none of these and numbers its own from 1.
     let mut other = a.clone();

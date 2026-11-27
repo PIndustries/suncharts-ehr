@@ -182,9 +182,7 @@ async function showPaymentGroupReceipt(group,appointmentId){
  if(opening!==paymentGroupOpening||!currentHostedCopayView(view))return;
  openReceiptPreview(paymentGroupReceiptDocument(receipts,{...first.context,balanceCents:balance,visitEvidence,printedAt:new Date().toISOString()}),undefined,{patient:view.patient,receipt:receipts[0]});
 }
-// 'Print receipt' inside the Collect payment window: load the same grouped receipt a moment after
-// the payment lands and send it straight to the browser print dialog. The window stays open and the
-// page does not move — no section switch, no scroll, nothing dropped into the encounter.
+// Preview the recorded payment's grouped receipt from the collection window.
 async function printPaymentGroupReceiptFromCollect(group,button){
  // run() already disables the pressed button while this loads, so a second press cannot start another.
  if(!group||!button||!collectDialog?.isConnected)return;
@@ -1715,9 +1713,11 @@ function collectPartTaken(amount,label,receipt,appointment,detail){
   paintInsuranceCopayModal(hostedCopayStateFor(scope.appointment));
  }else if(typeof loadEncounterRevenueStatus==='function')void Promise.resolve(loadEncounterRevenueStatus(encounterChargeAccount(),true)).then(()=>{const node=dialog?.querySelector('[data-collect-owed]');if(node&&dialog.isConnected){node.innerHTML=collectOwedMarkup({showDue:false});if(typeof flashUpdated==='function')flashUpdated(node);}}).catch(()=>{});
  const left=collectLeftCents(),slot=collectPanelTarget();if(!slot)return;
- const receiptButton=receipt?.id&&collectSession.group?`<button type="button" data-collect-receipt="${esc(collectSession.group)}" data-appointment="${esc(appointment||'')}">Print receipt</button>`:'';
+ const receiptButton=receipt?.id&&collectSession.group?`<button type="button" data-collect-receipt="${esc(collectSession.group)}" data-appointment="${esc(appointment||'')}" class="primary">View receipt</button>`:'';
  if(left>0){slot.innerHTML=`<section class="collect-step-done" role="status"><p><b>✓ ${money(amount)} ${esc(label)} taken.</b> ${money(left)} left to pay. Choose how to take the rest above.</p></section>`;return;}
+ const restoreFocus=slot.contains?.(document.activeElement);
  slot.innerHTML=collectDoneMarkup(amount,label,receiptButton);
+ if(restoreFocus)slot.querySelector('.collect-done button')?.focus({preventScroll:true});
 }
 function collectAppointmentId(){return collectDialog&&collectSession.current||revenueAppointment()?.id||null;}
 // The amount a card panel asks for is the plan's copay only while that copay is what is being
@@ -1748,7 +1748,7 @@ function collectDoneMarkup(amount,label,receiptButton){
  const taken=collectTakenCents(),parts=collectSession.taken.length,over=Math.max(0,taken-owed);
  const head=parts>1?`${money(taken)} paid in ${parts} parts`:`${money(amount)} ${esc(label)} recorded`;
  const sentence=collectSession.insurance?'Recorded for the selected appointment.':over>0?(over<taken?`${money(over)} more than ${several?'these encounters':'this encounter'} owed stays as credit on the patient's account.`:`${money(taken)} stays as credit on the patient's account. This encounter owed nothing.`):several&&paidFor>1?`The payment is shared between ${paidFor} encounters.`:several&&paidFor===1&&!collectSession.encounters.find(e=>e.paid>0&&e.appointment===collectSession.current)?'The payment goes to the encounter you chose.':collectSession.copayOnly?'The copay is held for this encounter and comes off the bill when its charges are posted.':'The payment goes to this encounter\'s balance.';
- return `<section class="collect-done" role="status"><div class="collect-done-mark" aria-hidden="true">✓</div><h3>${head}</h3><p class="muted">${sentence}</p><div class="actions">${receiptButton}<button type="button" class="primary" data-sheet-close>Done</button></div></section>`;
+ return `<section class="collect-done" role="status"><div class="collect-done-mark" aria-hidden="true">✓</div><h3>${head}</h3><p class="muted">${sentence}</p><div class="actions">${receiptButton}<button type="button" ${receiptButton?'':'class="primary" '}data-sheet-close>Done</button></div></section>`;
 }
 function collectOwedMarkup({showDue=true}={}){
  const summary=encounterRevenueState?.data?.summary,p=summary?.patient||{},owes=p.owes_now_cents;
@@ -2219,7 +2219,7 @@ document.addEventListener('click',event=>{
 // unsaved typing, event handlers and payment request identities intact across the layout.
 let encounterChargesLink=null;
 let encounterStepView={visit:null,current:null},encounterStepsTimer=null,encounterStepsObserver=null,encounterStepsPage=null,encounterScrollView=null;
-const encounterStepChips=[[1,'Visit'],[2,'Payment']];
+const encounterStepChips=[['1','Visit'],['codes','Codes'],['claim','Claim'],['2','Payment']];
 function encounterStepsModel(s={},v={},_appointment={},closed=false){
  const p=s.patient||{},i=s.insurance||{},signed=v.status==='signed'||!!v.signed_at;
  const selfPay=i.insured===false&&!s.claim?.id;
@@ -2403,7 +2403,7 @@ function encounterCodeEditorParent(documentation,visit,account,diagnoses,editor,
  const visible=Boolean(diagnoses&&!diagnoses.hidden||includeProcedures&&editor&&!editor.hidden&&editor.firstElementChild);
  let heading=documentation.querySelector('[data-encounter-codes-heading]');
  if(!heading){
-  heading=document.createElement('div');heading.className='section-head';heading.dataset.encounterCodesHeading='';
+  heading=document.createElement('div');heading.className='section-head';heading.id='encounter-codes-heading';heading.dataset.encounterCodesHeading='';
   heading.innerHTML='<h3>Diagnoses &amp; procedures</h3><div class="actions"><button type="button" data-open-encounter-codes aria-haspopup="dialog" aria-controls="encounter-codes-dialog">Add diagnosis</button><button type="button" class="primary" data-encounter-post-charges hidden>Post charges</button></div>';
   const noteActions=documentation.querySelector('#note-form > [data-note-actions]');
   if(noteActions){
@@ -2456,19 +2456,24 @@ function encounterCodeEditorParent(documentation,visit,account,diagnoses,editor,
  const label=area==='diagnoses'?'Add diagnosis':area==='procedures'?'Add procedure':editable?'Edit codes':'View codes';
  const title=includeProcedures?'Diagnoses & procedures':'Diagnoses';
  for(const element of [heading.querySelector('h3'),dialog.querySelector('h2')])if(element.textContent!==title)element.textContent=title;
- if(launcher.textContent!==label)launcher.textContent=label;
  launcher.dataset.encounterCodesArea=area;
  const post=heading.querySelector('[data-encounter-post-charges]');
  const postId=editable&&postAccount?.id;
  post.hidden=!postId;
  if(postId)post.dataset.visitPostCharges=postId;else delete post.dataset.visitPostCharges;
- launcher.classList.toggle('primary',editable&&area!=='codes'&&!postId);
+ const quick=encounterQuickCodeFields(heading,summary,visit,saved,editDiagnosis,includeProcedures?editor:null);
+ launcher.classList.toggle('primary',editable&&area!=='codes'&&!postId&&!quick);
+ const launcherLabel=quick?'Edit codes':label;
+ if(launcher.textContent!==launcherLabel)launcher.textContent=launcherLabel;
  const save=dialog.querySelector('[data-save-encounter-codes]');save.hidden=!editable;
  const correcting=editor?.querySelector('#billing-account-form[data-mode="correction"]');
  const doneLabel=correcting?'Save correction and close':'Done';
  if(save.textContent!==doneLabel)save.textContent=doneLabel;
  const codes=encounterCodesStripMarkup(saved,{interactive:false,includeProcedures,needsDiagnosis,needsProcedure});
  if(summary.codesMarkup!==codes){summary.codesMarkup=codes;summary.innerHTML=codes;}
+ const groups=summary.querySelectorAll('.codes-strip-col');
+ for(const [index,kind] of ['diagnosis','procedure'].entries())if(groups[index])groups[index].hidden=Boolean(quick?.querySelector('[data-note-quick-code="'+kind+'"]:not([hidden])'));
+ summary.hidden=!visible||Boolean(groups.length&&[...groups].every(group=>group.hidden));
  const body=dialog.querySelector('.sheet-body');
  const dxTitle=diagnoses?.querySelector('#visit-diagnoses .section-head h3');
  if(dxTitle&&dxTitle.textContent!=='Diagnoses (ICD-10)')dxTitle.textContent='Diagnoses (ICD-10)';
@@ -2494,6 +2499,24 @@ function encounterCodeEditorParent(documentation,visit,account,diagnoses,editor,
  if(previous&&previous.parentElement!==presets){presets.append(previous);if(presets!==body)previous.open=true;}
  if(dialog.open)encounterTemplateCodesPaint(dialog);
  return body;
+}
+function encounterQuickCodeFields(heading,summary,visit,saved,editDiagnosis,editor){
+ let box=heading.parentElement.querySelector('[data-encounter-quick-codes]');
+ const form=editor?.querySelector('#billing-account-form[data-mode="draft"]:not([data-draft-read-only]):not([data-draft-stale])');
+ const unsigned=visit.status==='in_progress'&&!heading.hidden;
+ const diagnosis=unsigned&&editDiagnosis&&!!saved.diagnoses&&!saved.diagnoses.length;
+ const procedure=unsigned&&!!form&&!saved.lines.some(line=>line.code)&&
+  (typeof chargeLiveRows!=='function'||!chargeLiveRows(form).some(row=>row.querySelector('[name="code"]')?.value.trim()));
+ if(!box&&(diagnosis||procedure)){
+  box=document.createElement('div');box.dataset.encounterQuickCodes='';
+  box.innerHTML='<div data-note-quick-code="diagnosis"><label>Primary diagnosis<input type="search" data-note-code-search="diagnosis" placeholder="Search ICD-10 code or diagnosis" autocomplete="off"></label><div class="actions" data-note-quick-results role="status"></div></div><div data-note-quick-code="procedure"><label>Procedure<input type="search" data-note-code-search="procedure" placeholder="Search CPT or HCPCS code" autocomplete="off"></label><div class="actions" data-note-quick-results role="status"></div></div>';
+  summary.before(box);
+ }
+ if(!box)return null;
+ box.querySelector('[data-note-quick-code="diagnosis"]').hidden=!diagnosis;
+ box.querySelector('[data-note-quick-code="procedure"]').hidden=!procedure;
+ box.hidden=!diagnosis&&!procedure;
+ return box.hidden?null:box;
 }
 function encounterPaymentLedger(s){return (workspace.billing?.entries||[]).filter(entry=>s.account?.id&&entry.account_id===s.account.id);}
 function encounterSelfPayCredits(s){return visitBillingSelfPayCredits(s,workspace.billing?.copays||[],encounterPaymentLedger(s));}
@@ -2630,7 +2653,12 @@ function encounterNextAction(page,summary,model){
  const follow=(label,control)=>control?{label,control,run:()=>control.click()}:null;
  const codes=button('[data-open-encounter-codes]');
  const addCode=codes&&['diagnoses','procedures'].includes(codes.dataset.encounterCodesArea)?{
-  label:codes.textContent,control:codes,run:event=>encounterOpenCodesDialog(event.currentTarget,codes.dataset.encounterCodesArea)
+  label:codes.dataset.encounterCodesArea==='diagnoses'?'Add diagnosis':'Add procedure',control:codes,run:event=>{
+   const kind=codes.dataset.encounterCodesArea==='diagnoses'?'diagnosis':'procedure';
+   const input=button('[data-note-code-search="'+kind+'"]');
+   if(input){encounterContentScroll(input,'instant','codes');input.focus({preventScroll:true});}
+   else encounterOpenCodesDialog(event.currentTarget,codes.dataset.encounterCodesArea);
+  }
  }:null;
  const collect=button('[data-step-payment] [data-visit-collect]');
  if(!model.signed){
@@ -2641,8 +2669,8 @@ function encounterNextAction(page,summary,model){
    return {label:missing.length===4?'Write note':`Add ${name}`,run(){encounterContentScroll(field,'instant','1');field?.focus({preventScroll:true});}};
   }
   if(addCode)return addCode;
-  const combined=model.selfPay&&button('#note-form [data-action="sign-bill"]');
-  return combined?follow('Sign & bill',combined):follow('Sign note',sign);
+  const combined=button('#note-form [data-action="sign-bill"],#note-form [data-review-after-sign]');
+  return combined?follow(combined.textContent,combined):follow('Sign note',sign);
  }
  const post=button('[data-encounter-post-charges],#claim-screen-footer [data-visit-post-charges],#claim-screen-footer [data-post-and-send]');
  const claim=button('#claim-screen-footer [data-open-signed-claim-details]');
@@ -2653,7 +2681,8 @@ function encounterNextAction(page,summary,model){
   if(post)return follow(post.textContent,post);
  }
  if(remit)return follow('Review insurer payment',remit);
- const response={claim_rejected:'Review returned claim',claimmd_correction:'Review returned claim',correct_claim:'Review corrected charges',denied:'Review payer decision',review_response:'Review insurer response'}[summary.state];
+ const response={claim_rejected:'Review returned claim',correct_claim:'Review corrected charges',denied:'Review payer decision',review_response:'Review insurer response'}[summary.state];
+ if(summary.state==='claimmd_correction'&&(signedClaim||claim))return follow(signedClaim?.textContent||'Review clearinghouse hold',signedClaim||claim);
  if(response&&claim)return follow(response,claim);
  if(summary.state==='claim_cancelled'&&signedClaim)return follow(signedClaim.textContent,signedClaim);
  if(summary.state!=='claim_cancelled'&&!model.selfPay&&!model.sent&&(signedClaim||claim)){
@@ -2763,7 +2792,7 @@ function encounterStepsSync(){
   const showClaim=billingAllowed&&!!s.insurance&&!model.selfPay;
   let claimStatus=documentation.querySelector('[data-encounter-claim-status]');
   if(!claimStatus){
-   claimStatus=document.createElement('div');claimStatus.dataset.encounterClaimStatus='';
+   claimStatus=document.createElement('div');claimStatus.id='encounter-claim-status';claimStatus.dataset.encounterClaimStatus='';
    const codesSummary=documentation.querySelector('[data-encounter-codes-summary]');
    // Only the read-only code summary belongs in the note form, never the claim controls.
    const claimAnchor=codesSummary?.closest('#note-form')||codesSummary;
@@ -2771,6 +2800,9 @@ function encounterStepsSync(){
    else documentation.append(claimStatus);
   }
   claimStatus.hidden=!showClaim;
+  claimStatus.dataset.encounterScrollKey='claim';
+  const codesHeading=documentation.querySelector('[data-encounter-codes-heading]');
+  if(codesHeading)codesHeading.dataset.encounterScrollKey='codes';
   encounterStepMove(status,claimStatus);
   const paymentLocked=!model.signed||s.account?.status!=='posted';
   const canCollect=encounterStepPayments(body(three),revenue,status,s,model,paymentLocked);
@@ -2852,28 +2884,42 @@ function encounterStepsSync(){
   label(one,'Note','');
   label(three,'Payment','');
 
-  const stage=!model.signed||model.selfPay&&paymentLocked||showClaim&&!model.sent?'visit':'payment';
-  const done={1:model.signed,2:model.paid};
-  const currentStep=stage==='visit'?'1':'2';
-  const originalSign=page.querySelector('[data-action="sign-bill"]');
-  const originalAction=!model.signed?originalSign:null;
-  if(originalAction){
-   const sameVisit=raw.visit?.id===v.id&&raw.patient_id===selected;
-   delete originalAction.dataset.claimHandoff;
-   const name='Sign & bill';
-   if(originalAction.textContent!==name)originalAction.textContent=name;
-   originalAction.hidden=!sameVisit||s.insurance?.insured!==false;
-   const signOnly=page.querySelector('#note-form [data-action="sign"]');
-   const signLabel=originalAction.hidden?'Sign note':'Sign only';
-   if(signOnly){
-    if(signOnly.textContent!==signLabel)signOnly.textContent=signLabel;
-    signOnly.classList.toggle('primary',originalAction.hidden);
-   }
+  const saved=encounterSavedCodes(v,account),codesReady=saved.lines.some(line=>line.code)&&
+   (model.selfPay||!!saved.diagnoses?.length);
+  const missingNote=typeof noteMissingForSign==='function'&&noteMissingForSign(documentation.querySelector('#note-form')).length;
+  const needsCodes=billingAllowed&&['sign_visit','add_charges','post_charges'].includes(s.state)&&!codesReady;
+  const claimNeedsAction=['claim_cancelled','claimmd_correction','claim_rejected','correct_claim','denied'].includes(s.state);
+  const done={1:model.signed,codes:codesReady,claim:model.sent&&!claimNeedsAction,2:model.paid};
+  const currentStep=!billingAllowed?'1':!model.signed&&missingNote?'1':needsCodes?'codes':!model.signed?'1':
+   showClaim&&(!model.sent||claimNeedsAction)&&s.state!=='post_response'?'claim':model.selfPay&&paymentLocked?'codes':'2';
+  const noteFooter=documentation.querySelector('#note-form [data-note-actions]');
+  const signOnly=documentation.querySelector('#note-form [data-action="sign"]:not([data-review-after-sign])');
+  const signAndBill=documentation.querySelector('#note-form [data-action="sign-bill"]');
+  const sameVisit=raw.visit?.id===v.id&&raw.patient_id===selected&&!encounterRevenueState.data?.stale;
+  if(signAndBill){
+   delete signAndBill.dataset.claimHandoff;
+   signAndBill.hidden=!sameVisit||!model.selfPay;
   }
-  const chips=billingAllowed?encounterStepChips:encounterStepChips.slice(0,1);
+  const canReviewAfterSign=!model.signed&&sameVisit&&showClaim&&codesReady&&billingAllowed&&
+   typeof billingCan==='function'&&billingCan()&&!!signOnly&&!!noteFooter;
+  let signAndReview=noteFooter?.querySelector('[data-review-after-sign]');
+  if(canReviewAfterSign&&!signAndReview){
+   signAndReview=document.createElement('button');signAndReview.type='button';signAndReview.className='primary';
+   signAndReview.dataset.action='sign';signAndReview.dataset.reviewAfterSign='';
+   signAndReview.textContent='Sign note & review claim';signOnly.before(signAndReview);
+  }
+  if(signAndReview)signAndReview.hidden=!canReviewAfterSign;
+  if(signOnly){
+   const alternate=canReviewAfterSign||Boolean(signAndBill&&!signAndBill.hidden);
+   const signLabel=alternate?'Sign only':'Sign note';
+   if(signOnly.textContent!==signLabel)signOnly.textContent=signLabel;
+   signOnly.classList.toggle('primary',!alternate);
+  }
+  const chips=encounterStepChips.filter(([key])=>key==='1'||billingAllowed&&(key==='2'||key==='claim'&&showClaim||key==='codes'&&codesHeading&&!codesHeading.hidden));
   const markup=`<div class="encounter-step-toolbar"><nav class="encounter-step-chips" aria-label="Encounter sections">${chips.map(([key,name])=>{
    const current=!model.closed&&String(key)===currentStep;
-   return `<button type="button" data-encounter-step-open="${key}" data-step-state="${done[key]?'done':current?'current':'todo'}"${current?' aria-current="step"':''}><span>${done[key]?'✓ ':''}${name}</span></button>`;
+   const anchor=key==='codes'?codesHeading.id:key==='claim'?claimStatus.id:'';
+   return `<button type="button" data-encounter-step-open="${key}"${anchor?' aria-controls="'+anchor+'"':''} data-step-state="${done[key]?'done':current?'current':'todo'}"${current?' aria-current="step"':''}><span>${done[key]?'✓ ':''}${name}</span></button>`;
   }).join('')}</nav></div>`;
   if(stepper.encounterMarkup!==markup){
    stepper.innerHTML=markup;
@@ -2938,11 +2984,13 @@ function encounterStepsWatchScroll(page,showing){
  if(typeof IntersectionObserver==='function'){
   observer=new IntersectionObserver(entries=>{
    for(const entry of entries){if(entry.isIntersecting)visible.set(entry.target,entry);else visible.delete(entry.target);}
-   const first=[...visible.values()].sort((a,b)=>a.target.getBoundingClientRect().top-b.target.getBoundingClientRect().top)[0];
-   if(first)visibleKey=first.target.dataset.encounterSection?'1':first.target.dataset.encounterStepNumber;
+   const order=(a,b)=>a.target.getBoundingClientRect().top-b.target.getBoundingClientRect().top;
+   const intersecting=[...visible.values()];
+   const first=intersecting.filter(entry=>!intersecting.some(inner=>inner!==entry&&entry.target.contains(inner.target))).sort(order)[0];
+   if(first)visibleKey=first.target.dataset.encounterScrollKey||(first.target.dataset.encounterSection?'1':first.target.dataset.encounterStepNumber);
    update();
   },{root:frame,rootMargin:`-${encounterScrollInset(frame)}px 0px -45% 0px`,threshold:0});
-  for(const node of page.querySelectorAll('[data-encounter-section],[data-encounter-step-number]:not([hidden])'))observer.observe(node);
+  for(const node of page.querySelectorAll('[data-encounter-section],[data-encounter-scroll-key]:not([hidden]),[data-encounter-step-number]:not([hidden])'))observer.observe(node);
  }
  // A near-bottom section can be reached without crossing the observer's active band.
  const scroll=()=>{if(encounterStepView.scrollDestination)update();};
@@ -3040,11 +3088,16 @@ function encounterStepOpen(number,{fromChip=false,focus=false}={}){
  if(String(number)==='3'){encounterOpenFollowup({focus});return;}
  const page=$('visit-page-host');
  const smooth=fromChip&&(typeof motionReduced!=='function'||!motionReduced());
- if(number==='claim'){
-  const target=page?.querySelector('[data-encounter-claim-status]:not([hidden]) [data-open-signed-claim-details]')||
-   page?.querySelector('[data-encounter-codes-heading]')||$('encounter-documentation');
-  if(focus)target?.focus({preventScroll:true});
-  encounterContentScroll(target,smooth?'smooth':'instant','1');
+ if(number==='claim'||number==='codes'){
+  const selector=number==='claim'?'[data-encounter-claim-status]:not([hidden])':'[data-encounter-codes-heading]:not([hidden])';
+  const section=page?.querySelector(selector);
+  const target=number==='claim'?section?.querySelector('[data-open-signed-claim-details]')||section:section;
+  if(focus){
+   const control=target?.matches('button')?target:target?.querySelector('button:not([hidden])');
+   control?.focus({preventScroll:true});
+  }
+  const codingHeading=page?.querySelector('[data-encounter-codes-heading]:not([hidden])');
+  encounterContentScroll(target||codingHeading||$('encounter-documentation'),smooth?'smooth':'instant',section?number:codingHeading?'codes':'1');
   return;
  }
  const node=page?.querySelector(`[data-encounter-step-number="${Number(number)}"]`);
@@ -3090,7 +3143,7 @@ if(typeof document!=='undefined'&&document.addEventListener){
 // Signing refreshes the chart, so restore the live Visit's scroll after its nodes are rebuilt.
 function encounterStepPosition(){
  const page=$('visit-page-host');if(page?.dataset?.encounterSteps===undefined)return null;
- const visit=activeVisit?.id,patient=selected,viewed=Number(page.dataset.stepViewed||1);
+ const visit=activeVisit?.id,patient=selected,viewed=page.dataset.stepViewed||'1';
  const frame=encounterStepFrame(),top=frame?.scrollTop||0;
  const offset=page.querySelector(`[data-encounter-step-number="${viewed}"] .encounter-step-body`)?.scrollTop||0;
  return ()=>{

@@ -437,7 +437,7 @@ async function checkBillingSections(page, scenario, refreshBilling, screenshotPr
   await refreshBilling('insured');
   const claimStatus=note.section+' [data-encounter-claim-status]';
   await page.waitForSelector(claimStatus+' [data-encounter-claim-summary]',{visible:true});
-  assert.deepEqual((await encounterSections(page)).map(section=>section.label),['Visit','Payment']);
+  assert.deepEqual((await encounterSections(page)).map(section=>section.label),['Visit','Codes','Claim','Payment']);
   await page.locator(claimStatus+' [data-open-signed-claim-details]').click();
   const claimDialog='dialog[data-signed-claim-details][open]';
   await page.waitForSelector(claimDialog,{visible:true});
@@ -550,7 +550,7 @@ async function run(browser, viewport, reducedMotion, failures, scenario = 'blank
   const errors = [];
   let currentVisit = structuredClone(visit);
   let correction = null, signatures=0;
-  if(scenario==='sign-insured')currentVisit.note={subjective:'Synthetic symptom',objective:'Synthetic exam',assessment:'Synthetic diagnosis',plan:'Synthetic follow-up'};
+  if(['sign-insured','first-code'].includes(scenario))currentVisit.note={subjective:'Synthetic symptom',objective:'Synthetic exam',assessment:'Synthetic diagnosis',plan:'Synthetic follow-up'};
   if(scenario==='unsigned-codes')currentVisit.note={subjective:draftText,objective:'Synthetic exam',assessment:'Synthetic assessment'};
   const procedureWrites=[];
   let procedureAccount,releaseFirstProcedureSave;
@@ -671,11 +671,11 @@ async function run(browser, viewport, reducedMotion, failures, scenario = 'blank
     }
     if(scenario==='sign-insured'){
       const next='[data-encounter-next]:not([hidden])';
-      await page.waitForFunction(selector=>document.querySelector(selector)?.innerText==='Sign note',{},next);
+      await page.waitForFunction(selector=>document.querySelector(selector)?.innerText==='Sign note & review claim',{},next);
       const layout=await page.$eval('#encounter-documentation',section=>{
         const codes=section.querySelector('[data-encounter-codes-summary]');
         const note=section.querySelector('#note-form');
-        const sign=note.querySelector('[data-action="sign"]');
+        const sign=note.querySelector('[data-review-after-sign]');
         return {
           signAfterCodes:Boolean(codes.compareDocumentPosition(sign)&Node.DOCUMENT_POSITION_FOLLOWING),
           combinedHidden:note.querySelector('[data-action="sign-bill"]').hidden,
@@ -687,10 +687,11 @@ async function run(browser, viewport, reducedMotion, failures, scenario = 'blank
       assert.doesNotMatch(await page.$eval('[data-note-actions]',actions=>actions.innerText),/signing locks the note/i);
       await page.locator(next).click();
       await page.waitForSelector('#note-form',{hidden:true});
+      await page.waitForSelector('dialog[data-signed-claim-details][open]',{visible:true});
       assert.equal(signatures,1);
       assert.equal(await page.$('[role=alertdialog]'),null);
-      assert.deepEqual(errors,[],'Signing alone does not post charges or transmit a claim');
-      console.log('PASS insured visit: one next action signs the note after coding; the claim has its own review.');
+      assert.deepEqual(errors,[],'Opening review after a signature does not post charges or transmit a claim');
+      console.log('PASS insured visit: one next action signs the note after coding and opens claim review.');
       return;
     }
     if(scenario==='early-copay'){
@@ -717,7 +718,14 @@ async function run(browser, viewport, reducedMotion, failures, scenario = 'blank
     if (scenario === 'first-code') {
       const launcher = '#encounter-documentation [data-open-encounter-codes]';
       await page.waitForSelector(launcher, {visible:true});
-      assert.equal(await page.$eval(launcher, button => button.innerText), 'Add diagnosis');
+      assert.equal(await page.$eval(launcher, button => button.innerText), 'Edit codes');
+      const primary = '[data-note-quick-code="diagnosis"] [data-note-code-search="diagnosis"]';
+      await page.waitForSelector(primary,{visible:true});
+      const next = '[data-encounter-next]:not([hidden])';
+      await page.waitForFunction(selector=>document.querySelector(selector)?.innerText==='Add diagnosis',{},next);
+      await page.locator(next).click();
+      assert.equal(await page.$eval(primary,input=>document.activeElement===input),true);
+      assert.equal(await page.$(codesDialog),null);
       await page.click(launcher);
       const dx = codesDialog + ' #visit-diagnoses-form';
       await page.waitForSelector(dx+' input[name=code]',{visible:true});
@@ -737,7 +745,11 @@ async function run(browser, viewport, reducedMotion, failures, scenario = 'blank
       assert.equal(currentVisit.diagnoses?.[0].code,diagnosis.code);
       const summary = '#encounter-documentation [data-encounter-codes-summary]';
       await page.waitForFunction(selector => document.querySelector(selector)?.innerText.includes('J30.9'), {}, summary);
-      assert.equal(await page.$eval(launcher, button => button.innerText), 'Add procedure');
+      const procedure='[data-note-quick-code="procedure"] [data-note-code-search="procedure"]';
+      await page.waitForSelector(procedure,{visible:true});
+      await page.waitForFunction(selector=>document.querySelector(selector)?.innerText==='Add procedure',{},next);
+      await page.locator(next).click();
+      assert.equal(await page.$eval(procedure,input=>document.activeElement===input),true);
       assert.deepEqual(errors, []);
       console.log('Add diagnosis starts with the first ICD field and advances to Add procedure after saving.');
       return;
@@ -803,7 +815,7 @@ async function run(browser, viewport, reducedMotion, failures, scenario = 'blank
       await page.waitForSelector(claim+' [data-encounter-claim-summary]',{visible:true});
       const compact=await page.$eval('[data-step-payment]',node=>node.innerText);
       assert.doesNotMatch(compact,/test receipts|Correct receipt/);
-      assert.deepEqual((await encounterSections(page)).map(section=>section.label),['Visit','Payment']);
+      assert.deepEqual((await encounterSections(page)).map(section=>section.label),['Visit','Codes','Claim','Payment']);
       assert.match(await page.$eval(claim,node=>node.innerText),/Needs clinician signature/);
       assert.equal(await page.$(claim+' [data-open-signed-claim-details]'),null);
       await page.locator('#encounter-documentation [data-open-encounter-codes]').click();
