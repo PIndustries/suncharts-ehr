@@ -3166,7 +3166,10 @@ async fn posted_coverage_applies_without_replacing_codes_receipts_or_invoice_his
         .call(
             &f.owner,
             "POST",
-            &format!("/api/v1/patients/{p}/billing/statements/{}/deliveries", id(&invoice)),
+            &format!(
+                "/api/v1/patients/{p}/billing/statements/{}/deliveries",
+                id(&invoice)
+            ),
             json!({"request_id":Uuid::new_v4()}),
             None,
         )
