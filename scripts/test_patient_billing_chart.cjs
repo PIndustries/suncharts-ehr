@@ -41,8 +41,8 @@ async function main(){
  assert.match(html,/Insurance pending<\/span><strong>\$80.00/);
  assert.ok(html.indexOf('ENC 1')<html.indexOf('ENC 8'));
  assert.match(html,/Nov 24, 2026/);assert.doesNotMatch(html,/>2026-11-|Stripe|<unsafe>/);
- for(const status of ['Not sent','Sent','Accepted','Returned','Paid'])assert.ok(html.includes('>'+status+'</span>'),status);
- assert.match(f.ctx.patientBillingClaimPill({claim_status:'denied'},{}),/>Denied<\/span>/);
+ for(const status of ['Not sent','Sent','Accepted','Denied','Paid'])assert.ok(html.includes('>'+status+'</span>'),status);
+ assert.match(f.ctx.patientBillingClaimPill({claim_status:'rejected'},{}),/>Returned<\/span>/);
  assert.match(f.node('patient-billing-balances').innerHTML,/Charge card on file/);
  f.node('patient-billing-chart').querySelectorAll=sel=>sel==='[data-balance-slot]'?[Object.assign(f.node('slot'),{dataset:{balanceSlot:'invoice'}})]:[];
  await f.ctx.openBalanceSavedCard(f.run('patientBillingWorkspace'),'invoice');assert.match(f.node('slot').innerHTML,/4242/);assert.match(f.node('slot').innerHTML,/Charge \$20.00/);

@@ -57,18 +57,15 @@ for(const [call,id,title]of [['renderLabs()','lab-workspace','Orders & results']
 }
 const insurance=add('insurance-workspace');insurance.innerHTML=w.eval(`chartListHeader('Insurance & copay','<button class="primary">+ Add insurance</button>')+insuranceCoverageCard({id:'synthetic-plan',content:{member_id:'SYN-1',priority:'primary'}})`);check('insurance-workspace','Insurance & copay',true);
 const billing=add('patient-billing-chart');billing.innerHTML=w.eval(`patientBillingShell({surface:'chart'})+patientBillingChartOverview({summary:{accounts:{reviewed_patient_due_cents:100,insurance_pending_cents:300},copays:{net_received_cents:200,usable_unapplied_cents:0,receipts:2}},accounts:{items:[]}},{patientId:selected})`);check('patient-billing-chart','Billing & payments');
-// Totals now open Payments; retain every tile, amount and explanatory sub-line.
+// Totals describe balances and collections without duplicating the Payments tab.
 const billingTiles=[...billing.querySelectorAll('.patient-billing-totals > section')];
 assert.equal(billingTiles.length,4);
-assert.deepEqual(billingTiles.map(tile=>{
- const action=tile.querySelector('button.billing-total-action[data-hub-tab="payments"]');
- assert(action,'each total opens Payments');
- return ['span','strong','small'].map(tag=>action.querySelector(tag)?.textContent);
-}),[
- ['Patient owes','$1.00','Across posted encounters. Money still with insurance is not counted'],
- ['Insurance pending','$3.00','With insurance · not included in patient owes'],
- ['Paid','$2.00','2 receipts · after refunds'],
- ['Credit','$0.00','Paid but not yet applied to an encounter']
+assert.equal(billing.querySelectorAll('.patient-billing-totals button').length,0);
+assert.deepEqual(billingTiles.map(tile=>['span','strong','small'].map(tag=>tile.querySelector(tag)?.textContent)),[
+ ['Patient owes now','$1.00','Due across posted visits'],
+ ['Insurance pending','$3.00','Awaiting the insurer'],
+ ['Copays received','$2.00','2 receipts · after refunds'],
+ ['Available copay credit','$0.00','Available to apply to a visit']
 ]);
 assert.equal(billing.querySelector('.patient-billing-header'),null,'patient identity is already present in the chart header');assert.equal(billing.querySelector('#patient-billing-mode'),null,'production chart has one payment view');
 // Nonempty native records must produce rows while keeping all existing rare actions in sheets.
