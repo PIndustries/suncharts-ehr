@@ -21,10 +21,10 @@ function applyPracticeWorkspaceSettings(){
   const node=$(id);if(!node)continue;
   if(!workspaceNativeParents.has(id)&&node.parentNode)workspaceNativeParents.set(id,node.parentNode);
   const group=content.module_groups?.[key];
-  const destination=group?document.querySelector(`.nav-group[aria-labelledby="nav-${group}-label"]`):workspaceNativeParents.get(id);
-  // An item that lives inside Practice administration is never put back on the menu by a saved layout.
+  const destination=key==='admin'?null:group?document.querySelector(`.nav-group[aria-labelledby="nav-${group}-label"]`):workspaceNativeParents.get(id);
+  // Practice administration stays in Settings. Its child tools stay off the global menu.
   if(destination&&node.parentNode!==destination&&node.dataset.offMenu===undefined)destination.append(node);
-  const label=node.querySelector?.('span');if(label)label.textContent=content.module_labels?.[key]||(key==='admin'?'Admin':workspaceModuleLabels[key]);
+  const label=node.querySelector?.('span');if(label)label.textContent=content.module_labels?.[key]||workspaceModuleLabels[key];
   const hidden=content.hidden_modules.includes(key)&&!(['admin','workflows'].includes(key)&&me?.role==='owner');
   node.dataset.workspaceHidden=String(hidden);
   node.hidden=hidden||(key==='admin'&&me?.role!=='owner')||(key==='portal'&&!['owner','clinician','front_desk'].includes(me?.role))||!workspaceModuleAllowed(key);

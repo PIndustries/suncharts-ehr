@@ -3,12 +3,15 @@
 const assert=require('node:assert/strict'),fs=require('node:fs');
 const app=fs.readFileSync('web/app.js','utf8'),index=fs.readFileSync('web/index.html','utf8'),style=fs.readFileSync('web/style.css','utf8'),frameStyle=fs.readFileSync('web/frame.css','utf8');
 assert.match(app,/function organizeWorkspaceNavigation\(\)/);
-assert.match(app,/top.append\(items.home,items.schedule,items.patients,billing,items.admin\)/);
+assert.match(app,/top.append\(items.home,items.schedule,items.patients,billing\)/);
 for(const label of ['Home','Schedule','Work queue','Inbox','Patients','Orders & results','Referrals','Patient balances','Claims','Insurance payments','Claim connections','Workflow Studio','Automation Center','Sun review','Practice administration','Integrations','Data import'])assert.ok(app.includes(label),`missing ${label}`);
 for(const id of ['nav-practice','nav-schedule','nav-followup','nav-portal','nav-communications','nav-clinical','nav-labs','nav-specialty','nav-referrals','nav-billing','nav-claims','nav-edi','nav-workflows','nav-automation','nav-ai-review','nav-admin','nav-apps','nav-migration'])assert.match(index,new RegExp(`id="${id}"`));
 
 // The global header, the user menu and Billing each expose their own actions.
 assert.match(app,/panel.prepend\(document.querySelector\('\.sidebar-account'\),items.queue,items.messages\)/);
+assert.match(app,/settingsLabel.textContent='Settings'/);
+assert.match(app,/settings.append\(items.admin\)/);
+assert.match(app,/panel.append\(settings\)/);
 assert.match(app,/if\(environment\)panel.append\(environment\)/);
 assert.match(app,/billingTabs.append\(items.claims,payments,items.billing\)/);
 assert.match(app,/tabs.hidden=!billing/);

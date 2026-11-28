@@ -4277,6 +4277,30 @@ async fn claim_detail_names_the_frequency_a_corrected_claim_must_carry() {
     assert_eq!(first.0, StatusCode::OK, "{}", first.1);
     assert_eq!(first.1["frequency"], "original");
     assert_eq!(first.1["parent_id"], c["id"]);
+    let (s, list) = schedule_call(
+        &r,
+        &a,
+        "GET",
+        &format!(
+            "/api/v1/billing/claims?account_id={}",
+            b["id"].as_str().unwrap()
+        ),
+        Value::Null,
+        None,
+    )
+    .await;
+    assert_eq!(s, 200, "{list}");
+    let items = list["items"].as_array().unwrap();
+    assert_eq!(
+        items.iter().find(|item| item["id"] == c["id"]).unwrap()["worklist_return_reason"],
+        "Synthetic rejection evidence"
+    );
+    assert!(items
+        .iter()
+        .find(|item| item["id"] == first.1["id"])
+        .unwrap()
+        .get("worklist_return_reason")
+        .is_none());
 
     // The same claim after the payer took it on and denied it has to go back the other way. Staff
     // record that from this screen's own options, and it is what puts the payer's number on the row.
@@ -6307,16 +6331,16 @@ async fn claimmd_clearinghouse_rejection_sets_the_claim_rejected() {
     let (r, db, a, _) = setup().await;
     let (c, p, out, receipt) = delivered_claimmd_claim(&r, &a).await;
     let control = c["control_number"].clone();
+    let message = "Code 496 - Submitter not approved for electronic claim submissions on behalf of this entity.Billing Provider";
+    let mut returned = claimmd_status_claim(&control, 1, "R", "CLMMD", "");
+    returned["messages"][0]["message"] = json!(message);
     let (config, server, _base) = claimmd_feed(
         &a,
         &p,
         ClaimMdFeed {
             receipt,
             pages: [
-                (
-                    "0".into(),
-                    claimmd_page(vec![claimmd_status_claim(&control, 1, "R", "CLMMD", "")]),
-                ),
+                ("0".into(), claimmd_page(vec![returned])),
                 ("1".into(), json!({})),
             ]
             .into_iter()
@@ -6356,9 +6380,14 @@ async fn claimmd_clearinghouse_rejection_sets_the_claim_rejected() {
     assert_eq!(revisions[0]["sender_id"], "CLMMD");
     assert_eq!(revisions[0]["evidence_origin"], "claimmd_status_feed");
     assert_eq!(
-        revisions[0]["message"], "synthetic CLMMD R response",
+        revisions[0]["message"], message,
         "the rejection revision keeps the provider message text"
     );
+    let (s, list) = schedule_call(&r, &a, "GET", "/api/v1/billing/claims", Value::Null, None).await;
+    assert_eq!(s, 200, "{list}");
+    assert_eq!(list["items"][0]["id"], c["id"]);
+    assert_eq!(list["items"][0]["worklist_return_reason"], message);
+    assert!(list["items"][0].get("evidence").is_none());
     server.abort();
 }
 

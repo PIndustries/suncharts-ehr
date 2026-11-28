@@ -30,6 +30,7 @@ const claimProblemFields={
 // What each common answer sounds like. Checked against the payer's and clearinghouse's own
 // wording, so a phrased-differently message simply does not match and the general wording is used.
 const claimProblemPhrases={
+  submitter_approval:['submitter not approved for electronic claim submissions on behalf of this entity'],
   member_id:['invalid subscriber id','invalid member id','invalid patient identifier','member id not found','subscriber id not found','member not found','patient not found on file','unrecognized member','unrecognised member','invalid insured id','id not found','subscriber id','member id'],
   subscriber:['subscriber mismatch','insured does not match','subscriber does not match','does not match subscriber','inconsistent subscriber','dependent does not match','insured identity','subscriber name does not match','name does not match the insured','date of birth does not match','insured date of birth'],
   diagnosis_pointer:['diagnosis pointer','diagnosis reference','dx pointer','missing diagnosis','no diagnosis','diagnosis required','invalid diagnosis','diagnosis code invalid','diagnosis is required','at least one diagnosis'],
@@ -86,6 +87,20 @@ function claimProblemIncludesAny(evidence,needles){
   const haystack=claimProblemText(evidence);
   if(!haystack)return false;
   return needles.some(needle=>haystack.includes(needle));
+}
+// A short, display-only reason from a matched response. Unfamiliar provider wording stays a quote.
+function claimProblemWorklistReason(message){
+  if(typeof message!=='string')return '';
+  const text=claimProblemText(message.replace(/[\p{Cc}\p{Cf}]/gu,' '));
+  const code=/^(Code [A-Z0-9]{1,8})\s*[-–—:]/i.exec(text)?.[1];
+  if(claimProblemIncludesAny(text.toLowerCase(),claimProblemPhrases.submitter_approval)){
+    const subject=/\bbilling provider\b/i.test(text)?' for this billing provider':' for electronic claims';
+    return `${code?code+' · ':''}Submitter not approved${subject}`;
+  }
+  const pairing=/^NCCI\s*-\s*procedure code \[([a-z0-9]{5})\] requires an appropriate modifier when procedure \[([a-z0-9]{5})\] present\.?$/i.exec(text);
+  if(pairing)return `${pairing[1]} needs a modifier when billed with ${pairing[2]}`;
+  const characters=Array.from(text);
+  return characters.length>160?`${characters.slice(0,159).join('').trimEnd()}…`:text;
 }
 function claimProblemMemberId(claim){return claimProblemText(claimProblemCoverage(claim).member_id);}
 // True when the claim on screen really carries data — the draft-claim case, where nothing has

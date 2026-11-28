@@ -140,12 +140,11 @@ function organizeWorkspaceNavigation(){
  for(const [key,item] of Object.entries(items)){const label=item?.querySelector('span');if(label)label.textContent=labels[key];}
  const top=document.createElement('div');top.className='frame-primary';
  const billing=document.createElement('button');billing.id='frame-billing';billing.type='button';billing.className='nav-item';billing.textContent='Billing';
- if(items.admin?.querySelector('span'))items.admin.querySelector('span').textContent='Admin';
- top.append(items.home,items.schedule,items.patients,billing,items.admin);
+ top.append(items.home,items.schedule,items.patients,billing);
  const kept=document.createElement('div');kept.hidden=true;
  const customize=document.createElement('button');customize.id='nav-customize';customize.type='button';customize.textContent='Customize menu';customize.dataset.offMenu='';
  for(const key of ['apps','workflows','clearinghouse','migration'])if(items[key])items[key].dataset.offMenu='';
- kept.append(...Object.values(items).filter(node=>node&&!top.contains(node)),customize);
+ kept.append(...Object.values(items).filter(node=>node&&node!==items.admin&&!top.contains(node)),customize);
  navigation.replaceChildren(top,kept);
  const tabs=document.createElement('div');tabs.id='frame-patient-tabs';tabs.className='frame-patient-tabs';tabs.setAttribute('aria-label','Open patients');navigation.append(tabs);
  const bar=document.querySelector('.shell-topbar');bar.prepend(navigation);bar.prepend(document.querySelector('.sidebar-brand .wordmark'));
@@ -157,9 +156,16 @@ function organizeWorkspaceNavigation(){
  const logout=$('logout');if(logout){logout.textContent='Sign out';}
  const actions=document.querySelector('.shell-topbar-actions');
  actions.prepend($('shell-find-patient'));actions.append(menu);
- const theme=actions.querySelector('.theme-control');if(theme)panel.append(theme);
+ const settings=document.createElement('section');settings.className='frame-user-settings';settings.setAttribute('aria-labelledby','frame-user-settings-label');
+ const settingsLabel=document.createElement('h2');settingsLabel.id='frame-user-settings-label';settingsLabel.textContent='Settings';settings.append(settingsLabel);
+ if(items.admin)settings.append(items.admin);
+ const theme=actions.querySelector('.theme-control');if(theme)settings.append(theme);
+ panel.append(settings);
  if(environment)panel.append(environment);if(logout)panel.append(logout);
- const billingTabs=document.createElement('nav');billingTabs.id='frame-billing-tabs';billingTabs.className='frame-billing-tabs';billingTabs.setAttribute('aria-label','Billing');billingTabs.hidden=true;const payments=document.createElement('button');payments.id='nav-insurance-payments';payments.type='button';payments.textContent='Insurance payments';payments.onclick=()=>run(()=>{billingInsuranceTab='payments';return showClaimsWorkspace();});items.claims.addEventListener?.('click',()=>{billingInsuranceTab='claims';});billingTabs.append(items.claims,payments,items.billing);
+ const billingTabs=document.createElement('nav');billingTabs.id='frame-billing-tabs';billingTabs.className='frame-billing-tabs';billingTabs.setAttribute('aria-label','Billing');billingTabs.hidden=true;
+ const payments=document.createElement('button');payments.id='nav-insurance-payments';payments.type='button';payments.textContent='Insurance payments';
+ payments.onclick=()=>run(()=>showClaimsWorkspace({filter:'payments'}));
+ billingTabs.append(items.claims,payments,items.billing);
  document.querySelector('.workspace-header').after(billingTabs);
  navigation.dataset.organized='true';
 }
@@ -1859,6 +1865,7 @@ if(typeof document!=='undefined'&&document.addEventListener)document.addEventLis
   const navigationTitle=navigationTitles[button.id]||(button.hasAttribute('data-open-schedule')?'Schedule':null);
   const ownsAction=navigationTitle||['logout','load-more'].includes(button.id)||['data-consent','data-disable-client','data-revoke','data-reconcile','data-commit','data-patient','data-check-in','data-start','data-visit'].some(name=>button.hasAttribute(name))||['reload','discard-visit-draft','discard-amendment-draft','sign','sign-bill'].includes(button.dataset.action);
   if(!ownsAction)return;
+  const fromUserSettings=button.id==='nav-admin'&&$('frame-user-toggle')?.getAttribute('aria-expanded')==='true';
   run(async()=>{
     if(navigationTitle){captureVisitDrafts();showTool(navigationTitle);$('tools').innerHTML=`<p class="muted" role="status">Loading ${esc(navigationTitle.toLowerCase())}…</p>`;}
     if(button.id==='nav-schedule'||button.hasAttribute('data-open-schedule')){await showSchedule({entry:true});return;}
@@ -1872,10 +1879,14 @@ if(typeof document!=='undefined'&&document.addEventListener)document.addEventLis
     if(button.id==='nav-labs'){await showLabInbox();return;}
     if(button.id==='nav-specialty'){await showSpecialtyWorklist();return;}
     if(button.id==='nav-edi'){await showEdiWorkspace();return;}
-    if(button.id==='nav-claims'){await showClaimsWorkspace();return;}
+    if(button.id==='nav-claims'){await showClaimsWorkspace({filter:'action'});return;}
     if(button.id==='nav-billing'){await showPatientBillingWorkspace({patientId:null,tab:'overview'});return;}
     if(button.id==='nav-customize'){await showPracticeAdmin('workspace');return;}
-    if(button.id==='nav-admin'){await showPracticeAdmin();return;}
+    if(button.id==='nav-admin'){
+      await showPracticeAdmin();
+      if(fromUserSettings&&setPage.last==='Practice administration')$('page-title')?.focus({preventScroll:true});
+      return;
+    }
     if(button.id==='nav-partners'){await showPartners();return;}
     if(button.id==='nav-apps'){await showApps();return;}
     if(button.id==='nav-migration'){await showMigrations();return;}
@@ -2082,13 +2093,24 @@ async function frameClosePatient(id){
  const next=frameRecentPatients.at(-1)||framePatients.at(-1)?.id;
  if(next)await frameSelectPatient(next);else await showClinical();
 }
+function frameBillingMonitorNavigation(title=setPage.last){
+ const payments=$('nav-insurance-payments'),claims=$('nav-claims');
+ if(!payments||!claims)return;
+ payments.hidden=claims.hidden;
+ payments.removeAttribute('aria-current');
+ if(title!=='Claims & remittances')return;
+ if(typeof claimMonitorShowsRemittances==='function'&&claimMonitorShowsRemittances()){
+  payments.setAttribute('aria-current','page');
+  claims.removeAttribute('aria-current');
+ }else claims.setAttribute('aria-current','page');
+}
 function framePage(title){
  const help=$('frame-help');if(help)help.hidden=typeof supportHelpAvailable==='function'&&!supportHelpAvailable();
  const billing=['Billing & insurance','Claims & remittances'].includes(title),primary=$('frame-billing');
  if(primary){primary.hidden=['nav-billing','nav-claims'].every(id=>$(id)?.hidden);if(billing)primary.setAttribute('aria-current','page');else primary.removeAttribute('aria-current');}
  const tabs=$('frame-billing-tabs');if(tabs)tabs.hidden=!billing;
  if(title==='Claims & remittances')$('nav-billing')?.removeAttribute('aria-current');
- const payments=$('nav-insurance-payments');if(payments){payments.hidden=$('nav-claims')?.hidden??true;if(title==='Claims & remittances'&&typeof billingInsuranceTab!=='undefined'&&billingInsuranceTab==='payments'){payments.setAttribute('aria-current','page');$('nav-claims')?.removeAttribute('aria-current');}else payments.removeAttribute('aria-current');}
+ frameBillingMonitorNavigation(title);
  if(['Labs & results','Referrals','Follow-up tasks','Inbox'].includes(title))$('nav-practice')?.setAttribute('aria-current','page');
  frameRenderPatients();
 }

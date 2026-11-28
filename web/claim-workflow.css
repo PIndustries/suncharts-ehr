@@ -1,6 +1,8 @@
 /* The claim screen: one status word, one next step, one short list of what is missing, the service
    lines, and everything else folded away. Colours come from the theme variables only. */
 
+.claim-worklist-response{margin:.25rem 0 0;max-width:44ch;font-size:var(--fs-sm);white-space:normal;overflow-wrap:anywhere}
+
 /* The next step. Its one primary button is the loudest thing here apart from a rejection box. */
 .claim-primary{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,16rem);gap:1rem;margin:1rem 0}
 .claim-primary-action{display:grid;align-content:start;gap:.55rem;padding:1rem 1.1rem;border:1px solid var(--line,#d4dfe4);border-left:4px solid var(--accent,#197b83);border-radius:.5rem;background:var(--panel,#fff)}
@@ -276,7 +278,8 @@
 /* Keep the claims that need a decision ahead of the waiting list. */
 #claims-tool [data-claim-worklist],#claims-tool [data-coverage-worklist],#claims-tool .claim-worklist-waiting{margin:12px 0;padding:14px 16px;background:var(--surface);border:1px solid var(--line);border-radius:8px}
 .claim-worklist-heading{flex-wrap:wrap}
-[data-coverage-worklist] table:has(.table-empty) thead{display:none}
+#claims-tool [data-coverage-worklist]:not([hidden]):has(>[data-coverage-worklist-status]:not([hidden])){display:flex;align-items:center;flex-wrap:wrap;gap:4px 16px;padding-block:8px}
+[data-coverage-worklist]:has(>[data-coverage-worklist-status]:not([hidden])) :is(.section-head,h3,p){margin:0}
 .coverage-worklist-amounts{display:flex;flex-wrap:wrap;gap:6px 18px;margin:0;font-variant-numeric:tabular-nums}
 .coverage-worklist-amounts dt{font-size:.8rem;color:var(--muted)}
 .coverage-worklist-amounts dd{margin:0;font-weight:600;white-space:nowrap}

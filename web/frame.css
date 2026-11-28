@@ -151,6 +151,15 @@
 html:has(.frame-chart-open){scroll-behavior:auto;overflow-anchor:none}
 #chart{overflow:visible;min-height:calc(100dvh + 160px)}
 #chart>.panel,#chart>#billing-workspace{min-height:480px}
+/* The archive notice sits above the active chart section and fits its content. */
+#chart>#patient-lifecycle{min-height:0}
+#patient-lifecycle.mapping-notice{margin:0 0 12px;padding:12px 14px}
+#patient-lifecycle>.section-head{flex-wrap:wrap;gap:8px 16px;margin:0}
+#patient-lifecycle>.section-head>div{flex:1 1 28rem;min-width:0}
+#patient-lifecycle>.section-head p{margin:2px 0 0}
+#patient-lifecycle>details{margin-top:8px;overflow-wrap:anywhere}
+#patient-lifecycle>details>summary{cursor:pointer}
+#patient-lifecycle>details p{margin:6px 0 0}
 .chart-section-skeleton{height:480px;box-sizing:border-box;padding:24px;overflow:hidden}
 .chart-section-skeleton span{display:block;height:36px;margin:0 0 20px;background:var(--surface-soft);border-radius:4px}
 .chart-list-header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}
@@ -347,8 +356,11 @@ dialog.global-search-sheet{width:min(700px,calc(100vw - 32px));max-height:80vh;m
 
 /* Staff identity, work links, and the running environment share one compact menu. */
 .frame-user-panel{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px 8px;max-height:calc(100dvh - var(--frame-top-height,58px) - 12px);overflow-y:auto}
-.frame-user-panel>:is(.sidebar-account,.nav-item,.theme-control,#frame-build-context,.sidebar-signout){grid-column:1 / -1}
+.frame-user-panel>:is(.sidebar-account,.nav-item,.frame-user-settings,#frame-build-context,.sidebar-signout){grid-column:1 / -1}
 .frame-user-panel .sidebar-account{padding-bottom:6px;border-bottom:1px solid var(--line)}
+.frame-user-settings{display:grid;gap:4px;padding-top:6px;border-top:1px solid var(--line)}
+.frame-user-settings h2{margin:0;font-size:var(--fs-xs);color:var(--muted)}
+.frame-user-settings .nav-item[aria-current=page]{background:var(--accent);color:var(--blue)}
 .frame-user-panel .theme-control{display:flex;align-items:center;margin-top:4px}
 .frame-user-panel .theme-control>span{display:inline}
 .shell-topbar-actions>#frame-build-context{display:none}

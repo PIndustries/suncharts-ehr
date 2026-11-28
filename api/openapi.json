@@ -48461,6 +48461,17 @@
                     "type": ["boolean", "null"],
                     "description": "Denial disposition from the current posted remittance, or null without disposition evidence."
                   },
+                  "worklist_return_reason": {
+                    "type": "string",
+                    "maxLength": 240,
+                    "description": "Bounded response text from this claim's current return. Omitted when no matched rejection or recorded reason is available."
+                  },
+                  "worklist_denial_codes": {
+                    "type": "array",
+                    "items": {"type": "string", "pattern": "^(CO|OA|PI)-[A-Z0-9]{1,5}$"},
+                    "maxItems": 3,
+                    "description": "Claim-level adjustment codes from the current posted denial. These codes do not by themselves establish the denial reason."
+                  },
                   "paid_cents": {
                     "type": ["integer", "null"],
                     "format": "int64",

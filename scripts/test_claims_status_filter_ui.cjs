@@ -75,7 +75,7 @@ function fixture({write=true,claimRows=claims,remittanceRows=remittances,history
    throw new Error(`Unexpected API ${path}`);
   }
  });
- for(const file of ['display-format.js','visit-billing.js','claims.js'])vm.runInContext(fs.readFileSync('web/'+file,'utf8'),ctx);
+ for(const file of ['display-format.js','visit-billing.js','claim-problems.js','claims.js'])vm.runInContext(fs.readFileSync('web/'+file,'utf8'),ctx);
  // Exercise the real record-loader and its guards with a lightweight claim-detail template.
  ctx.claimScreenMarkup=row=>`<p data-opened-claim="${row.id}">${row.control_number}</p>`;
  ctx.showEncounterClaim=async (key,account)=>opened.push([key,account]);
@@ -193,7 +193,25 @@ const waitFor=async test=>{
  assert.deepEqual(visit.opened,[['chart'],[id(101),id(400)],['charges'],[id(1),id(201)]]);
  console.log('PASS exact claim, encounter and remittance IDs, Back and Forward, and writer-only remittance actions');
 
- const hold=claim(61,'submitted',{service_date:'2026-11-27',snapshot:{account:{content:{visit_id:id(461)}}},claimmd_position:{needs_correction:true,correction:{at:'2026-11-25T08:00:00Z',line:{index:0,code:'64405'}}}});
+ const hold=claim(61,'submitted',{service_date:'2026-11-27',snapshot:{account:{content:{visit_id:id(461)}}},claimmd_position:{needs_correction:true,correction:{at:'2026-11-25T08:00:00Z',line:{index:0,code:'64405'},message:'NCCI - Procedure Code [64405] requires an appropriate modifier when procedure [20553] present.'}}});
+ const reasons=fixture({claimRows:[hold,
+  claim(71,'rejected',{worklist_return_reason:'Code 496 - Submitter not approved for electronic claim submissions on behalf of this entity.Billing Provider'}),
+  claim(72,'rejected',{worklist_return_reason:'Code 25 - <img src=x> '+ 'A'.repeat(200)}),
+  claim(73,'rejected'),claim(74,'adjudicated',{payer_denied:true,worklist_denial_codes:['CO-16','<img src=x>']}),
+  claim(75,'accepted',{worklist_return_reason:'Old response must stay hidden'})]});
+ await reasons.ctx.showClaimsWorkspace({filter:'all'});
+ const rowReason=n=>reasons.$q(`[data-claim-open="${id(n)}"]`).closest('tr').querySelector('[data-claim-response-reason]');
+ assert.equal(rowReason(61).textContent,'64405 needs a modifier when billed with 20553');
+ assert.equal(rowReason(71).textContent,'Code 496 · Submitter not approved for this billing provider');
+ assert.match(rowReason(72).textContent,/^Code 25 - <img src=x>/);
+ assert.equal(rowReason(72).querySelector('img'),null);
+ assert.match(rowReason(72).textContent,/…$/);
+ assert(rowReason(72).textContent.length<=160);
+ assert.equal(rowReason(73).textContent,'No return reason recorded');
+ assert.equal(rowReason(74).textContent,'Remittance adjustment CO-16');
+ assert.equal(rowReason(75),null);
+ assert(!reasons.paths().some(path=>path.startsWith(claimsBase+'/')),'reasons are already in the worklist response');
+ console.log('PASS compact return, hold and remittance reasons without extra requests or unescaped messages');
  const zip=claim(62,'draft',{service_date:'2026-11-21',status_at:'2026-11-27T09:00:00Z',snapshot:{account:{content:{visit_id:id(462)}}},worklist_issue:{field:'subscriber_address',part:'postal_code',message:'Policyholder ZIP code is missing'}});
  const unconfirmed=claim(63,'ready',{claim_handoff:{delivery_status:'unknown',outcome:'waiting',attempt_at:'2026-11-26T12:00:00Z'},snapshot:{account:{content:{visit_id:id(463)}}}});
  const matched=payment(64,'reconciled');

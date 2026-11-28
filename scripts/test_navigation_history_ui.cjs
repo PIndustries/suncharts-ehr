@@ -17,7 +17,7 @@ function fixture(billingHub=false,realSections=false){
  ctx.showTool=title=>{nodes['clinical-workspace'].hidden=true;ctx.page=title;activeNav=({'Practice home':'nav-practice','Schedule':'nav-schedule','Patients & encounters':'nav-clinical','Billing':'nav-billing','Claims':'nav-claims','Integrations':'nav-apps','Support tickets':'nav-apps','Inbox':'nav-portal','Send & review':'nav-portal',Sun:null})[title]??null;};
  ctx.showPracticeWorkspace=async()=>{ctx.showTool('Practice home');await ctx.api('/practice');};
  ctx.showBillingQueue=async()=>{ctx.showTool('Billing');await ctx.api('/billing');};
- ctx.showClaimsWorkspace=async()=>{ctx.showTool('Claims');await ctx.api('/claims');};
+ ctx.showClaimsWorkspace=async({filter}={})=>{ctx.claimFilter=filter;ctx.showTool('Claims');await ctx.api('/claims');};
  ctx.showApps=async()=>{ctx.showTool('Integrations');await ctx.api('/apps');};
  ctx.showPortalInbox=async()=>{ctx.showTool('Inbox');ctx.channel='patient';await ctx.api('/portal-inbox');};
  ctx.showIntegrationInbox=async(tab='communications')=>{ctx.showTool('Inbox');ctx.channel=tab;await ctx.api('/integration-inbox');};
@@ -148,6 +148,16 @@ test('every screen has a readable address and a pasted address opens that screen
  assert.doesNotMatch(JSON.stringify(f.entries()),/[A-Z][a-z]+, [A-Z][a-z]+/,'addresses and history carry no names');
  f=fixture();c=f.ctx;c.location.hash='#/claims';await c.enter();assert.equal(c.page,'Claims');assert.equal(c.mutations,0);assert.deepEqual(f.calls,[['GET','/claims']]);
  f=fixture();c=f.ctx;c.location.hash='#/not-a-screen/../../x';await c.enter();await f.settle();assert.equal(c.mutations,0);assert.notEqual(c.page,'Claims');
+});
+test('Insurance payments has its own address and Back restores the claims list',async()=>{
+ const f=fixture(),c=f.ctx;c.location.hash='#/claims';await c.enter();
+ await c.run(()=>c.showClaimsWorkspace({filter:'payments'}));
+ assert.equal(c.location.hash,'#/claims/payments');
+ f.history.back();await f.settle();
+ assert.equal(c.location.hash,'#/claims');assert.equal(c.claimFilter,'action');
+ f.history.forward();await f.settle();
+ assert.equal(c.location.hash,'#/claims/payments');assert.equal(c.claimFilter,'payments');
+ assert.equal(c.mutations,0);
 });
 test('reload opens the matching saved destination and restores its position without fetching Home',async()=>{
  const f=fixture(),c=f.ctx;
