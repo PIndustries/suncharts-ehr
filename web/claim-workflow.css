@@ -276,20 +276,28 @@
 .encounter-switch-button span{margin-right:4px}
 
 /* Keep the claims that need a decision ahead of the waiting list. */
-#claims-tool [data-claim-worklist],#claims-tool [data-coverage-worklist],#claims-tool .claim-worklist-waiting{margin:12px 0;padding:14px 16px;background:var(--surface);border:1px solid var(--line);border-radius:8px}
-.claim-worklist-heading{flex-wrap:wrap}
+#claims-tool [data-claim-worklist],#claims-tool [data-coverage-worklist]{margin:12px 0;padding:12px;background:var(--surface);border:1px solid var(--line);border-radius:8px}
+.claim-worklist-refinement:not([hidden]){display:flex;align-items:end;flex-wrap:wrap;gap:8px 12px}
+.claim-worklist-refinement>label{flex:1 0 9rem;margin:0}
+.claim-worklist-refinement>.claim-worklist-search{flex:2 1 16rem}
+.claim-worklist-ranges{display:grid;grid-template-columns:repeat(auto-fit,minmax(8rem,1fr));gap:8px 12px;margin-top:8px}
+.claim-worklist-more[open]{order:1;flex:1 0 100%}
+.claim-worklist-more>summary,.claim-worklist-refinement>button{min-height:36px}
+.claim-worklist-more>summary{cursor:pointer;padding-block:6px}
 #claims-tool [data-coverage-worklist]:not([hidden]):has(>[data-coverage-worklist-status]:not([hidden])){display:flex;align-items:center;flex-wrap:wrap;gap:4px 16px;padding-block:8px}
 [data-coverage-worklist]:has(>[data-coverage-worklist-status]:not([hidden])) :is(.section-head,h3,p){margin:0}
 .coverage-worklist-amounts{display:flex;flex-wrap:wrap;gap:6px 18px;margin:0;font-variant-numeric:tabular-nums}
 .coverage-worklist-amounts dt{font-size:.8rem;color:var(--muted)}
 .coverage-worklist-amounts dd{margin:0;font-weight:600;white-space:nowrap}
-#claims-tool .claim-worklist-waiting{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
-.claim-worklist-waiting p{margin:3px 0 0}
+.claim-worklist-table .monitor-amount{white-space:nowrap;font-variant-numeric:tabular-nums;font-weight:600}
+.claim-worklist-table .monitor-status small{display:block;margin-top:3px}
+.claim-test-label{margin-left:.25rem}
 .claim-worklist-table .monitor-age{white-space:nowrap;color:var(--muted);font-variant-numeric:tabular-nums}
 .claim-worklist-table .monitor-action button{min-height:36px}
 .claim-worklist-payment-row{outline:2px solid var(--blue);outline-offset:2px;scroll-margin-top:95px}
 @media(max-width:620px){
- #claims-tool [data-claim-worklist],#claims-tool [data-coverage-worklist],#claims-tool .claim-worklist-waiting{padding:12px}
+ #claims-tool [data-claim-worklist],#claims-tool [data-coverage-worklist]{padding:10px}
+ .claim-worklist-refinement>.claim-worklist-search{flex-basis:100%}
  .claim-worklist-table{min-width:0}
  .claim-worklist-table thead{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
  .claim-worklist-table tbody,.claim-worklist-table tr{display:block}

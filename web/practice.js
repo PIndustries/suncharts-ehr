@@ -35,7 +35,7 @@ async function showPracticeWorkspace({board='agenda'}={}){
  renderPracticeWorkspace();
 }
 function practiceMoney(cents){return Number.isFinite(cents)?money(cents):'—';}
-function practiceTile(action,label,value,hint,tone=''){const href={today:'#/home',notes:'#/home/unfinished','claims-send':'#/claims','claims-fix':'#/claims/fix',collected:'#/billing/collected-today'}[action];return `<a href="${href}" class="practice-tile${tone?` is-${tone}`:''}" data-practice-action="${action}"><span>${esc(label)}</span><b>${esc(value)}</b>${hint?`<small>${esc(hint)}</small>`:''}</a>`;}
+function practiceTile(action,label,value,hint,tone=''){const href={today:'#/home',notes:'#/home/unfinished','claims-send':'#/claims/send','claims-fix':'#/claims/fix',collected:'#/billing/collected-today'}[action];return `<a href="${href}" class="practice-tile${tone?` is-${tone}`:''}" data-practice-action="${action}"><span>${esc(label)}</span><b>${esc(value)}</b>${hint?`<small>${esc(hint)}</small>`:''}</a>`;}
 function practiceClaimCount(o,status){return Number(o?.claims?.by_status?.[status]?.count||0);}
 function practiceClaimBilled(o,status){return Number(o?.claims?.by_status?.[status]?.billed_cents||0);}
 function practiceBars(rows){

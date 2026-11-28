@@ -542,9 +542,13 @@ function visitCollectHeading(){
  heading.textContent=due>0||due==null?'Collect payment':'Payments';
 }
 function openVisitCollect(){
+ const summary=encounterRevenueState.data?.summary;
+ if(typeof sheetOpen==='function'&&encounterBalancePaymentAccount(summary)&&!encounterPaymentAppointment(revenueAppointment())){
+  openEncounterBalancePayment(summary);return;
+ }
  if(typeof sheetOpen==='function'&&typeof document!=='undefined'&&document.createElement&&openCollectModal())return;
  const panel=$('visit-billing-collect');if(!panel)return;
- const summary=encounterRevenueState.data?.summary,note=$('visit-billing-collect-note');
+ const note=$('visit-billing-collect-note');
  if(note)note.textContent=summary?`Patient owes now ${money(summary.patient.owes_now_cents)}.`:'';
  panel.hidden=false;visitCollectHeading();panel.scrollIntoView?.({block:'nearest'});const heading=panel.querySelector?.('h3');if(heading){heading.tabIndex=-1;heading.focus?.({preventScroll:true});}
 }
@@ -680,12 +684,12 @@ function renderPatientInsurance(){
  if(appointment&&billingCan('create'))void loadHostedCopays(appointment.id);
  host.hidden=typeof chartSection!=='undefined'&&chartSection!=='insurance';
 }
-function renderEncounterRevenue(){
+function renderEncounterRevenue({prepareClaim=true}={}){
  const host=$('encounter-revenue');if(!host)return;
  const visit=typeof activeVisit!=='undefined'?activeVisit:null,account=encounterChargeAccount(),appointment=(workspace.appointments||[]).find(a=>a.id===visit?.appointment_id),serviceDate=revenueServiceDate(appointment),coverage=revenueCoverage(serviceDate);
  if(!visit){host.innerHTML='<p>Select an encounter to record its procedures and charges.</p>';return;}
  const codesVisible=typeof visitBillingAreaVisible!=='function'||visitBillingAreaVisible();
- const key=JSON.stringify([selected,visit.id,visit.version,appointment?.id,account?.id,account?.version,(workspace.billing?.coverages||[]).map(c=>[c.id,c.version]),workspace.billing?.copays,codesVisible]);if(host.dataset.revenueKey===key&&$('encounter-billing-editor')){if(account&&chartSection==='visits'&&!$('encounter-billing-detail')?.innerHTML)showBillingAccount(account.id,false);loadEncounterRevenueStatus(account);if(appointment&&billingCan('create'))void loadHostedCopays(appointment.id);if(typeof resumeEncounterChargeDraft==='function')resumeEncounterChargeDraft();return;}if(typeof captureBillingChargeDraft==='function')captureBillingChargeDraft();host.dataset.revenueKey=key;
+ const key=JSON.stringify([selected,visit.id,visit.version,appointment?.id,account?.id,account?.version,(workspace.billing?.coverages||[]).map(c=>[c.id,c.version]),workspace.billing?.copays,codesVisible]);if(host.dataset.revenueKey===key&&$('encounter-billing-editor')){if(account&&chartSection==='visits'&&!$('encounter-billing-detail')?.innerHTML)showBillingAccount(account.id,false);loadEncounterRevenueStatus(account,false,{prepare:prepareClaim});if(appointment&&billingCan('create'))void loadHostedCopays(appointment.id);if(typeof resumeEncounterChargeDraft==='function')resumeEncounterChargeDraft();return;}if(typeof captureBillingChargeDraft==='function')captureBillingChargeDraft();host.dataset.revenueKey=key;
  const owner=typeof me!=='undefined'&&me?.role==='owner';
   // Whether this role sees codes & charges at all. A person without billing keeps the note's own
   // diagnoses editor, so the codes block draws none of its own (visitNoteOwnsDiagnoses).
@@ -745,7 +749,7 @@ function renderEncounterRevenue(){
 
  if(typeof encounterBillingChrome==='function')encounterBillingChrome(host);
  if(typeof invoiceTabSet==='function')invoiceTabSet(invoiceTabRemembered(),false);
- loadEncounterRevenueStatus(account);
+ loadEncounterRevenueStatus(account,false,{prepare:prepareClaim});
  const dxState=typeof visitDiagnosisStates==='undefined'?null:visitDiagnosisStates.get(visit.id);
  if(codesVisible&&encounterDiagnosesHost()&&!(keepDiagnoses&&dxState?.patientId===selected&&dxState.version===visit.version&&diagnosesHost.querySelector('#visit-diagnoses-form')))renderEncounterDiagnoses();
  if(appointment&&billingCan('create'))void loadHostedCopays(appointment.id);
@@ -2716,6 +2720,93 @@ function openEncounterPaymentHistoryEditor(dialog,html){
  const field=form.querySelector('input:not([type="hidden"]),select');
  field?.focus();
 }
+function encounterBalancePaymentAccount(summary){
+ const data=encounterRevenueState.data;
+ const account=typeof encounterChargeAccount==='function'?encounterChargeAccount():null;
+ return account?.status==='posted'&&activeVisit?.status==='signed'&&summary?.patient_id===selected&&
+  summary.visit?.id===activeVisit.id&&summary.account?.id===account.id&&summary.account.version===account.version&&
+  Number.isSafeInteger(summary.patient?.owes_now_cents)&&summary.patient.owes_now_cents>0&&
+  !summary.patient.receipt_needs_review&&!summary.receipts?.some(row=>!row.voided&&row.needs_review)&&
+  !summary.insurance?.added_after_posting&&
+  !data?.stale&&!data?.error&&billingCan('create')?account:null;
+}
+
+// The appointment tenders need the exact appointment. A posted account can still record money
+// already received when that appointment isn't available in the chart.
+const pendingEncounterBalancePayments=new Map();
+function openEncounterBalancePayment(summary){
+ const account=encounterBalancePaymentAccount(summary);
+ if(!account)return;
+ const patient=selected,identity=me,visit=activeVisit.id;
+ const number=typeof encounterNumberText==='function'?encounterNumberText(activeVisit):'This encounter';
+ const due=summary.patient.owes_now_cents,scope=JSON.stringify([identity.tenant_id,identity.user_id,patient,visit,account.id]);
+ const current=()=>me===identity&&selected===patient&&chartSection==='visits'&&activeVisit?.id===visit&&encounterChargeAccount()?.id===account.id;
+ const panel=document.createElement('div');
+ panel.innerHTML=`<p>${esc(number)} · ${esc(visitBillingDate(account.content.service_date))}</p><p><b>${money(due)}</b> patient balance</p><p>Record a payment already received for this visit. Card collection requires its linked appointment.</p><form data-encounter-balance-payment><label>Amount received (USD)<input name="amount" inputmode="decimal" value="${esc(dollars(due))}" required></label><label>Method<select name="method"><option value="cash">Cash</option><option value="check">Check</option><option value="external">External payment</option></select></label><label data-encounter-payment-reference hidden>Check or receipt reference<input name="reference" maxlength="200"></label><p data-encounter-payment-status role="status"></p><button type="submit" class="primary">Record received payment</button></form>`;
+ const dialog=sheetOpen('Take payment',panel,{className:'collect-sheet',label:true});
+ const form=panel.querySelector('form'),details=panel.querySelector('[data-encounter-payment-reference]'),status=panel.querySelector('[data-encounter-payment-status]');
+ const amount=form.elements.amount,method=form.elements.method,reference=form.elements.reference,button=form.querySelector('button');
+ let running=false,request=pendingEncounterBalancePayments.get(scope);
+ function syncReference(){
+  const needed=method.value!=='cash';details.hidden=!needed;reference.required=needed;
+ }
+ method.addEventListener('change',syncReference);
+ dialog.canCloseSheet=()=>!running;
+ function retryMessage(){
+  amount.value=dollars(request.body.amount_cents);method.value=request.body.method;reference.value=request.body.reference;syncReference();
+  amount.readOnly=true;method.disabled=true;reference.readOnly=true;button.textContent='Retry same recording';
+  status.textContent='The last recording is unconfirmed. Retry the same payment to check its result.';
+ }
+ if(request)retryMessage();
+ form.addEventListener('submit',async event=>{
+  event.preventDefault();
+  if(running||!current()||!billingCan('create'))return;
+  if(!request){
+   const latest=encounterRevenueState.data?.summary;
+   if(encounterBalancePaymentAccount(latest)?.version!==account.version||latest.patient.owes_now_cents!==due){
+    status.textContent='The balance changed. Reopen this visit’s payment to review it.';button.disabled=true;return;
+   }
+   let received;
+   try{received=cents(amount.value);}catch{}
+   if(!Number.isSafeInteger(received)||received<=0||received>due){status.textContent=`Enter an amount up to ${money(due)}.`;return;}
+   const evidence=method.value==='cash'?'Cash received at the desk':reference.value.trim();
+   if(!evidence){status.textContent='Enter the check or receipt reference.';return;}
+   request={version:account.version,body:{request_id:crypto.randomUUID(),kind:'payment',amount_cents:received,reverses_id:null,party:'patient',method:method.value,reference:evidence,occurred_on:collectToday(),reason:'Received payment on this visit',reviewed_patient_balance_cents:due}};
+   pendingEncounterBalancePayments.set(scope,request);
+  }
+  running=true;button.disabled=true;status.textContent='Recording payment…';
+  try{
+   const result=await api(`/api/v1/patients/${encodeURIComponent(patient)}/billing/accounts/${encodeURIComponent(account.id)}/entries`,'POST',request.body,request.version);
+   if(!result?.id||result.account?.id!==account.id||result.account?.patient_id!==patient||result.account?.content?.visit_id!==visit)throw new Error('The payment response did not match this visit.');
+   pendingEncounterBalancePayments.delete(scope);
+   if(!current())return;
+   const recorded=money(request.body.amount_cents);
+   panel.innerHTML=`<p role="status"><b>${recorded} payment recorded</b></p><p>Applied to ${esc(number)}.</p><div class="actions"><button type="button" class="primary" data-recorded-payment-history>View payment history</button><button type="button" data-sheet-close>Done</button></div>`;
+   panel.querySelector('[data-recorded-payment-history]').addEventListener('click',()=>{
+    if(!current())return;
+    sheetClose(dialog,()=>$('visit-page-host')?.querySelector('[data-step-payment] [data-open-encounter-payment-history]')?.click());
+   });
+   const updated=await api(`/api/v1/patients/${encodeURIComponent(patient)}/billing`);
+   if(current()){
+    workspace.billing=updated;
+    renderEncounterRevenue({prepareClaim:false});
+    await loadEncounterRevenueStatus(encounterChargeAccount(),true,{prepare:false});
+   }
+  }catch(error){
+   if(!pendingEncounterBalancePayments.has(scope)){
+    if(current())notice('Payment recorded. Refresh the visit to see the new balance.',true);
+    return;
+   }
+   const retry=!error.status||error.status>=500;
+   if(!retry)pendingEncounterBalancePayments.delete(scope);
+   if(!current()||!panel.isConnected)return;
+   if(retry){retryMessage();button.disabled=false;}
+   else{status.textContent=error.message||'Refresh the visit to review its balance before recording payment.';}
+  }finally{running=false;}
+ });
+ amount.focus();
+}
+
 function encounterStepPayments(body,revenue,status,s,model,locked){
  const selfPay=model.selfPay,posted=s.account?.status==='posted',draftInsured=!posted&&s.insurance?.insured===true;
  const amount=posted?s.patient?.owes_now_cents:draftInsured?s.patient?.copay_due_cents:null;
@@ -2725,6 +2816,8 @@ function encounterStepPayments(body,revenue,status,s,model,locked){
  const appointment=revenueAppointment();
  const canCollect=canRecord&&encounterPaymentAppointment(appointment)&&s.patient_id===selected&&
   s.visit?.id===activeVisit?.id&&s.visit?.appointment_id===appointment.id;
+ const canRecordBalance=canRecord&&!canCollect&&!!encounterBalancePaymentAccount(s);
+ const canTakePayment=canCollect||canRecordBalance;
  const copays=draftInsured?(s.receipts||[]).filter(r=>!r.voided&&r.amount_cents>(r.refunded_cents||0)):[];
  const copayStatus=copays.some(r=>r.test===false)?'Copay recorded':copays.length&&copays.every(r=>r.test===true)?'Test copay recorded':'No copay due';
  let text='Balance pending';
@@ -2758,17 +2851,17 @@ function encounterStepPayments(body,revenue,status,s,model,locked){
  }
  const write=(node,markup)=>{if(node.paymentMarkup!==markup){node.paymentMarkup=markup;node.innerHTML=markup;}};
  const history=!!(ledger||statements||s.receipts?.length||s.timeline?.length||posted||review);
- const unavailable=canRecord&&!canCollect?'<p class="muted">Taking a payment requires an active appointment linked to this visit.</p>':'';
+ const unavailable=canRecord&&!canTakePayment&&!posted?'<p class="muted">Taking a copay requires an active appointment linked to this visit.</p>':'';
  const correction=encounterPostedCoverageAccount(s);
  const apply=correction?`<button type="button" class="primary" data-apply-posted-coverage="${esc(correction.id)}" aria-haspopup="dialog">Apply insurance</button>`:'';
- write(payment,`<div class="encounter-payment-summary" aria-live="polite"><p data-payment-summary>${esc(text)}</p>${unavailable}${correction?'<p>Posted as self-pay. Insurance is on file for this service date.</p>':''}${insurer?`<p class="muted" data-insurer-payment-summary>${esc(insurer)}</p>`:''}</div>${retry}${remittance}${apply}${canCollect?`<button type="button" ${correction?'':'class="primary" '}data-visit-collect>Take payment</button>`:''}${receipt}${history?'<button type="button" class="text-button" data-open-encounter-payment-history>Payment history</button>':''}`);
+ write(payment,`<div class="encounter-payment-summary" aria-live="polite"><p data-payment-summary>${esc(text)}</p>${unavailable}${correction?'<p>Posted as self-pay. Insurance is on file for this service date.</p>':''}${insurer?`<p class="muted" data-insurer-payment-summary>${esc(insurer)}</p>`:''}</div>${retry}${remittance}${apply}${canTakePayment?`<button type="button" ${correction?'':'class="primary" '}data-visit-collect>Take payment</button>`:''}${receipt}${history?'<button type="button" class="text-button" data-open-encounter-payment-history>Payment history</button>':''}`);
  for(const button of ledger?.querySelectorAll('[data-visit-collect]')||[])button.hidden=true;
  let actions=destination.querySelector('[data-payment-detail-actions]');
  if(!actions){actions=document.createElement('div');actions.dataset.paymentDetailActions='';destination.append(actions);}
  if(selfPay){
   const ctx=typeof visitBillingStateContext==='function'?visitBillingStateContext():{canCreate:typeof billingCan!=='function'||billingCan('create'),canWrite:typeof billingCan!=='function'||billingCan()};
   write(actions,visitBillingSelfPayDetails(s,ctx,encounterSelfPayCredits(s),{ledger:!!ledger,statements:!!statements,due:amount}));
-  return canCollect;
+  return canTakePayment;
  }
  // The ledger presents the receipt once. Keep receipts absent from that list (including
  // voids and visits without a charge account) and vetted correction actions accessible.
@@ -2792,7 +2885,7 @@ function encounterStepPayments(body,revenue,status,s,model,locked){
  if(draftInsured&&s.receipts?.length)links.push('<button type="button" data-visit-history="payments">Payment history and refunds</button>');
  const facts=draftInsured?visitBillingDraftPayments(s):'';
  write(actions,(facts?`<p>${esc(facts)}</p>`:'')+(links.length?`<div class="actions">${links.join('')}</div>`:''));
- return canCollect;
+ return canTakePayment;
 }
 function encounterInsurerPayment(s,model){
  const insurance=s.insurance;
@@ -2852,7 +2945,7 @@ function encounterNextAction(page,summary,model){
  }
  return follow('Take payment',collect);
 }
-function encounterNextSync(page,guide,action,earlyCopay){
+function encounterNextSync(page,guide,action,patientDue,posted=false){
  const primary=guide.querySelector('[data-encounter-next]'),payment=guide.querySelector('[data-encounter-early-payment]');
  const previous=page.encounterNextControl;
  if(previous!==action?.control){
@@ -2860,13 +2953,14 @@ function encounterNextSync(page,guide,action,earlyCopay){
   action?.control?.setAttribute('data-encounter-next-source','');
   page.encounterNextControl=action?.control;
  }
- guide.hidden=!action&&!earlyCopay;
+ const showPayment=patientDue>0&&!action?.control?.hasAttribute('data-visit-collect');
+ guide.hidden=!action&&!showPayment;
  primary.hidden=!action;primary.disabled=!!action?.control?.disabled;
  if(action&&primary.textContent!==action.label)primary.textContent=action.label;
  primary.onclick=action?.run||null;
- payment.hidden=!earlyCopay;
- payment.toggleAttribute('data-visit-collect',!!earlyCopay);
- const label=earlyCopay?`Take ${money(earlyCopay)} copay`:'';
+ payment.hidden=!showPayment;
+ payment.toggleAttribute('data-visit-collect',showPayment);
+ const label=showPayment?`Take ${money(patientDue)} ${posted?'payment':'copay'}`:'';
  if(payment.textContent!==label)payment.textContent=label;
 }
 function encounterStepsSync(){
@@ -3087,8 +3181,9 @@ function encounterStepsSync(){
    stepper.encounterMarkup=markup;
   }
   const next=showing?encounterNextAction(page,s,model):null;
-  const earlyCopay=showing&&billingAllowed&&canCollect&&s.account?.status!=='posted'?s.patient.copay_due_cents:0;
-  encounterNextSync(page,guide,next,earlyCopay);
+  const posted=s.account?.status==='posted';
+  const patientDue=showing&&billingAllowed&&canCollect?(posted?s.patient.owes_now_cents:s.patient.copay_due_cents):0;
+  encounterNextSync(page,guide,next,patientDue,posted);
   encounterStepsWatchScroll(page,showing);
   if(showing&&!opening&&document.activeElement!==focused){
    const restore=focusedChip?stepper.querySelector(`[data-encounter-step-open="${focusedChip}"]`):focusedLabel;

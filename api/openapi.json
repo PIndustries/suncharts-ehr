@@ -47147,6 +47147,11 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 1000
+          },
+          "reviewed_patient_balance_cents": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "For an already received patient payment on a signed visit. The current patient balance must match this amount, and the payment cannot exceed it."
           }
         },
         "required": [
@@ -48483,6 +48488,16 @@
                   },
                   "canceled_claim_recovery": {
                     "$ref": "#/components/schemas/CanceledClaimRecovery"
+                  },
+                  "copied_from_claim_id": {
+                    "type": ["string", "null"],
+                    "format": "uuid",
+                    "description": "The locally canceled claim this draft was explicitly copied from, when recorded in its creation revision."
+                  },
+                  "coordination_primary_claim_id": {
+                    "type": ["string", "null"],
+                    "format": "uuid",
+                    "description": "The primary claim named in this secondary claim's coordination evidence. This link is independent of the correction or resubmission chain."
                   },
                   "remittance_posted": {
                     "type": "boolean",

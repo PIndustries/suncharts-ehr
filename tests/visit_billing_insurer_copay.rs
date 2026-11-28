@@ -184,6 +184,46 @@ async fn post_charges(f: &Fixture, p: Uuid, visit: Uuid, coverage: Uuid, cents: 
     .await
 }
 
+#[tokio::test]
+async fn visit_balance_collection_records_only_patient_responsibility_once() {
+    let f = setup().await;
+    let (p, visit, coverage) = patient_with_visit(&f, Some(2500)).await;
+    let account = post_charges(&f, p, visit, coverage, 20000).await;
+    let entries = format!(
+        "/api/v1/patients/{p}/billing/accounts/{}/entries",
+        id(&account)
+    );
+    let body = json!({
+        "request_id":Uuid::new_v4(),"kind":"payment","amount_cents":1500,"reverses_id":null,
+        "party":"patient","method":"cash","reference":"Synthetic receipt","occurred_on":"2026-10-25",
+        "reason":"Synthetic received visit payment","reviewed_patient_balance_cents":2500
+    });
+    let mut bad = body.clone();
+    bad["reviewed_patient_balance_cents"] = json!(20000);
+    assert_eq!(
+        f.call("POST", &entries, bad, Some(version(&account)))
+            .await
+            .0,
+        StatusCode::CONFLICT,
+    );
+    let mut bad = body.clone();
+    bad["amount_cents"] = json!(5000);
+    assert_eq!(
+        f.call("POST", &entries, bad, Some(version(&account)))
+            .await
+            .0,
+        StatusCode::BAD_REQUEST,
+    );
+    let recorded = f
+        .ok("POST", &entries, body.clone(), Some(version(&account)))
+        .await;
+    let retried = f.ok("POST", &entries, body, Some(version(&account))).await;
+    assert_eq!(recorded["id"], retried["id"]);
+    let summary = f.summary(p, visit).await;
+    assert_eq!(summary["patient"]["owes_now_cents"], 1000);
+    assert_eq!(summary["insurance"]["pending_cents"], 17500);
+}
+
 /// One completed eligibility answer for the coverage, `days_ago` old, reporting `benefits`.
 async fn completed_check(
     f: &Fixture,

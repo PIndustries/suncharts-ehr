@@ -301,6 +301,19 @@ for(const options of [{},{selfPay:true},{signed:true},{signed:true,sent:true},{s
  f.dom.window.close();
 }
 // Count workflow presses with completed synthetic booking and all required data entered.
+{
+ const f=fixture({signed:true}),w=f.w;
+ w.$('visit-billing-review').insertAdjacentHTML('beforeend','<div id="claim-screen-footer"><div class="actions"><button data-open-signed-claim-details>Review &amp; send</button></div></div>');
+ f.sync();
+ assert.equal(f.page.querySelector('[data-encounter-next]').textContent,'Review & send');
+ const payment=f.page.querySelector('[data-encounter-early-payment]');
+ assert.equal(payment.hidden,false,'the posted patient amount remains actionable while the claim needs review');
+ assert.equal(payment.textContent,'Take $25.00 payment');
+ w.encounterRevenueState.data.summary.patient.owes_now_cents=0;
+ f.sync();
+ assert.equal(payment.hidden,true);
+ f.dom.window.close();
+}
 for(const selfPay of [false,true]){
  const f=fixture({selfPay}),w=f.w,bar=w.$('encounter-stepper'),frame=w.document.querySelector('.frame-content');
  let presses=0;

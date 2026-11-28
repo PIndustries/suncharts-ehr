@@ -7,12 +7,12 @@ let failDelivery=false,wrongClaim=false;
 const fields={
  subscriber_given_name:'Synthetic',subscriber_family_name:'Member',patient_sex:'U',subscriber_sex:'U',
  rendering_given_name:'Synthetic',rendering_family_name:'Provider',billing_taxonomy:'207Q00000X',filing_indicator:'CI',
- signature_on_file:'on',benefits_assigned:'on',release_authorized:'on',routine_professional_reviewed:'on',
+ claim_review_confirmed:'on',
  synthetic_test_reviewed:'on',reason:'Synthetic preparation test'
 };
 for(const prefix of ['billing','subscriber','patient','payer'])for(const key of ['line1','line2','city','state','postal_code'])fields[`${prefix}_${key}`]='SYNTHETIC';
 const context={
- console,me:{user_id:'synthetic-clinician'},crypto:{randomUUID:()=>`request-${calls.length}`},
+ console,esc:value=>String(value??''),me:{user_id:'synthetic-clinician'},crypto:{randomUUID:()=>`request-${calls.length}`},
  document:{addEventListener:()=>{}},
  FormData:class{constructor(){return Object.entries(fields)}},
  claimsBase:'/api/v1/billing/claims',claimCurrent:{id:'synthetic-claim',version:7},
@@ -34,6 +34,10 @@ vm.runInContext("claimMdConnectionState={connected:true,active:{id:'setting',par
  const results=[];
  const form={dataset:{request:'prepare-only-request'},claimAfterQueue:result=>results.push(result)};
  context.form=form;context.submitter={value:'prepare'};
+ delete fields.claim_review_confirmed;
+ await assert.rejects(vm.runInContext('submitClaimMdForm(form,submitter)',context),/Confirm the claim review/);
+ assert.equal(calls.length,0);
+ fields.claim_review_confirmed='on';
  await vm.runInContext('submitClaimMdForm(form,submitter)',context);
  assert.equal(calls.length,1,'prepare-only must make exactly one local API call');
  assert.equal(calls[0][0],'/api/v1/billing/claims/synthetic-claim/837p');
@@ -87,5 +91,27 @@ vm.runInContext("claimMdConnectionState={connected:true,active:{id:'setting',par
  calls.length=0;wrongClaim=true;
  await assert.rejects(vm.runInContext('submitClaimMdForm(form,submitter)',context),/does not match this review/);
  assert.equal(calls.length,1,'an unexpected claim artifact is never queued');
+
+ let timer;
+ context.setTimeout=fn=>{timer=fn;return 1;};context.clearTimeout=()=>{timer=null;};
+ const scoped={id:'synthetic-claim',patient_id:'synthetic-patient',account_id:'synthetic-account',status:'submitted'};
+ const pollingForm={isConnected:true,claimRecord:scoped,querySelector:()=>null};
+ context.api=async(path,method)=>{
+  assert.equal(path,`${context.claimsBase}/${scoped.id}`);assert.equal(method,undefined,'receipt polling is read-only');
+  return {claim:scoped,tracking:{submissions:[{id:'prepared-submission',delivery_job:{id:'job',
+   submission_id:'prepared-submission',route_key:'claimmd',status:'delivered',receipt_reference:'claimmd-file:1'}}]}};
+ };
+ context.claimMdPublishSubmissionStatus(pollingForm,context.hint,()=>true);
+ assert.match(pollingForm.innerHTML,/Queued for Claim.MD/);
+ await timer();
+ assert.match(pollingForm.innerHTML,/Claim.MD received/);
+ assert.match(pollingForm.innerHTML,/Receipt claimmd-file:1/);
+ assert.match(pollingForm.innerHTML,/Waiting for payer response/);
+ assert.equal(timer,null,'automatic checks stop once the exact receipt arrives');
+ const pending={isConnected:true,claimRecord:scoped,querySelector:()=>null};
+ context.claimMdPublishSubmissionStatus(pending,context.hint,()=>true);
+ pending.isConnected=false;
+ await timer();
+ assert.match(pending.innerHTML,/Queued for Claim.MD/,'closing the review prevents a late update');
  console.log('PASS Claim.MD prepare-only creates local 837P without external delivery; queue remains explicit');
 })().catch(error=>{console.error(error);process.exitCode=1});

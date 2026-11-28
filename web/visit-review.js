@@ -596,27 +596,9 @@ function visitClaimSubmissionReviewKey(defaults={}){
  ]);
 }
 function visitSignedClaimAttestation(claim,account){
- const content=claim.content||{},coverage=account.coverage_snapshot?.coverage?.content||{};
- const addresses=claim.submission_defaults||{};
- const format=address=>[address?.line1,address?.line2,address?.city,[address?.state,address?.postal_code].filter(Boolean).join(' ')].filter(Boolean).join(', ');
- const patientAddress=format(addresses.patient_address)||content.patient_address;
- const subscriberAddress=format(addresses.subscriber_address)||content.subscriber_address;
- const billingAddress=format(addresses.billing_address)||content.billing_address;
- const diagnoses=content.diagnosis_codes||[],lines=account.content?.lines||[];
- const rendering=[addresses.rendering_given_name,addresses.rendering_family_name].filter(Boolean).join(' ');
- const fact=(name,value)=>value?`<div><dt>${esc(name)}</dt><dd>${esc(value)}</dd></div>`:'';
- const synthetic=content.synthetic_test===true?' I confirm the patient, coverage, and claim details are synthetic and accept any clearinghouse charge for this test.':'';
- return `<dl class="signed-claim-reviewed-facts">
- ${fact('Member ID',coverage.member_id)}
- ${fact('Diagnoses',diagnoses.join(', '))}
- ${fact('Procedures',lines.map(line=>[line.code,line.modifiers].filter(Boolean).join('-')).filter(Boolean).join(', '))}
- ${fact('Patient address',patientAddress)}
- ${subscriberAddress!==patientAddress?fact('Policy holder address',subscriberAddress):''}
- ${fact('Billing address',billingAddress)}
- ${fact('Rendering provider',rendering)}
- ${fact('Billing provider',content.billing_provider_name)}
- </dl>
- <p id="signed-claim-attestation" class="signed-claim-attestation">By selecting Send claim to Claim.MD, I confirm the provider signature is on file, benefits are assigned, release of information is authorized, and I reviewed the codes and addresses for this routine professional claim.${synthetic}</p>`;
+ const facts=typeof claimMdReviewFacts==='function'?claimMdReviewFacts(claim,account,claim.submission_defaults||{},{includeSummary:false}):'';
+ const attestation=typeof claimMdReviewAttestation==='function'?claimMdReviewAttestation(claim.content?.synthetic_test===true,{implicit:true}):'';
+ return facts+attestation;
 }
 function visitSignedClaimOverview(s,ctx,sent,detail,ready=null,checking=false){
  const claim=detail?.claim||s.claim||{},account=claim.snapshot?.account||visitReviewAccount()||s.account||{};
@@ -1163,7 +1145,7 @@ function visitOpenSignedClaimDetails(button,intent={}){
   clearTimeout(inlineTimer);
   restore();
   if(dialog.dataset.handoff||person!==selected||visit!==activeVisit?.id||identity!==me)return;
-  if(!manualReviewPane.hidden)void loadEncounterRevenueStatus(encounterChargeAccount(),true);
+  if(!manualReviewPane.hidden||!localBluePane.hidden)void loadEncounterRevenueStatus(encounterChargeAccount(),true);
   const launcher=button?.isConnected?button:$('visit-page-host')?.querySelector('[data-encounter-claim-status] [data-open-signed-claim-details]');
   launcher?.focus({preventScroll:true});
  },{once:true});

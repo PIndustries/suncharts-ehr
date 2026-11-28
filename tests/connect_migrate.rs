@@ -4447,6 +4447,87 @@ async fn bluecard_routes_existing_charges_and_reconciles_the_local_payer() {
 }
 
 #[tokio::test]
+async fn a_returned_bluecard_claim_keeps_its_route_on_the_next_attempt() {
+    let (r, _, a, _) = setup().await;
+    let home = billing_payer_named(&r, &a, "Synthetic Home Blue", "00200").await;
+    let local = billing_payer_named(&r, &a, "Synthetic Local Blue", "22099").await;
+    let (patient, _, posted, original) =
+        claim_fixture_with_payer(&r, &a, true, 0, home, claim_content()).await;
+    reject_recorded_claim(&r, &a, &original, "").await;
+    let create_path = format!(
+        "/api/v1/patients/{}/billing/accounts/{}/claims",
+        patient["id"].as_str().unwrap(),
+        posted["id"].as_str().unwrap()
+    );
+    let version = posted["version"].as_i64();
+    let prepare = |parent: &Value| {
+        json!({"request_id":Uuid::new_v4(),"parent_id":parent["id"],"frequency":"original",
+            "content":claim_content(),"reason":"Reviewed synthetic local route",
+            "local_blue_payer_id":local["id"],"local_blue_route_reviewed":true})
+    };
+    let (code, routed) =
+        schedule_call(&r, &a, "POST", &create_path, prepare(&original), version).await;
+    assert_eq!(code, 200, "{routed}");
+    reject_recorded_claim(&r, &a, &routed, "").await;
+    let (_, returned) = schedule_call(
+        &r,
+        &a,
+        "GET",
+        &format!("/api/v1/billing/claims/{}", routed["id"].as_str().unwrap()),
+        Value::Null,
+        None,
+    )
+    .await;
+    assert_eq!(returned["local_blue_route"]["retains_existing_route"], true);
+    assert_eq!(
+        returned["local_blue_route"]["options"][0]["payer_id"],
+        local["id"]
+    );
+
+    let (code, corrected) =
+        schedule_call(&r, &a, "POST", &create_path, prepare(&routed), version).await;
+    assert_eq!(code, 200, "{corrected}");
+    assert_eq!(corrected["parent_id"], routed["id"]);
+    assert_eq!(
+        corrected["snapshot"]["claim_routing"],
+        routed["snapshot"]["claim_routing"]
+    );
+    assert_eq!(
+        corrected["snapshot"]["account"],
+        routed["snapshot"]["account"]
+    );
+    assert_eq!(corrected["content"]["synthetic_test"], false);
+    assert_ne!(corrected["control_number"], routed["control_number"]);
+    assert_eq!(
+        schedule_call(&r, &a, "POST", &create_path, prepare(&routed), version)
+            .await
+            .0,
+        409
+    );
+
+    reject_recorded_claim(&r, &a, &corrected, "SYN-HORIZON-ON-FILE").await;
+    let (_, on_file) = schedule_call(
+        &r,
+        &a,
+        "GET",
+        &format!(
+            "/api/v1/billing/claims/{}",
+            corrected["id"].as_str().unwrap()
+        ),
+        Value::Null,
+        None,
+    )
+    .await;
+    assert!(on_file.get("local_blue_route").is_none());
+    assert_eq!(
+        schedule_call(&r, &a, "POST", &create_path, prepare(&corrected), version)
+            .await
+            .0,
+        409
+    );
+}
+
+#[tokio::test]
 async fn claim_detail_names_the_frequency_a_corrected_claim_must_carry() {
     let (r, _, a, _) = setup().await;
     let (p, _, b, c) = claim_fixture(&r, &a).await;

@@ -50,22 +50,22 @@ assert.doesNotMatch(ctx.claimMissingMarkup(policyholderIssues,{...policyholderCl
  // again and only what is still empty or changed is saved on it, at the version just read.
  ctx.api=async(url,method='GET',body,version)=>{calls.push([url,method,body,version]);
   if(url.endsWith('/demographics')&&method==='GET')return {version:7,content:{phone:'555-0100',address:{country:'US'}}};
-  if(url==='/api/v1/billing/claims/claim-1'&&method==='GET')return {claim:{...claim,version:4,content:{...claim.content,patient_address:'',subscriber_address:''}}};
+  if(url==='/api/v1/billing/claims/claim-1'&&method==='GET')return {claim:{...claim,version:calls.length===1?3:4,content:{...claim.content,patient_address:'',subscriber_address:''}}};
   return {};};
  ctx.setCurrent(claim);
  const inputs=[];const form={dataset:{claim:'claim-1',claimVersion:'3'},isConnected:true,values:{address_line1:'1 Synthetic Way',address_line2:'',address_city:'Austin',address_region:'tx',address_postal_code:'78701',subscriber_birth_date:'1980-02-03'},querySelectorAll:()=>inputs};
  await ctx.saveClaimQuickFix(form);
- assert.deepEqual(calls.map(c=>c[0]+' '+c[1]),['/api/v1/patients/patient-1/demographics GET','/api/v1/patients/patient-1/demographics PUT','/api/v1/billing/claims/claim-1 GET','/api/v1/billing/claims/claim-1 PUT']);
- const chart=calls[1];assert.equal(chart[3],7);assert.equal(chart[2].content.phone,'555-0100','the rest of the contact profile is kept');
+ assert.deepEqual(calls.map(c=>c[0]+' '+c[1]),['/api/v1/billing/claims/claim-1 GET','/api/v1/patients/patient-1/demographics GET','/api/v1/patients/patient-1/demographics PUT','/api/v1/billing/claims/claim-1 GET','/api/v1/billing/claims/claim-1 PUT']);
+ const chart=calls[2];assert.equal(chart[3],7);assert.equal(chart[2].content.phone,'555-0100','the rest of the contact profile is kept');
  assert.deepEqual(JSON.parse(JSON.stringify(chart[2].content.address)),{country:'US',line1:'1 Synthetic Way',line2:null,city:'Austin',region:'TX',postal_code:'78701'});
- const saved=calls[3];assert.equal(saved[3],4,'saved at the version just read');
+ const saved=calls[4];assert.equal(saved[3],4,'saved at the version just read');
  assert.equal(saved[2].content.patient_address,'1 Synthetic Way, Austin, TX 78701');assert.equal(saved[2].content.subscriber_address,'1 Synthetic Way, Austin, TX 78701');
  assert.equal(saved[2].content.subscriber_birth_date,'1980-02-03');assert.equal(saved[2].content.place_of_service,'11','other boxes are kept as they are');
  assert.equal(refreshed,'claim-1');assert.match(noticed,/checked again/);
  // A claim the server already completed from the chart is not written again.
- calls.length=0;ctx.api=async(url,method='GET',body,version)=>{calls.push([url,method]);if(method==='GET'&&url.endsWith('/demographics'))return {version:8,content:{}};if(method==='GET')return {claim:{...claim,version:5,content:{...claim.content,patient_address:'2 Synthetic Way, Austin, TX 78701',subscriber_address:'2 Synthetic Way, Austin, TX 78701',subscriber_birth_date:'1980-02-03'}}};return {};};
+ calls.length=0;ctx.api=async(url,method='GET',body,version)=>{calls.push([url,method]);if(method==='GET'&&url.endsWith('/demographics'))return {version:8,content:{}};if(method==='GET')return {claim:{...claim,version:calls.length===1?3:5,content:{...claim.content,patient_address:'2 Synthetic Way, Austin, TX 78701',subscriber_address:'2 Synthetic Way, Austin, TX 78701',subscriber_birth_date:'1980-02-03'}}};return {};};
  await ctx.saveClaimQuickFix({...form,values:{...form.values,address_line1:'2 Synthetic Way'}});
- assert.deepEqual(calls.map(c=>c[1]),['GET','PUT','GET'],'nothing left to save on the claim');
+ assert.deepEqual(calls.map(c=>c[1]),['GET','GET','PUT','GET'],'nothing left to save on the claim');
  console.log('PASS claim quick fix: missing boxes filled in on the claim page, address to the chart, claim checked again in place');
 
  // Confirm the same policyholder explicitly, using a claim-only action and the optimistic version.

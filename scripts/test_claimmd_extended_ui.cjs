@@ -59,6 +59,14 @@ function fixture(){
   assert.match(activity,/data-claimmd-claim-sync="notes" data-claimmd-id="902000555"/);
   assert.match(activity,/data-claimmd-claim-sync="modifications" data-claimmd-id="902000555"/);
   assert.doesNotMatch(activity,/becomes available|appear once Claim\.MD/);
+  activity='';ctx.claimMdConnectionState=undefined;
+  await vm.runInContext('showClaimMdClaimActivity({id:"claim-9",status:"ready"})',ctx);
+  assert.equal(activity,'','a connection that has not loaded is not described as disconnected');
+  ctx.claimMdConnectionState={connected:false};
+  await vm.runInContext('showClaimMdClaimActivity({id:"claim-9",status:"submitted"})',ctx);
+  assert.equal(activity,'','a current connection problem is not a claim delivery status');
+  await vm.runInContext('showClaimMdClaimActivity({id:"claim-9",status:"ready"})',ctx);
+  assert.match(activity,/Clearinghouse not connected/);
  }
  console.log('PASS the notes and changes refresh shows when only the receipt knows the Claim.MD claim ID');
  console.log('PASS Claim.MD native workflows render scoped callbacks and preserve native claim identity');

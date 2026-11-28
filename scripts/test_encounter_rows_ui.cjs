@@ -21,7 +21,7 @@ const chip=(html,visit,patient)=>assert.ok(html.includes(`data-encounter-chip="$
  assert.ok(!two.includes('encounter-chip'));assert.ok(two.includes('data-receipt-encounter="ap2"'));}
 // Claims list.
 {const one=ctx.claimRowMarkup({id:'c1',patient_id:'p1',patient_name:'S',control_number:'CN1',payer_name:'P',frequency:'original',status:'draft',total_cents:100,visit_id:'v3',encounter_number:3,service_date:'2026-03-03'});
- assert.ok(one.includes('ENC-0003'));chip(one,'v3','p1');assert.match(one,/<small>P · on 2026-03-03 · \$1.00<\/small>/);assert.match(one,/data-claim-open="c1"[^>]*>Review &amp; send/);
+ assert.ok(one.includes('ENC-0003'));chip(one,'v3','p1');assert.match(one,/<small>P · on 2026-03-03<\/small>/);assert.match(one,/class="monitor-amount">\$1.00<\/td>/);assert.match(one,/data-claim-open="c1"[^>]*>Review &amp; send/);
  const two=ctx.claimRowMarkup({id:'c2',patient_id:'p1',patient_name:'S',control_number:'CN2',payer_name:'P',frequency:'original',status:'draft',total_cents:100,visit_id:null,encounter_number:null,service_date:null});
  assert.ok(!two.includes('encounter-chip'));assert.match(two,/<td[^>]*class="monitor-age">—<\/td>/);}
 // Work queue.
