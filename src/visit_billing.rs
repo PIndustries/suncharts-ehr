@@ -1939,6 +1939,23 @@ async fn read(
     )
     .await?;
     let mut out = out;
+    if out["account"]["status"] == "posted"
+        && out["account"]["has_visit"] == true
+        && out["insurance"]["insured"] == false
+    {
+        if let (Some(account), Some(date)) = (
+            out["account"]["id"].as_str().and_then(|id| id.parse().ok()),
+            out["account"]["service_date"]
+                .as_str()
+                .and_then(|date| date.parse().ok()),
+        ) {
+            let added = crate::billing::coverage_application::added_after_posting(
+                &mut tx, &a, p, account, date,
+            )
+            .await?;
+            out["insurance"]["added_after_posting"] = json!(added);
+        }
+    }
     out["viewer"] = json!({"delegated":delegated(&mut tx, &a).await?});
     crate::postgres::audit(&mut tx, &a, "billing.visit_summary_read", p).await?;
     tx.commit().await?;

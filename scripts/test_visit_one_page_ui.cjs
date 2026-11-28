@@ -18,13 +18,23 @@ const encounter={id:id(51),patient_id:patient.id,appointment_id:appointment.id,c
  vitals:{systolic_mm_hg:120,diastolic_mm_hg:80}};
 const account={id:id(61),patient_id:patient.id,version:1,status:'draft',total_cents:11000,
  content:{visit_id:encounter.id,service_date:'2026-11-24',currency:'USD',coverage_id:null,lines:[{code_system:'CPT',code:'99213',description:'Office visit',units:1,amount_cents:11000,diagnosis_codes:['Z00.00']}]}};
+const primary={id:id(81),content:{status:'active',priority:'primary',effective_date:'2026-01-01',payer_id:id(91),member_id:'SYN-PRIMARY'}};
+const secondary={id:id(82),content:{status:'active',priority:'secondary',effective_date:'2026-01-01',payer_id:id(92),member_id:'SYN-SECONDARY'}};
+const inactive={id:id(83),content:{status:'active',priority:'primary',effective_date:'2026-01-01',payer_id:id(93),member_id:'SYN-INACTIVE'}};
+const later={id:id(84),content:{status:'active',priority:'secondary',effective_date:'2026-12-01',payer_id:id(92),member_id:'SYN-LATER'}};
+const payers=[
+ {id:id(91),content:{name:'Synthetic primary',payer_code:'PRIMARY',active:true}},
+ {id:id(92),content:{name:'Synthetic secondary',payer_code:'SECONDARY',active:true}},
+ {id:id(93),content:{name:'Synthetic inactive',payer_code:'INACTIVE',active:false}},
+];
 const empty={items:[],next_cursor:null,providers:[],appointments:[],blocks:[],events:[],forms:[],orders:[],reports:[],reviews:[],acknowledgments:[],entries:[],options:[]};
 
-function fixture({signed=false,allowBillingWrites=false}={}){
+function fixture({signed=false,allowBillingWrites=false,coverages=[],savedCoverage=null,changedTotals=false}={}){
  const visit=signed?{...encounter,status:'signed',signed_at:timestamp,signed_by:staff.user_id}:encounter;
  const visitPath='/api/v1/visits/'+visit.id,patientPath='/api/v1/patients/'+patient.id;
  const accountPath=patientPath+'/billing/accounts/'+account.id;
  let currentAccount=structuredClone(account);
+ currentAccount.content.coverage_id=savedCoverage;
  const calls=[],errors=[];
  const console=new VirtualConsole();
  console.on('jsdomError',error=>errors.push(error.cause?.message||error.message));
@@ -46,10 +56,12 @@ function fixture({signed=false,allowBillingWrites=false}={}){
   if(route==='/api/v1/patients')return {...empty,items:[patient]};
   if(route===patientPath)return patient;
   if(route===patientPath+'/workspace')return {patient,appointments:[appointment],visits:[visit],amendments:[],flags:[]};
-  if(route===patientPath+'/billing')return {accounts:[currentAccount],coverages:[],entries:[],claims:[],copays:[]};
+  if(route==='/api/v1/billing/payers')return {items:payers};
+  if(route===patientPath+'/billing')return {accounts:[currentAccount],coverages,entries:[],claims:[],copays:[]};
   if(route===patientPath+'/billing/visit-summary'){
    const posted=currentAccount.status==='posted',total=currentAccount.total_cents;
-   return {patient_id:patient.id,visit,account:currentAccount,state:posted?'self_pay_collect':signed?'post_charges':'sign_visit',charges_cents:total,insurance:{insured:false},patient:{owes_now_cents:posted?total:0,copay_due_cents:0},receipts:[]};
+   const coverage=coverages.find(row=>row.id===currentAccount.content.coverage_id),payer=payers.find(row=>row.id===coverage?.content.payer_id);
+   return {patient_id:patient.id,visit,account:currentAccount,state:posted?(coverage?'claim_restricted':'self_pay_collect'):signed?'post_charges':'sign_visit',charges_cents:total,insurance:{insured:!!coverage,electronic:!!payer?.content.payer_code,insurer:payer?.content.name},patient:{owes_now_cents:posted&&!coverage?total:0,copay_due_cents:0},receipts:[]};
   }
   if(route===patientPath+'/banner')return {patient_id:patient.id,revision:'synthetic',billing:{patient_due_cents:0},eligibility:[],flags:[]};
   if(route===patientPath+'/demographics')return {patient_id:patient.id,content:{}};
@@ -62,7 +74,7 @@ function fixture({signed=false,allowBillingWrites=false}={}){
  }
  w.fetch=async(url,options={})=>{
   const route=new URL(url,w.location).pathname,method=options.method||'GET';
-  calls.push({route,method});
+  calls.push({route,method,body:options.body&&JSON.parse(options.body),version:options.headers?.['If-Match']});
   if(allowBillingWrites&&method==='POST'&&route===accountPath+'/actions'){
    assert.equal(JSON.parse(options.body).action,'post');
    currentAccount={...currentAccount,status:'posted',version:currentAccount.version+1};
@@ -70,8 +82,9 @@ function fixture({signed=false,allowBillingWrites=false}={}){
   }
   if(allowBillingWrites&&(method==='PUT'&&route===accountPath||method==='POST'&&route===accountPath+'/corrections')){
    const {content,reason}=JSON.parse(options.body);
-   assert.equal(reason,method==='PUT'?'Edited charges':'Charge correction');
-   currentAccount={...currentAccount,content,total_cents:content.lines.reduce((sum,line)=>sum+line.amount_cents,0),version:currentAccount.version+1};
+   if(method==='PUT')assert.ok(['Edited charges','Updated billing coverage before posting'].includes(reason));
+   else assert.equal(reason,'Charge correction');
+   currentAccount={...currentAccount,content,total_cents:content.lines.reduce((sum,line)=>sum+line.amount_cents,0)+(changedTotals?1000:0),version:currentAccount.version+1};
    return {status:200,ok:true,json:async()=>currentAccount};
   }
   return method==='GET'?{status:200,ok:true,json:async()=>read(route)}:{status:405,ok:false,json:async()=>({message:'Read-only synthetic fixture'})};
@@ -218,5 +231,78 @@ async function close(fixture){
   assert.deepEqual(signed.calls.filter(call=>call.method!=='GET').map(call=>[call.method,call.route.split('/').pop()]),[['PUT',account.id],['POST','actions'],['POST','corrections']]);
   assert.deepEqual(signed.errors,[]);
  }finally{await close(signed);}
- console.log('PASS the mounted self-pay encounter preserves drafts, opens a single coding dialog, and posts or corrects charges through the right endpoints');
+
+ for(const scenario of [
+  {coverages:[primary,inactive,later],chosen:primary.id},
+  {coverages:[primary,secondary],chosen:null},
+  {coverages:[primary,secondary],savedCoverage:primary.id,chosen:secondary.id},
+  {coverages:[primary],chosen:primary.id,changedTotals:true},
+ ]){
+  const f=fixture({signed:true,allowBillingWrites:true,...scenario}),find=f.find;
+  const writes=()=>f.calls.filter(call=>call.method!=='GET');
+  try{
+   await f.ready();
+   const coveragePrompt=()=>find('dialog[open] [data-billing-coverage-post]');
+   const draftDefault=scenario.coverages.filter(row=>row===primary||row===secondary).length===1?primary.id:'';
+   assert.equal(f.run(`billingDefaultCoverage('${account.content.service_date}')`),draftDefault);
+   f.run('confirmAction=async()=>true;');
+   if(scenario.savedCoverage){
+    find('[data-open-encounter-codes]').click();
+    const coding=await f.wait(()=>find('dialog[open] #billing-account-form'),'saved coverage is editable in coding');
+    assert.equal(coding.elements.coverage_id.value,scenario.savedCoverage,'an existing selected policy stays selected');
+    coding.elements.coverage_id.value=scenario.chosen;
+    coding.elements.coverage_id.dispatchEvent(new f.w.Event('change',{bubbles:true}));
+    const saved=await f.wait(()=>writes().find(call=>call.method==='PUT'),'changing only billing coverage autosaves');
+    assert.equal(saved.body.content.coverage_id,scenario.chosen);
+    await f.run('postVisitChargesFromCard()');
+    await f.wait(()=>writes().find(call=>call.route.endsWith('/actions')),'saved insurance posts after the usual confirmation');
+    assert.equal(coveragePrompt(),null);
+    assert.equal(writes().length,2);
+    continue;
+   }
+   const action=await f.wait(()=>find('[data-encounter-next]:not([hidden])'),'coverage review has an encounter action');
+   action.click();
+   const form=await f.wait(coveragePrompt,'posting an unassigned draft with insurance opens one coverage review');
+   const choice=form.elements.coverage;
+   assert.equal(choice.value,draftDefault,'a single effective policy is preselected for review');
+   assert.equal(choice.querySelector('[value="'+inactive.id+'"]'),null,'inactive payer is excluded');
+   assert.equal(choice.querySelector('[value="'+later.id+'"]'),null,'a future policy is excluded');
+   if(!scenario.chosen){
+    form.requestSubmit();
+    assert.equal(writes().length,0,'staff must choose among multiple policies');
+    choice.value='self-pay';
+    choice.dispatchEvent(new f.w.Event('change',{bubbles:true}));
+    assert.equal(form.elements.self_pay_reason.required,true);
+    form.requestSubmit();
+    assert.equal(writes().length,0,'self-pay needs a reason when insurance is available');
+    form.elements.self_pay_reason.value='Patient elected self-pay for this visit';
+   }else{
+    form.querySelector('[data-sheet-close]').click();
+    await f.wait(()=>!coveragePrompt()&&!f.run('busy'),'the coverage review can be canceled');
+    assert.equal(writes().length,0);
+    action.click();
+    await f.wait(coveragePrompt,'the same action reopens coverage review');
+   }
+   coveragePrompt().requestSubmit();
+   if(scenario.changedTotals){
+    await f.wait(()=>find('#notice').textContent.includes('review the updated lines and total'),'material draft changes stop before posting');
+    assert.equal(writes().filter(call=>call.method==='POST').length,0);
+    continue;
+   }
+   const posted=await f.wait(()=>writes().find(call=>call.route.endsWith('/actions')),'posting finishes after coverage review');
+   if(scenario.chosen){
+    const saved=writes().find(call=>call.method==='PUT');
+    assert.equal(saved.body.content.coverage_id,scenario.chosen);
+    assert.deepEqual(saved.body.content.lines,account.content.lines,'choosing insurance preserves all coding and prices');
+    assert.equal(posted.version,'"2"','posts the exact draft version that saved the insurance');
+   }else{
+    assert.equal(writes().length,1);
+    assert.equal(posted.body.self_pay_reason,'Patient elected self-pay for this visit');
+    assert.deepEqual(posted.body.self_pay_coverage_ids,[primary.id,secondary.id]);
+   }
+   assert.equal(writes().some(call=>/delivery|837p/.test(call.route)),false,'posting never submits to Claim.MD');
+   assert.deepEqual(f.errors,[]);
+  }finally{await close(f);}
+ }
+ console.log('PASS mounted encounters preserve autonomous coding and posting, review effective coverage, save coverage-only edits, and capture an explicit self-pay exception');
 })().catch(error=>{console.error(error);process.exitCode=1;});

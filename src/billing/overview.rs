@@ -3,6 +3,20 @@
 use super::*;
 use crate::postgres::ENCOUNTER_NUMBERS;
 
+pub(super) fn payment_records_mode(
+    mode: Option<&str>,
+    environment: crate::DeploymentEnvironment,
+) -> Result<&str> {
+    let mode = mode.unwrap_or("recorded");
+    choice(mode, &["recorded", "test"])?;
+    if mode == "test" && matches!(environment, crate::DeploymentEnvironment::Production) {
+        return Err(Error::Invalid(
+            "Only live and manually recorded payments are available in production billing.",
+        ));
+    }
+    Ok(mode)
+}
+
 const ACCOUNTS: &str = r#"WITH account_rows AS (
  SELECT b.id,b.patient_id,p.family_name||', '||p.given_name AS patient_name,p.mrn,
  b.status,b.version,b.total_cents,b.created_at,b.visit_id,b.content->>'service_date' AS service_date,
@@ -40,7 +54,7 @@ const COPAYS: &str = r#"WITH receipt_rows AS (
 )
 "#;
 
-const ACCOUNT_SUMMARY: &str = "SELECT jsonb_build_object('accounts',count(*),'latest_invoices',count(invoice_id),'invoice_review_count',count(*) FILTER(WHERE invoice_needs_review),'open_invoice_count',count(*) FILTER(WHERE invoice_id IS NOT NULL AND NOT invoice_needs_review AND (invoice_due_cents #>> '{}')::bigint>0),'reviewed_patient_due_cents',coalesce(sum((invoice_due_cents #>> '{}')::bigint) FILTER(WHERE invoice_id IS NOT NULL AND NOT invoice_needs_review),0),'posted_gross_cents',coalesce(sum(total_cents) FILTER(WHERE status='posted'),0),'posted_account_balance_cents',coalesce(sum(account_balance_cents),0)) FROM filtered";
+const ACCOUNT_SUMMARY: &str = "SELECT jsonb_build_object('accounts',count(*),'latest_invoices',count(invoice_id),'invoice_review_count',count(*) FILTER(WHERE invoice_needs_review),'open_invoice_count',count(*) FILTER(WHERE invoice_id IS NOT NULL AND NOT invoice_needs_review AND (invoice_due_cents #>> '{}')::bigint>0),'open_invoice_due_cents',coalesce(sum((invoice_due_cents #>> '{}')::bigint) FILTER(WHERE invoice_id IS NOT NULL AND NOT invoice_needs_review AND (invoice_due_cents #>> '{}')::bigint>0),0),'posted_gross_cents',coalesce(sum(total_cents) FILTER(WHERE status='posted'),0),'posted_account_balance_cents',coalesce(sum(account_balance_cents),0)) FROM filtered";
 /// The receivable totals shown as "Patient owes" on the billing pages. Every caller that shows
 /// a patient balance reads it here so the figures always agree.
 pub(crate) async fn account_summary(
@@ -93,8 +107,7 @@ async fn overview(
     Query(q): Query<OverviewQuery>,
 ) -> Result<Json<Value>> {
     a.staff()?;
-    let mode = q.mode.as_deref().unwrap_or("recorded");
-    choice(mode, &["recorded", "test"])?;
+    let mode = payment_records_mode(q.mode.as_deref(), crate::DeploymentEnvironment::from_env())?;
     let limit = q.limit.unwrap_or(50);
     if !(1..=100).contains(&limit) {
         return Err(Error::Invalid(
@@ -304,8 +317,7 @@ async fn patient_invoice_history(
 ) -> Result<Json<Value>> {
     a.staff()?;
     let limit = page_limit(q.limit)?;
-    let mode = q.mode.as_deref().unwrap_or("recorded");
-    choice(mode, &["recorded", "test"])?;
+    let mode = payment_records_mode(q.mode.as_deref(), crate::DeploymentEnvironment::from_env())?;
     let mut tx = db(&s)?.begin().await?;
     sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
         .execute(&mut *tx)
@@ -330,4 +342,30 @@ async fn patient_invoice_history(
     page["patient"] = patient;
     page["mode"] = json!(mode);
     Ok(Json(page))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::payment_records_mode;
+    use crate::{error::Error, DeploymentEnvironment};
+
+    #[test]
+    fn production_payment_records_accept_only_recorded_mode() {
+        let prod = DeploymentEnvironment::Production;
+        let dev = DeploymentEnvironment::Development;
+        assert_eq!(payment_records_mode(None, prod).unwrap(), "recorded");
+        assert_eq!(
+            payment_records_mode(Some("recorded"), prod).unwrap(),
+            "recorded"
+        );
+        assert!(matches!(
+            payment_records_mode(Some("test"), prod),
+            Err(Error::Invalid(_))
+        ));
+        assert_eq!(payment_records_mode(Some("test"), dev).unwrap(), "test");
+        assert!(matches!(
+            payment_records_mode(Some("other"), dev),
+            Err(Error::Invalid(_))
+        ));
+    }
 }

@@ -271,7 +271,7 @@ const advance=async()=>{
  ctx.activeVisit={id:'visit-a',appointment_id:'appt-a',status:'in_progress'};
  ctx.revenueServiceDate=()=>'2026-11-13';
  ctx.billingCoverageOrderMarkup=()=>'';
- const coverage={id:'synthetic-coverage',content:{payer_id:'synthetic-payer',member_id:'synthetic-member',priority:'primary',copay_cents:2500}};
+ const coverage={id:'synthetic-coverage',content:{payer_id:'synthetic-payer',member_id:'synthetic-member',priority:'primary',copay_cents:2500,status:'active',effective_date:'2026-01-01'}};
  ctx.workspace.billing.coverages=[coverage];
  ctx.revenueCoverage=()=>coverage;
  // A brand-new table for an encounter: one blank row, totals at zero, nothing typed yet.
@@ -422,6 +422,7 @@ const advance=async()=>{
  assert.ok(vm.runInContext('chargeRowProblems(document.getElementById("billing-charge-lines").querySelectorAll(".billing-charge-row")[0])',ctx).includes('Add what this service was.'),'a code without a description still asks for one');
  assert(form.querySelectorAll('[data-charge-insurance-detail]').every(detail=>detail.open),'insurance fields are visible for insured visits');
  ctx.revenueCoverage=()=>null;
+ ctx.workspace.billing.coverages=[];
  form=await openTable([]);
  assert.equal(form.querySelector('[data-charge-copay]').textContent,'Self-pay');
  assert.equal(form.querySelector('[data-charge-pays]').textContent,'');

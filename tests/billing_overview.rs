@@ -161,6 +161,11 @@ async fn overview_preserves_receipts_and_counts_only_latest_reviewed_invoice() {
     assert_eq!(before["summary"]["copays"]["net_received_cents"], 2500);
     assert_eq!(before["summary"]["copays"]["usable_unapplied_cents"], 2500);
     let account = posted_account(&db, &r, &a, p, appointment).await;
+    let unstated = overview(&r, &a, "").await;
+    let summary = &unstated["summary"]["accounts"];
+    assert_eq!(summary["patient_owes_now_cents"], 7500);
+    assert_eq!(summary["open_invoice_count"], 0);
+    assert_eq!(summary["open_invoice_due_cents"], 0);
     let path = format!(
         "/api/v1/patients/{p}/billing/accounts/{}",
         account["id"].as_str().unwrap()
@@ -173,6 +178,7 @@ async fn overview_preserves_receipts_and_counts_only_latest_reviewed_invoice() {
     }
     let data = overview(&r, &a, "").await;
     assert_eq!(data["summary"]["accounts"]["latest_invoices"], 1);
+    assert_eq!(data["summary"]["accounts"]["open_invoice_due_cents"], 500);
     assert_eq!(
         data["summary"]["accounts"]["reviewed_patient_due_cents"],
         500
@@ -202,6 +208,7 @@ async fn overview_preserves_receipts_and_counts_only_latest_reviewed_invoice() {
         "do not assert old responsibility after changes"
     );
     assert_eq!(changed["summary"]["accounts"]["invoice_review_count"], 1);
+    assert_eq!(changed["summary"]["accounts"]["open_invoice_due_cents"], 0);
     for invoice in invoices {
         let (status, saved) = call(
             &r,

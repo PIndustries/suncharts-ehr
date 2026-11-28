@@ -74,15 +74,27 @@ insurer.
 
 ### Applying coverage to posted self-pay charges
 
-On a signed encounter with posted self-pay charges, use **Apply insurance** to
-select a saved policy active on the service date. The coverage correction keeps
-the posted diagnosis and procedure codes, prices, and payments. Review the new
-insurance and patient balances, then open claim review to check and send the
-claim. The coverage correction itself keeps a separate audit record.
+Before posting, review coverage for the service date. A single active policy is
+preselected for review. When several policies are active, choose the one to bill.
+If staff choose self-pay while coverage is on file, the posting history records
+why and which policies were reviewed. With no coverage for the service date, the
+visit can post as self-pay as usual.
+
+Open **Billing → Insurance claims → Needs action** to find **Insurance added
+after posting**. The queue shows the posted charges, payments already received,
+and the current patient balance. **Apply insurance** on the encounter and in
+the payment sheet also opens the coverage correction. At the worklist, **Apply
+insurance and prepare claim** saves the chosen policy and opens the claim draft
+for review. The posting and coverage history preserve the diagnoses, procedure
+codes, prices, payments, and audit trail. Review the claim to send it.
 
 If the visit has claim history, a pending payment or refund, or an unresolved
 electronic invoice or payment plan, review that activity before changing
-billing coverage. The encounter shows the reason when it cannot apply a policy.
+billing coverage. The queue shows the blocker for each visit and keeps a visit
+available for claim preparation if insurance was saved before preparation
+completed. A documented self-pay decision stays in effect for the reviewed
+policies. Newly available coverage for the same date brings the visit back to
+the queue.
 
 ### Checking eligibility
 
@@ -502,8 +514,10 @@ Live collection is disabled by default. It requires the EHR operator setting
 `SUNCHARTS_CONNECT_LIVE_CHECKOUT=enabled`, and a verified live account whose Stripe `card_payments` capability is active.
 General charge readiness alone does not establish card acceptance; existing
 settings require a fresh account-status check. These flags do not complete Stripe onboarding or attest to deployment
-acceptance. Test mode is always blocked in production, including reconciliation
-and allocation of old test receipts. Development test receipts are marked TEST.
+acceptance. Production billing screens show live card payments and manually
+recorded payments in one view. Test mode is available only in development,
+where test receipts are marked TEST. Production rejects test-mode billing
+reports, reconciliation, and allocation of old test receipts.
 The development screen identifies Stripe Sandbox requests explicitly: these use
 Stripe's API and test cards without moving real funds. A pending checkout offers
 **Continue to Stripe checkout**; a captured payment offers its receipt. **Check
