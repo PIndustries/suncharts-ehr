@@ -653,9 +653,16 @@ pub(crate) async fn claim_remittance_dispositions(
     if claims.is_empty() {
         return Ok(HashMap::new());
     }
+    #[derive(sqlx::FromRow)]
+    struct PostedClaimRemittance {
+        claim_id: Uuid,
+        status: Option<String>,
+        paid_cents: Option<Value>,
+        denial_codes: Vec<String>,
+    }
     // Only the current posted row for each claim speaks for its payer disposition.
-    let rows: Vec<(Uuid, Option<String>, Option<Value>, Vec<String>)> = sqlx::query_as(
-        "SELECT h.claim_id,response.record->>'status',response.record->'paid_cents',
+    let rows = sqlx::query_as::<_, PostedClaimRemittance>(
+        "SELECT h.claim_id,response.record->>'status' AS status,response.record->'paid_cents' AS paid_cents,
                 CASE WHEN response.record->>'status'='4' THEN ARRAY(
                   SELECT DISTINCT (a->>'group')||'-'||(a->>'reason_code') AS code
                   FROM jsonb_array_elements(CASE WHEN jsonb_typeof(response.record->'adjustments')='array'
@@ -663,7 +670,7 @@ pub(crate) async fn claim_remittance_dispositions(
                   WHERE a->>'service_index' IS NULL AND a->>'group' IN ('CO','OA','PI')
                     AND a->>'reason_code' ~ '^[A-Z0-9]{1,5}$'
                   ORDER BY code LIMIT 3
-                ) ELSE ARRAY[]::text[] END
+                ) ELSE ARRAY[]::text[] END AS denial_codes
          FROM era_claim_heads h
          JOIN era_remittances r ON r.tenant_id=h.tenant_id AND r.id=h.remittance_id
          CROSS JOIN LATERAL (SELECT r.document->'claims'->h.row_index AS record) response
@@ -675,13 +682,13 @@ pub(crate) async fn claim_remittance_dispositions(
     .await?;
     Ok(rows
         .into_iter()
-        .map(|(id, status, paid, denial_codes)| {
+        .map(|row| {
             (
-                id,
+                row.claim_id,
                 ClaimRemittanceDisposition {
-                    payer_denied: status.map(|status| status == "4"),
-                    paid_cents: paid.and_then(|amount| amount.as_i64()),
-                    denial_codes,
+                    payer_denied: row.status.map(|status| status == "4"),
+                    paid_cents: row.paid_cents.and_then(|amount| amount.as_i64()),
+                    denial_codes: row.denial_codes,
                 },
             )
         })
