@@ -176,6 +176,8 @@ const open=(over,detail)=>workspace(rejectedClaim(over),detail).open();
  assert.match(editor,/Claim destination<\/b> Synthetic Local Blue · 22099/);
  assert.match(editor,/Insurance coverage<\/b> Synthetic Payer/);
  assert.match(editor,/name="local_blue_route_reviewed" required/);
+ assert.match(editor,/may return it if billing enrollment is pending/);
+ assert.match(editor,/reviewed the billing NPI and tax ID for this claim/);
  assert.match(editor,/previous claim was marked Test/);
  assert.match(editor,/data-parent="claim"/);
  assert.doesNotMatch(routed.form.inserted,/name="synthetic_test"/);

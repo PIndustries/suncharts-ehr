@@ -1311,8 +1311,8 @@ function claimLocalBlueReviewMarkup(options,account,parent){
  const destination=options.length===1?`<p><b>Claim destination</b> ${esc(route.payer_name)} · ${esc(route.payer_code)}</p><input type="hidden" name="local_blue_payer_id" value="${esc(route.payer_id)}">`:
   `<label>Claim destination<select name="local_blue_payer_id" required><option value="">Choose the local Blue plan</option>${choices}</select></label>`;
  return `<fieldset class="mapping-notice" data-claim-local-blue-review><legend>Local Blue routing</legend><p><b>Insurance coverage</b> ${esc(home)}</p>${destination}
- <p>${parent.content?.synthetic_test?'The previous claim was marked Test. ':''}Save a new live draft using the posted charges and the insurance on file.</p>
- <label class="review-ack"><input type="checkbox" name="local_blue_route_reviewed" required> I checked the card's local Blue instructions, verified authorization for professional claims under this billing NPI and tax ID, and confirmed the payer has no accepted claim for this visit.</label></fieldset>`;
+ <p>${parent.content?.synthetic_test?'The previous claim was marked Test. ':''}Save a new live draft using the posted charges and the insurance on file. Claim.MD or the payer may return it if billing enrollment is pending.</p>
+ <label class="review-ack"><input type="checkbox" name="local_blue_route_reviewed" required> I checked the card's local Blue instructions and reviewed the billing NPI and tax ID for this claim.</label></fieldset>`;
 }
 function claimEditor(b,c=null,source=null,parent=null,coordination=null,localBlueOptions=[]){
  captureClaimDraft();b={...b,patient_id:b.patient_id||c?.patient_id||parent?.patient_id};
