@@ -543,7 +543,7 @@ function visitCollectHeading(){
 }
 function openVisitCollect(){
  const summary=encounterRevenueState.data?.summary;
- if(encounterBalancePaymentAccount(summary)&&!encounterPaymentAppointment(revenueAppointment())){
+ if(typeof sheetOpen==='function'&&encounterBalancePaymentAccount(summary)&&!encounterPaymentAppointment(revenueAppointment())){
   openEncounterBalancePayment(summary);return;
  }
  if(typeof sheetOpen==='function'&&typeof document!=='undefined'&&document.createElement&&openCollectModal())return;
@@ -2737,7 +2737,8 @@ const pendingEncounterBalancePayments=new Map();
 function openEncounterBalancePayment(summary){
  const account=encounterBalancePaymentAccount(summary);
  if(!account)return;
- const patient=selected,identity=me,visit=activeVisit.id,number=encounterNumberText(activeVisit);
+ const patient=selected,identity=me,visit=activeVisit.id;
+ const number=typeof encounterNumberText==='function'?encounterNumberText(activeVisit):'This encounter';
  const due=summary.patient.owes_now_cents,scope=JSON.stringify([identity.tenant_id,identity.user_id,patient,visit,account.id]);
  const current=()=>me===identity&&selected===patient&&chartSection==='visits'&&activeVisit?.id===visit&&encounterChargeAccount()?.id===account.id;
  const panel=document.createElement('div');
@@ -2780,7 +2781,11 @@ function openEncounterBalancePayment(summary){
    pendingEncounterBalancePayments.delete(scope);
    if(!current())return;
    const recorded=money(request.body.amount_cents);
-   panel.innerHTML=`<p role="status"><b>${recorded} payment recorded</b></p><p>Applied to ${esc(number)}.</p><button type="button" data-sheet-close>Done</button>`;
+   panel.innerHTML=`<p role="status"><b>${recorded} payment recorded</b></p><p>Applied to ${esc(number)}.</p><div class="actions"><button type="button" class="primary" data-recorded-payment-history>View payment history</button><button type="button" data-sheet-close>Done</button></div>`;
+   panel.querySelector('[data-recorded-payment-history]').addEventListener('click',()=>{
+    if(!current())return;
+    sheetClose(dialog,()=>$('visit-page-host')?.querySelector('[data-step-payment] [data-open-encounter-payment-history]')?.click());
+   });
    const updated=await api(`/api/v1/patients/${encodeURIComponent(patient)}/billing`);
    if(current()){
     workspace.billing=updated;

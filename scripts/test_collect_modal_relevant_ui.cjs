@@ -80,6 +80,9 @@ function fixture({due=6500,draft=false,available=true,operations=[]}={}){
   const account={...f.ctx.workspace.billing.accounts[0],patient_id:'patient',content:{visit_id:'visit',service_date:'2026-11-11',lines:[]}};
   f.ctx.workspace.appointments=[];
   f.ctx.workspace.billing.accounts=[account];
+  f.w.document.querySelector('main').insertAdjacentHTML('beforeend','<section id="visit-page-host"><div data-step-payment><button type="button" data-open-encounter-payment-history>Payment history</button></div></section>');
+  let historyOpened=false;
+  f.find('[data-open-encounter-payment-history]').onclick=()=>{historyOpened=true;};
   f.ctx.visitBillingDate=String;
   f.ctx.renderEncounterRevenue=()=>{};
   f.ctx.loadEncounterRevenueStatus=async()=>{};
@@ -105,6 +108,8 @@ function fixture({due=6500,draft=false,available=true,operations=[]}={}){
   assert.equal(body.reviewed_patient_balance_cents,6500);
   assert.equal(body.amount_cents,6500);
   assert.match(dialog.textContent,/\$65\.00 payment recorded/);
+  dialog.querySelector('[data-recorded-payment-history]').click();
+  assert.ok(historyOpened,'opens the same scoped Payment history for the existing ledger entry');
   assert.equal(f.calls.filter(call=>call[1]==='POST').length,1);
   assert.equal(f.ctx.activeVisit.id,'visit');
  }finally{withoutAppointment.close();}
