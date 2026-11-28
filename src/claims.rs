@@ -1193,7 +1193,7 @@ async fn prepare_bluecard_route(
         || !v.content.tax_id.bytes().all(|byte| byte.is_ascii_digit())
     {
         return Err(Error::Invalid(
-            "Enter the billing NPI and tax ID verified for the local Blue plan",
+            "Enter a valid billing NPI and nine-digit tax ID for the local Blue claim",
         ));
     }
     let parent = v.parent_id.ok_or(Error::Invalid(
