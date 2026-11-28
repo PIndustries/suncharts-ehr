@@ -41,7 +41,7 @@ function workspace(replacement,extraDetail){
  const context={console,window:{},Map,Set,JSON,Date,Error,RegExp,Array,String,Object,Number,Boolean,Promise,Symbol,Intl,TypeError,Math,
   crypto:{randomUUID:()=>'stable-request'},
   document:{addEventListener:(type,handler)=>{handlers[type]=(handlers[type]||[]).concat(handler);},
-   querySelector:selector=>/name="member_id"/.test(selector)?{focus(options){focuses.push(Object.assign({field:'coverage-member_id'},options));}}:null,
+   querySelector:selector=>selector==='#claim-editor-form'?form:/name="member_id"/.test(selector)?{focus(options){focuses.push(Object.assign({field:'coverage-member_id'},options));}}:null,
    querySelectorAll:()=>[]},
   $:node,esc:v=>String(v==null?'':v),human:v=>String(v==null?'':v).split('_').join(' '),date:v=>String(v),displayDate:v=>String(v),displayStatus:v=>String(v),money:v=>String(v),
   sourceNotice:()=>'',chargeTable:()=>'',billingWrite:()=>true,
@@ -162,5 +162,51 @@ const open=(over,detail)=>workspace(rejectedClaim(over),detail).open();
  assert.ok(flow.length>500,'the fix flow was found');
  assert.doesNotMatch(flow,/throw new Error/,'the fix flow warns instead of stopping staff');
 
+ // 10. A returned BlueCard claim has one action to review the configured destination.
+ const payer={payer_id:'local-payer',payer_code:'22099',payer_name:'Synthetic Local Blue'};
+ const eligible={local_blue_route:{eligible:true,options:[payer]}};
+ const routed=await open({content:{...claimContent,synthetic_test:true,tax_id_type:'E',external_control_number:'OLD-TEST'}},eligible);
+ const returned=routed.nodes['claims-detail'].innerHTML;
+ assert.match(returned,/data-claim-local-blue[^>]*>Review local Blue routing</);
+ assert.doesNotMatch(returned,/>Fix and resend</);
+ await routed.context.beginLocalBlueClaimFix('claim');
+ const editor=routed.nodes['claim-editor'].innerHTML;
+ assert.match(editor,/<h3>Prepare live claim<\/h3>/);
+ assert.match(editor,/name="local_blue_payer_id" value="local-payer"/);
+ assert.match(editor,/Claim destination<\/b> Synthetic Local Blue · 22099/);
+ assert.match(editor,/Insurance coverage<\/b> Synthetic Payer/);
+ assert.match(editor,/name="local_blue_route_reviewed" required/);
+ assert.match(editor,/previous claim was marked Test/);
+ assert.match(editor,/data-parent="claim"/);
+ assert.doesNotMatch(routed.form.inserted,/name="synthetic_test"/);
+ assert.doesNotMatch(editor,/OLD-TEST|Claim number from a previous system/);
+ let saved;
+ routed.context.api=async(...args)=>{saved=args;return {id:'live-claim'};};
+ routed.context.refreshClaimInContext=async()=>{};
+ routed.form.dataset.parent='claim';
+ const entered={...claimContent,diagnosis_codes:'M62.81',frequency:'original',synthetic_test:'on',external_control_number:'OLD-TEST',reason:'Checked the local Blue route',local_blue_payer_id:payer.payer_id};
+ await assert.rejects(routed.context.saveClaimEditorForm(routed.form,entered),/Confirm the local Blue routing/);
+ await assert.rejects(routed.context.saveClaimEditorForm(routed.form,{...entered,local_blue_route_reviewed:'on',local_blue_payer_id:'unknown'}),/Confirm the local Blue routing/);
+ assert.equal(saved,undefined);
+ await routed.context.saveClaimEditorForm(routed.form,{...entered,local_blue_route_reviewed:'on'});
+ assert.equal(saved[0],'/api/v1/patients/patient/billing/accounts/account/claims');
+ assert.equal(saved[1],'POST');
+ assert.equal(saved[2].parent_id,'claim');
+ assert.equal(saved[2].frequency,'original');
+ assert.equal(saved[2].local_blue_payer_id,payer.payer_id);
+ assert.equal(saved[2].local_blue_route_reviewed,true);
+ assert.equal(saved[2].content.synthetic_test,false);
+ assert.equal(saved[2].content.external_control_number,'');
+ assert.equal(saved[2].content.tax_id_type,'E');
+ assert.equal(saved[3],account.version);
+ const live=await open({id:'claim',status:'draft',snapshot:{...rejectedClaim().snapshot,claim_routing:{...payer,kind:'bluecard_local'}}});
+ const preview=live.nodes['claims-detail'].innerHTML;
+ assert.match(preview,/Insurance coverage<\/dt><dd>Synthetic Payer/);
+ assert.match(preview,/Claim destination<\/dt><dd>Synthetic Local Blue · 22099/);
+ assert.match(preview,/Claim history<\/h3><dl[^>]*data-claim-coverage-and-route/);
+ const acceptedEvidence=await open({payer_control_number:'already-accepted'},eligible);
+ assert.doesNotMatch(acceptedEvidence.nodes['claims-detail'].innerHTML,/data-claim-local-blue/);
+ await assert.rejects(acceptedEvidence.context.beginLocalBlueClaimFix('claim'),/unavailable/);
+ console.log('PASS verified local Blue routing prepares a linked live draft and keeps the original coverage visible');
  console.log('PASS a claim that came back explains itself at the top of the claim screen and one button opens the right fix without stopping staff');
 })().catch(error=>{console.error(error);process.exitCode=1;});

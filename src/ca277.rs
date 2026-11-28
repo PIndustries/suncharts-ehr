@@ -704,7 +704,7 @@ async fn apply(
         .map_err(|_| Error::Invalid("invalid frozen claim"))?;
     let b = &c.snapshot["account"];
     let cover = &b["coverage_snapshot"]["coverage"]["content"];
-    let payer = &b["coverage_snapshot"]["payer"]["content"];
+    let payer = crate::claims::outbound_payer(&c.snapshot);
     if (r.control != c.control_number
         && (claim_content.external_control_number.is_empty()
             || r.control != claim_content.external_control_number))

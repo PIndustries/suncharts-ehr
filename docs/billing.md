@@ -233,6 +233,17 @@ plan's benefits for the visit type.
    **Email the patient** opens a blank message to the address on file for staff to
    attach the saved PDF.
 
+### Sending a returned BlueCard claim to the local plan
+
+When the member card directs an eligible New Jersey visit to the local Blue
+plan, open the BCBS Massachusetts claim returned before payer acceptance and
+choose **Review local Blue routing**. Confirm Horizon BCBS NJ (22099), the
+billing NPI and tax ID authorized for that destination, and that the payer has no
+accepted claim for the service. Save the linked original as a new draft, then
+review it for sending. The review shows the member's insurance coverage and the
+claim destination separately. The existing charges, coverage and rejected claim
+remain in the encounter history.
+
 ### The visit billing card
 
 The encounter's **Procedures & billing** step shows one card for the visit.

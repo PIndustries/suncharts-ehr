@@ -270,6 +270,9 @@ function visitReviewChecks(s,ctx={}){
 }
 function visitReviewMustFix(checks){return checks.filter(check=>check.level==='must');}
 
+function visitClaimRouteDestination(s,claim=s?.claim){
+ return typeof claimLocalBlueDestination==='function'?claimLocalBlueDestination(claim):'';
+}
 function visitReviewFormMarkup(s){
   const claim=s?.claim;
   if(!claim)return '<h4>The claim form</h4><p class="muted">The claim form appears here as soon as the claim is filled in from this encounter. Review and submit the claim on the Claim.MD form.</p>';
@@ -278,7 +281,7 @@ function visitReviewFormMarkup(s){
   const reviewLine=(charge,pointers)=>`<tr><td>${esc(visitReviewFormValue(`${charge.code_system||''} ${charge.code||''}`.trim(),13))}</td><td>${esc(visitReviewFormValue(charge.description,28))}</td><td class="money-cell">${Number(charge.units||0)||0}</td><td class="money-cell">${money(charge.amount_cents||0)}</td><td>${(pointers||[]).map(n=>esc(visitReviewFormValue((content.diagnosis_codes||[])[n-1]||'',8))).filter(Boolean).join(' ')||'—'}</td></tr>`;
   const lines=(account.content?.lines||[]).map((charge,index)=>reviewLine(charge,(content.line_diagnosis_pointers||[])[index]||[])).join('');
   const linesTable=lines?`<div class="billing-table-wrap"><table class="billing-table visit-billing-review-lines"><thead><tr><th>Code</th><th>Description</th><th class="money-cell">Units</th><th class="money-cell">Charge</th><th>Diagnoses</th></tr></thead><tbody>${lines}</tbody></table></div>`:'<p class="muted">No charge lines on this claim yet.</p>';
-  return `<h4>The claim form</h4><p class="muted">A CMS-1500 view of exactly what this claim carries. Looking at it sends nothing.</p>${visitReviewLink('Open the claim form (CMS-1500)',`${visitReviewClaimsBase()}/${claim.id}/cms1500`)}<div class="visit-billing-review-fields">${field('1','Insurer',payer.name)}${field('1a','Member ID',coverage.member_id)}${field('2','Patient',`${patient.family_name||''}, ${patient.given_name||''}`.replace(/^,\s*|\s*,$/g,''))}${field('4','Policy holder',`${(coverage.relationship||'').toLowerCase()==='self'?'Same as the patient':(patient.family_name||'')+' '+(patient.given_name||'')}`)}${field('5','Patient address',content.patient_address)}${field('7','Policy holder address',content.subscriber_address)}${field('8','Billing provider',content.billing_provider_name)}${field('9','Billing NPI',content.billing_npi)}${field('10','Rendering NPI',content.rendering_npi)}${field('16','Tax ID',content.tax_id)}${field('20','Service date',account.content?.service_date)}${field('22','Place of service',content.place_of_service)}${field('21','Diagnoses',(content.diagnosis_codes||[]).join(', '))}${field('24J','Provider specialty',content.billing_taxonomy)}</div>${linesTable}`}
+  return `<h4>The claim form</h4><p class="muted">A CMS-1500 view of exactly what this claim carries. Looking at it sends nothing.</p>${typeof claimCoverageAndRouteMarkup==='function'?claimCoverageAndRouteMarkup(claim):''}${visitReviewLink('Open the claim form (CMS-1500)',`${visitReviewClaimsBase()}/${claim.id}/cms1500`)}<div class="visit-billing-review-fields">${field('1','Insurer',payer.name)}${field('1a','Member ID',coverage.member_id)}${field('2','Patient',`${patient.family_name||''}, ${patient.given_name||''}`.replace(/^,\s*|\s*,$/g,''))}${field('4','Policy holder',`${(coverage.relationship||'').toLowerCase()==='self'?'Same as the patient':(patient.family_name||'')+' '+(patient.given_name||'')}`)}${field('5','Patient address',content.patient_address)}${field('7','Policy holder address',content.subscriber_address)}${field('8','Billing provider',content.billing_provider_name)}${field('9','Billing NPI',content.billing_npi)}${field('10','Rendering NPI',content.rendering_npi)}${field('16','Tax ID',content.tax_id)}${field('20','Service date',account.content?.service_date)}${field('22','Place of service',content.place_of_service)}${field('21','Diagnoses',(content.diagnosis_codes||[]).join(', '))}${field('24J','Provider specialty',content.billing_taxonomy)}</div>${linesTable}`}
 function visitReviewProgressMarkup(progress){
   if(!progress||!progress.steps)return '';
   const state=step=>step.status==='failed'?`<span class="visit-billing-review-step-state">Stopped: ${esc(step.reason||'it did not go through')}</span>`:step.status==='done'?`<span class="visit-billing-review-step-state">${esc(step.skipped?visitReviewStages.find(stage=>stage.key===step.key).skip:visitReviewStages.find(stage=>stage.key===step.key).done)}</span>`:`<span class="visit-billing-review-step-state">${esc(visitReviewStages.find(stage=>stage.key===step.key).doing)}</span>`;
@@ -561,13 +564,14 @@ function visitSignedClaimReady(s,ctx,sent,blocking){
  if(claim.file_prepared)return options('Claim file on record','Review the existing file for delivery status.');
  if(details.paper_only)return options('Paper claim',unsent);
  if(details.review_requested)return options('On hold for review',unsent);
- if(claim.parent_id||claim.source_history_id||claim.frequency&&claim.frequency!=='original')return options('Ready for billing review',unsent);
- const mode=ctx.canWrite&&ctx.claimsAllowed?visitHandoffMode(s,account):null;
+ const localBlue=Boolean(visitClaimRouteDestination(s));
+ if((claim.parent_id&&!localBlue)||claim.source_history_id||claim.frequency&&claim.frequency!=='original')return options('Ready for billing review',unsent);
+ const mode=!localBlue&&ctx.canWrite&&ctx.claimsAllowed?visitHandoffMode(s,account):null;
  if(mode==='prepare')return {title:'Ready for billing review',next:unsent,action:'Prepare claim',attribute:`data-visit-review-send="${esc(claim.id)}"`};
  if(mode==='queue')return {title:'Ready to send',next:unsent,finalSend:true};
  // Delegated staff may explicitly use the existing consent form for a prepared claim.
  // They still do not enter the automatic encounter handoff.
- if(ctx.delegated&&ctx.canWrite&&ctx.claimsAllowed&&s.insurance?.electronic===true&&!claim.secondary&&!claim.crossover&&
+ if((ctx.delegated||localBlue)&&ctx.canWrite&&ctx.claimsAllowed&&s.insurance?.electronic===true&&!claim.secondary&&!claim.crossover&&
   (account?.status==='posted'||s.account?.status==='posted')&&!visitReviewVisitUnsigned(s)&&
   typeof canPrepareClaimMdSubmission==='function'&&canPrepareClaimMdSubmission()&&
   (claim.status==='ready'||typeof workspaceResourceAllowed!=='function'||workspaceResourceAllowed('claims','edit')&&workspaceResourceAllowed('claims','delete')))
@@ -619,6 +623,7 @@ function visitSignedClaimOverview(s,ctx,sent,detail,ready=null,checking=false){
  const patient=claim.snapshot?.patient||(typeof workspace==='undefined'?null:workspace?.patient)||{};
  const name=[patient.given_name,patient.family_name].filter(Boolean).join(' ');
  const insurer=account.coverage_snapshot?.payer?.content?.name||visitBillingInsurer(s);
+ const destination=visitClaimRouteDestination(s,claim);
  const dateValue=visitBillingDate(account.content?.service_date||s.account?.service_date||String(s.visit?.starts_at||'').slice(0,10));
  const total=account.total_cents??s.charges_cents;
  const info=(label,value)=>value!=null&&value!==''?`<div><dt>${esc(label)}</dt><dd>${esc(value)}</dd></div>`:'';
@@ -636,7 +641,9 @@ function visitSignedClaimOverview(s,ctx,sent,detail,ready=null,checking=false){
  const fix=visitCanCorrectHeldClaim(ctx)&&correction&&Number.isInteger(correction.index)&&correction.code?
   visitReviewButton('Fix '+correction.code,`class="primary" data-signed-claim-fix-held="${esc(correction.index)}" data-procedure="${esc(correction.code)}"`):'';
  const attempt=stage.attempt;
- const review=attempt&&!stage.received?visitReviewButton('Check delivery','class="primary" data-signed-claim-check-delivery'):
+ const reviewLocalBlue=sent&&ctx.canWrite&&ctx.claimsAllowed&&typeof claimLocalBlueOptions==='function'&&claimLocalBlueOptions(claim,detail).length>0;
+ const review=reviewLocalBlue?visitReviewButton('Review local Blue routing','class="primary" data-signed-claim-local-blue'):
+  attempt&&!stage.received?visitReviewButton('Check delivery','class="primary" data-signed-claim-check-delivery'):
   sent&&claim.id&&ctx.claimsAllowed?visitReviewButton(reviewType==='response'?'Review response':'View delivery history',`data-signed-claim-review="${reviewType}"`):'';
  const when=value=>value&&(typeof displayDateTime==='function'?displayDateTime(value):visitBillingDate(value));
  const timeline=attempt?`<ol class="signed-claim-delivery-timeline" aria-label="Claim delivery">
@@ -650,7 +657,7 @@ function visitSignedClaimOverview(s,ctx,sent,detail,ready=null,checking=false){
  const manualReview=ready?.manualReview&&Array.isArray(claim.preflight_issues)?visitReviewButton('Review and send','class="primary" data-signed-claim-native-review'):'';
  const readyActions=claim.id&&!sent&&!checking&&!attempt&&!blocking&&ctx.claimsAllowed?`<div class="actions signed-claim-ready-actions">${finalSend||manualReview||(ready?.action?visitReviewButton(ready.action,`class="primary" data-signed-claim-continue ${ready.attribute}`):'')}${visitReviewButton('Preview claim form',`data-encounter-claim-form="${esc(claim.id)}"`)}</div>`:'';
  return `<div class="signed-claim-identity">${name?`<p class="signed-claim-person">${esc(name)}</p>`:''}${claim.control_number?`<p class="muted">Claim ${esc(claim.control_number)}</p>`:''}</div>
- <dl class="signed-claim-meta">${info('Payer',insurer)}${info('Service date',dateValue)}${info('Billed',Number.isSafeInteger(total)?money(total):null)}${authorization}</dl>
+ <dl class="signed-claim-meta">${info(destination?'Insurance coverage':'Payer',insurer)}${info('Claim destination',destination)}${info('Service date',dateValue)}${info('Billed',Number.isSafeInteger(total)?money(total):null)}${authorization}</dl>
  <section class="signed-claim-stage" data-tone="${stage.tone}" aria-label="Claim status">
  <h4>${esc(stage.title)}</h4>${stage.reason?`<p class="signed-claim-reason">${esc(stage.reason)}</p>`:''}
  ${timeline||(sent?`<dl class="signed-claim-stage-facts">${info('Clearinghouse',stage.delivery)}${info('Payer response',stage.payer)}</dl>`:'')}
@@ -895,7 +902,11 @@ function visitOpenSignedClaimDetails(button,intent={}){
  const manualReviewPane=document.createElement('section');manualReviewPane.hidden=true;
  manualReviewPane.innerHTML='<div data-signed-claim-native-host></div><div class="actions"><button type="button" data-signed-claim-native-back>Back to claim</button></div>';
  const manualReviewHost=manualReviewPane.firstElementChild;
- node.append(manualReviewPane);
+ const localBluePane=document.createElement('section');
+ localBluePane.hidden=true;
+ localBluePane.innerHTML='<div data-signed-local-blue-host></div>';
+ const localBlueHost=localBluePane.firstElementChild;
+ node.append(manualReviewPane,localBluePane);
  let inlineTimer,inlineWork,authWork,authTimer,savedDetail,reviewedEncounter,manualReviewStatus,actionPending=false,replaying=false,finalizing=false;
  const dirty=()=>input&&input.value.trim()!==input.defaultValue.trim();
  const inlineFields=()=>[...information.querySelectorAll('[data-signed-claim-fix] input')];
@@ -1110,7 +1121,7 @@ function visitOpenSignedClaimDetails(button,intent={}){
     const correction=detail.claimmd_position?.correction?.line;
     if(intent.kind==='correction'&&correction?.index===intent.line&&correction.code===intent.procedure){
      void heldEditor.open(correction);
-    }else if(focused)overview.querySelector('[data-signed-claim-fix-held],[data-signed-claim-review]')?.focus({preventScroll:true});
+    }else if(focused)overview.querySelector('[data-signed-claim-fix-held],[data-signed-claim-local-blue],[data-signed-claim-review]')?.focus({preventScroll:true});
    }
   }).catch(()=>{
    if(current())overview.querySelector('.signed-claim-stage')?.insertAdjacentHTML('beforeend','<p class="muted">Saved responses could not be loaded. Open claim history and activity to try again.</p>');
@@ -1223,7 +1234,7 @@ function visitOpenSignedClaimDetails(button,intent={}){
    }).catch(error=>{if(current())showReviewError(visitClaimErrorText(error));}).finally(()=>actionPending=false);
    return;
   }
-  if(action&&manualReviewHost.contains(action))return;
+  if(action&&(manualReviewHost.contains(action)||localBlueHost.contains(action)))return;
   const close=event.target===dialog||action?.hasAttribute('data-sheet-close');
   if(close&&actionPending){event.preventDefault();event.stopImmediatePropagation();return;}
   if(close&&(dirty()||authWork||inlineWork||unsavedInline().length||heldEditor.dirty())){event.preventDefault();event.stopImmediatePropagation();void finishClose();return;}
@@ -1326,6 +1337,21 @@ function visitOpenSignedClaimDetails(button,intent={}){
       if(finalButton){finalButton.disabled=false;finalButton.textContent='Send claim to Claim.MD';}
      }
     }
+   });
+   return;
+  }
+  if(action?.hasAttribute('data-signed-claim-local-blue')){
+   event.preventDefault();event.stopImmediatePropagation();
+   if(!event.isTrusted||!current()||!claimId||!accountId||actionPending)return;
+   actionPending=true;action.disabled=true;
+   void Promise.resolve().then(async()=>{
+    const context=mountEncounterClaims(accountId,{reviewHost:localBlueHost});
+    context.claim=claimId;
+    if(!await beginLocalBlueClaimFix(claimId)||!current())return;
+    overview.hidden=true;information.hidden=true;activity.hidden=true;localBluePane.hidden=false;
+    localBlueHost.querySelector('#claim-editor-form h3')?.focus({preventScroll:true});
+   }).catch(error=>{if(current())showReviewError(visitClaimErrorText(error));}).finally(()=>{
+    actionPending=false;if(action.isConnected)action.disabled=false;
    });
    return;
   }
@@ -1499,10 +1525,10 @@ async function visitClaimDirectSend(claimId,button){
   return await openEncounterClaimMdSubmit(claimId,account.id);
  }catch(error){
   // The server's own words stay beside the button; nothing else on the encounter changes.
-  if(current()&&button){button.disabled=false;button.textContent=`Send claim to ${visitBillingInsurer(encounterRevenueState.data?.summary||{})}`;}
+  if(current()&&button){button.disabled=false;button.textContent=`Send claim to ${visitClaimRouteDestination(encounterRevenueState.data?.summary)||visitBillingInsurer(encounterRevenueState.data?.summary||{})}`;}
   throw error;
  }finally{
-  if(current()&&button&&button.isConnected!==false&&button.textContent==='Opening Claim.MD…'){button.disabled=false;button.textContent=`Send claim to ${visitBillingInsurer(encounterRevenueState.data?.summary||{})}`;}
+  if(current()&&button&&button.isConnected!==false&&button.textContent==='Opening Claim.MD…'){button.disabled=false;button.textContent=`Send claim to ${visitClaimRouteDestination(encounterRevenueState.data?.summary)||visitBillingInsurer(encounterRevenueState.data?.summary||{})}`;}
  }
 }
 // The card's one main button: review first, then send from the same place.

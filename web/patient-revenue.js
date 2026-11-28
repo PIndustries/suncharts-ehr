@@ -2263,7 +2263,8 @@ async function visitNoteBillPayment(summary){
  if(selected!==patient||me!==identity||activeVisit?.id!==id)return;
  const amount=summary?.patient?.owes_now_cents,host=$('note-message');if(!host)return;
  host.hidden=false;
- host.innerHTML=`Claim sent to ${esc(visitBillingInsurer(summary))}.${Number.isSafeInteger(amount)?` Patient portion ${money(amount)}.`:''} ${amount>0?`${cards.length?`<button type="button" data-note-bill-card>Charge card on file ${money(amount)}</button>`:''}<button type="button" data-visit-collect>Take payment</button>`:''}`;
+ const destination=(typeof visitClaimRouteDestination==='function'&&visitClaimRouteDestination(summary))||visitBillingInsurer(summary);
+ host.innerHTML=`Claim sent to ${esc(destination)}.${Number.isSafeInteger(amount)?` Patient portion ${money(amount)}.`:''} ${amount>0?`${cards.length?`<button type="button" data-note-bill-card>Charge card on file ${money(amount)}</button>`:''}<button type="button" data-visit-collect>Take payment</button>`:''}`;
 }
 document.addEventListener('click',event=>{
  if(!event.target.closest?.('[data-note-bill-card]'))return;

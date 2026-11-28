@@ -47612,6 +47612,15 @@
           },
           "crossover": {
             "$ref": "#/components/schemas/CrossoverTrackingRequest"
+          },
+          "local_blue_payer_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The selected local BlueCard payer from this returned claim's available options. The linked live original uses this payer for submission while keeping the home policy and posted charges intact."
+          },
+          "local_blue_route_reviewed": {
+            "type": "boolean",
+            "description": "Required true with local_blue_payer_id after reviewing the patient's card, local route, billing identity and prior payer status."
           }
         },
         "required": [
@@ -47771,6 +47780,28 @@
           "can_confirm_self_policyholder": {
             "type": "boolean",
             "description": "Whether this unsent draft has matching patient and policy holder details and a complete patient address on file for staff confirmation. Writes also recheck version, access and artifact evidence."
+          },
+          "local_blue_route": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "eligible": {"const": true},
+              "options": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "payer_id": {"type": "string", "format": "uuid"},
+                    "payer_code": {"type": "string"},
+                    "payer_name": {"type": "string"}
+                  },
+                  "required": ["payer_id", "payer_code", "payer_name"]
+                }
+              }
+            },
+            "required": ["eligible", "options"],
+            "description": "Available only for a returned original with unchanged posted charges, no payer acceptance or duplicate on file, and an unambiguous local payer. Routing writes recheck these conditions."
           },
           "submission_issues": {
             "type": "array",
