@@ -365,7 +365,7 @@ fn claimmd_identity_matches(evidence: &Value, frozen: &Value) -> bool {
         )
         && nonempty_equal(
             &evidence["payerid"],
-            &account["coverage_snapshot"]["payer"]["content"]["payer_code"],
+            &crate::claims::outbound_payer(&frozen["snapshot"])["payer_code"],
         )
         && evidence["total_charge"].as_str().map(str::trim)
             == Some(format!("{}.{:02}", cents / 100, cents % 100).as_str())
@@ -1331,7 +1331,7 @@ async fn link_status(
         || evidence["bill_taxid"] != content.tax_id
         || evidence["ins_number"]
             != account["coverage_snapshot"]["coverage"]["content"]["member_id"]
-        || evidence["payerid"] != account["coverage_snapshot"]["payer"]["content"]["payer_code"]
+        || evidence["payerid"] != crate::claims::outbound_payer(&c.snapshot)["payer_code"]
         || evidence["total_charge"] != amount
         || evidence["fdos"] != account["content"]["service_date"]
     {

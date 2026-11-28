@@ -155,7 +155,7 @@ fn professional_json(out: &Submission) -> Result<Value> {
     let patient = &snapshot["patient"];
     let account = &snapshot["account"];
     let coverage = &account["coverage_snapshot"]["coverage"]["content"];
-    let payer = &account["coverage_snapshot"]["payer"]["content"];
+    let payer = crate::claims::outbound_payer(snapshot);
     let details = &out.details;
     let total = account["total_cents"]
         .as_i64()

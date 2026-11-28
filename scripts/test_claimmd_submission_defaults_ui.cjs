@@ -17,7 +17,7 @@ assert.match(native,/Nothing was sent to the clearinghouse/);
 // produce real markup, so the form can be inspected as clinic staff see it.
 const vm=require('node:vm');
 const escape=value=>String(value??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;');
-function render(defaults,compact=false){
+function render(defaults,compact=false,route=null){
  const pane={html:''};
  // The screen builds its inputs through ediField (web/clearinghouse.js), which
  // passes the field's max length through to the app's billingField in its place.
@@ -26,13 +26,16 @@ function render(defaults,compact=false){
  const context={console,crypto:{randomUUID:()=>'request'},document:{addEventListener:()=>{}},esc:escape,human:String,date:String,
   billingField:ediField,ediField,selectField,claimPane:html=>{pane.html=html;},
   claimContextSnapshot:()=>compact?{reviewSheet:{}}:null,requireClaimContext:()=>{},money:String,
+  claimLocalBlueDestination:claim=>claim.snapshot.claim_routing?.payer_name+' · '+claim.snapshot.claim_routing?.payer_code,
+  claimCoverageAndRouteMarkup:claim=>`<p>Insurance coverage: ${claim.snapshot.account.coverage_snapshot.payer.content.name}. Claim destination: ${claim.snapshot.claim_routing.payer_name} · ${claim.snapshot.claim_routing.payer_code}.</p>`,
   claimsBase:'/api/v1/billing/claims',$:()=>null,api:async()=>({items:[]}),notice:()=>{},run:fn=>{fn();}};
+ if(!route){delete context.claimLocalBlueDestination;delete context.claimCoverageAndRouteMarkup;}
  vm.createContext(context);
  vm.runInContext(native+'\nclaimMdConnectionState={connected:true,active:{usage:"T"}};',context);
  context.claimMdSubmitEditor({claim:{id:'synthetic-claim',control_number:'SYN-CLAIM-1',version:1,status:'ready',
-  content:{synthetic_test:true},
+  content:{synthetic_test:!route},
   patient_id:'synthetic-patient',
-  snapshot:{patient:{given_name:'Synthetic',family_name:'Patient'},account:{coverage_snapshot:{coverage:{content:{payer_id:'synthetic-payer'}}}}}},
+  snapshot:{patient:{given_name:'Synthetic',family_name:'Patient'},claim_routing:route,account:{coverage_snapshot:{payer:{content:{name:'Synthetic Home Blue'}},coverage:{content:{payer_id:'synthetic-payer'}}}}}},
   submission_defaults:defaults});
  return pane.html;
 }
@@ -118,6 +121,17 @@ const isRequired=(html,name)=>/\srequired(?=>|\s)/.test(attributeOf(html,name));
  assert.match(html,/Insurer address \(optional\)/);
  assert.match(html,/Leave this blank unless the insurer asks for it\./);
  assert.doesNotMatch(html,/Payer address/);
+})();
+
+(function localBlueShowsCoverageAndDestinationOnBothConsentForms(){
+ const route={kind:'bluecard_local',payer_name:'Synthetic Local Blue',payer_code:'22099'};
+ const compact=render(filledDefaults,true,route);
+ assert.match(compact,/Insurance coverage<\/dt><dd>Synthetic Home Blue/);
+ assert.match(compact,/Claim destination<\/dt><dd>Synthetic Local Blue · 22099/);
+ assert.doesNotMatch(compact,/name="synthetic_test_reviewed"/);
+ const worklist=render(filledDefaults,false,route);
+ assert.match(worklist,/Insurance coverage: Synthetic Home Blue\. Claim destination: Synthetic Local Blue · 22099/);
+ assert.match(worklist,/name="routine_professional_reviewed" type="checkbox" required/);
 })();
 
 console.log('PASS Claim.MD submission editor reuses structured chart and claim defaults');

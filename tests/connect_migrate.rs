@@ -2740,7 +2740,10 @@ fn charge_content(visit: &Value, coverage: Option<&Value>) -> Value {
     json!({"visit_id":visit["id"],"coverage_id":coverage.map(|c|c["id"].clone()),"service_date":"2026-10-01","currency":"USD","lines":[{"code_system":"LOCAL","code":"SYN-VISIT","description":"Synthetic visit charge","modifiers":"","units":2,"amount_cents":12550,"diagnosis_codes":["SYN-DX"]}],"notes":"Synthetic billing test"})
 }
 async fn billing_payer(r: &Router, a: &Actor) -> Value {
-    let (status,payer)=schedule_call(r,a,"POST","/api/v1/billing/payers",json!({"request_id":Uuid::new_v4(),"source_history_id":null,"content":{"name":"Synthetic Insurance","payer_code":"SYN-ONLY","phone":"","address":"Synthetic address","active":true},"reason":"Synthetic directory setup"}),None).await;
+    billing_payer_named(r, a, "Synthetic Insurance", "SYN-ONLY").await
+}
+async fn billing_payer_named(r: &Router, a: &Actor, name: &str, code: &str) -> Value {
+    let (status,payer)=schedule_call(r,a,"POST","/api/v1/billing/payers",json!({"request_id":Uuid::new_v4(),"source_history_id":null,"content":{"name":name,"payer_code":code,"phone":"","address":"Synthetic address","active":true},"reason":"Synthetic directory setup"}),None).await;
     assert_eq!(status, 200, "{payer}");
     payer
 }
@@ -3533,8 +3536,18 @@ async fn claim_fixture_slot(
     professional: bool,
     slot: u32,
 ) -> (Value, Value, Value, Value) {
-    let (p, v) = billing_patient_visit_slot(r, a, slot).await;
     let payer = billing_payer(r, a).await;
+    claim_fixture_with_payer(r, a, professional, slot, payer, claim_content()).await
+}
+async fn claim_fixture_with_payer(
+    r: &Router,
+    a: &Actor,
+    professional: bool,
+    slot: u32,
+    payer: Value,
+    initial_content: Value,
+) -> (Value, Value, Value, Value) {
+    let (p, v) = billing_patient_visit_slot(r, a, slot).await;
     let base = format!("/api/v1/patients/{}", p["id"].as_str().unwrap());
     let mut coverage = coverage_content(&payer);
     if slot > 0 {
@@ -3584,7 +3597,7 @@ async fn claim_fixture_slot(
     )
     .await;
     assert_eq!(s, 200, "{b}");
-    let (s,c)=schedule_call(r,a,"POST",&format!("{bp}/claims"),json!({"request_id":Uuid::new_v4(),"frequency":"original","content":claim_content(),"reason":"Reviewed packet"}),Some(2)).await;
+    let (s,c)=schedule_call(r,a,"POST",&format!("{bp}/claims"),json!({"request_id":Uuid::new_v4(),"frequency":"original","content":initial_content,"reason":"Reviewed packet"}),Some(2)).await;
     assert_eq!(s, 200, "{c}");
     (p, payer, b, c)
 }
@@ -4219,6 +4232,218 @@ async fn corrected_claim(
         Some(version),
     )
     .await
+}
+
+#[tokio::test]
+async fn bluecard_routes_existing_charges_and_reconciles_the_local_payer() {
+    let (r, db, a, _) = setup().await;
+    let home = billing_payer_named(&r, &a, "Synthetic Blue Massachusetts", "00200").await;
+    let local = billing_payer_named(&r, &a, "Synthetic Horizon NJ", "22099").await;
+    let mut test_content = claim_content();
+    test_content["synthetic_test"] = json!(true);
+    let (patient, home, posted, parent) =
+        claim_fixture_with_payer(&r, &a, true, 0, home, test_content).await;
+    let parent_path = format!("/api/v1/billing/claims/{}", parent["id"].as_str().unwrap());
+    let create_path = format!(
+        "/api/v1/patients/{}/billing/accounts/{}/claims",
+        patient["id"].as_str().unwrap(),
+        posted["id"].as_str().unwrap()
+    );
+    let version = posted["version"].as_i64();
+    assert!(parent["control_number"]
+        .as_str()
+        .unwrap()
+        .starts_with("SCTEST"));
+    let draft_request = json!({
+        "request_id":Uuid::new_v4(),"parent_id":parent["id"],"frequency":"original",
+        "content":claim_content(),"reason":"Reviewed synthetic BlueCard policy and local payer",
+        "local_blue_payer_id":local["id"],"local_blue_route_reviewed":true
+    });
+    assert_eq!(
+        schedule_call(&r, &a, "POST", &create_path, draft_request.clone(), version)
+            .await
+            .0,
+        409
+    );
+    reject_recorded_claim(&r, &a, &parent, "").await;
+    let (_, before) = schedule_call(&r, &a, "GET", &parent_path, Value::Null, None).await;
+    assert_eq!(
+        before["local_blue_route"]["options"][0]["payer_id"],
+        local["id"]
+    );
+
+    let mut bad_route = draft_request.clone();
+    bad_route["local_blue_payer_id"] = home["id"].clone();
+    assert_eq!(
+        schedule_call(&r, &a, "POST", &create_path, bad_route, version)
+            .await
+            .0,
+        400
+    );
+    let mut unreviewed = draft_request.clone();
+    unreviewed["local_blue_route_reviewed"] = json!(false);
+    assert_eq!(
+        schedule_call(&r, &a, "POST", &create_path, unreviewed, version)
+            .await
+            .0,
+        400
+    );
+    let mut reader = a.clone();
+    reader.role = Role::ReadOnly;
+    assert_eq!(
+        schedule_call(
+            &r,
+            &reader,
+            "POST",
+            &create_path,
+            draft_request.clone(),
+            version
+        )
+        .await
+        .0,
+        403
+    );
+
+    let (status, draft) =
+        schedule_call(&r, &a, "POST", &create_path, draft_request.clone(), version).await;
+    assert_eq!(status, 200, "{draft}");
+    assert_eq!(draft["status"], "draft");
+    assert_eq!(draft["parent_id"], parent["id"]);
+    assert_eq!(draft["payer_id"], local["id"]);
+    assert_eq!(draft["snapshot"]["account"], parent["snapshot"]["account"]);
+    assert_eq!(
+        draft["snapshot"]["claim_routing"]["home_payer_code"],
+        "00200"
+    );
+    assert_eq!(draft["snapshot"]["claim_routing"]["payer_code"], "22099");
+    assert_eq!(draft["content"]["synthetic_test"], false);
+    assert!(!draft["control_number"]
+        .as_str()
+        .unwrap()
+        .starts_with("SCTEST"));
+    let (_, replay) =
+        schedule_call(&r, &a, "POST", &create_path, draft_request.clone(), version).await;
+    assert_eq!(replay["id"], draft["id"]);
+    let mut duplicate = draft_request;
+    duplicate["request_id"] = json!(Uuid::new_v4());
+    assert_eq!(
+        schedule_call(&r, &a, "POST", &create_path, duplicate, version)
+            .await
+            .0,
+        409
+    );
+    let (_, after) = schedule_call(&r, &a, "GET", &parent_path, Value::Null, None).await;
+    assert_eq!(after["claim"], before["claim"]);
+    assert!(after.get("local_blue_route").is_none());
+
+    let cp = format!("/api/v1/billing/claims/{}", draft["id"].as_str().unwrap());
+    let (status, created) = schedule_call(&r, &a, "GET", &cp, Value::Null, None).await;
+    assert_eq!(status, 200, "{created}");
+    assert_eq!(created["resend"]["frequency_code"], "1");
+    let mut bad_edit = claim_content();
+    bad_edit["synthetic_test"] = json!(true);
+    assert_eq!(
+        schedule_call(
+            &r,
+            &a,
+            "PUT",
+            &cp,
+            json!({"content":bad_edit,"reason":"Synthetic unsafe edit"}),
+            Some(1)
+        )
+        .await
+        .0,
+        400
+    );
+    let (_, state) =
+        schedule_call(&r, &a, "GET", &format!("{cp}/history"), Value::Null, None).await;
+    assert_eq!(
+        state["items"][0]["evidence"]["bluecard_route_review"]["outbound_payer_code"],
+        "22099"
+    );
+    let (status, ready) = schedule_call(
+        &r,
+        &a,
+        "POST",
+        &format!("{cp}/actions"),
+        json!({"action":"ready","reason":"Reviewed synthetic claim"}),
+        Some(1),
+    )
+    .await;
+    assert_eq!(status, 200, "{ready}");
+    let (status, partner) = schedule_call(&r,&a,"POST","/api/v1/billing/clearinghouses",json!({"request_id":Uuid::new_v4(),"content":edi_partner_content(),"reason":"Synthetic BlueCard loopback"}),None).await;
+    assert_eq!(status, 200, "{partner}");
+    let (status, out) = schedule_call(&r,&a,"POST",&format!("{cp}/837p"),json!({"request_id":Uuid::new_v4(),"partner_id":partner["id"],"partner_version":1,"details":edi_details(),"reason":"Synthetic BlueCard artifact"}),Some(2)).await;
+    assert_eq!(status, 200, "{out}");
+    assert!(out["payload"].as_str().unwrap().contains("*PI*22099~"));
+    assert!(!out["payload"].as_str().unwrap().contains("*PI*00200~"));
+
+    let control = draft["control_number"].clone();
+    let receipt_control = control.clone();
+    let feed_control = control.clone();
+    let gateway = Router::new()
+        .route("/services/upload/", axum::routing::post(move |body: axum::body::Bytes| {
+            let control = receipt_control.clone();
+            async move {
+                let multipart = std::str::from_utf8(&body).unwrap();
+                assert!(multipart.contains("\"payerid\":\"22099\""));
+                assert!(!multipart.contains("\"payerid\":\"00200\""));
+                assert!(multipart.contains("\"ins_number\":\"SYNTHETIC-POLICY-01\""));
+                axum::Json(json!({"claim":[{"pcn":control,"bill_npi":"1234567893","fileid":"123456","claimmd_id":"902000001","status":"A"}]}))
+            }
+        }))
+        .route("/services/response/", axum::routing::post(move || {
+            let control = feed_control.clone();
+            async move {
+                let mut accepted = claimmd_status_claim(&control, 8, "A", "22099", "SYN-BLUECARD-PCN");
+                accepted["payerid"] = json!("22099");
+                accepted["fileid"] = json!("123456");
+                axum::Json(claimmd_page(vec![accepted]))
+            }
+        }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, gateway).await.unwrap() });
+    let config = provider_config(
+        &a,
+        &partner,
+        "claim_md",
+        &format!("{base}/services/upload/"),
+        &base,
+    );
+    let queued = queue_provider(&r, &a, &out).await;
+    suncharts_engine::delivery::process_one(&db, &config)
+        .await
+        .unwrap();
+    let (_, delivery) = schedule_call(
+        &r,
+        &a,
+        "GET",
+        &format!(
+            "/api/v1/billing/delivery/jobs/{}",
+            queued["id"].as_str().unwrap()
+        ),
+        Value::Null,
+        None,
+    )
+    .await;
+    assert_eq!(delivery["job"]["status"], "delivered", "{delivery}");
+    assert_eq!(delivery["job"]["receipt_reference"], "claimmd-file:123456");
+    suncharts_engine::retrieval::poll_one(&db, &config)
+        .await
+        .unwrap();
+    let (_, accepted) = schedule_call(&r, &a, "GET", &cp, Value::Null, None).await;
+    assert_eq!(accepted["claim"]["status"], "accepted", "{accepted}");
+    assert_eq!(
+        accepted["claim"]["payer_control_number"],
+        "SYN-BLUECARD-PCN"
+    );
+    assert_eq!(accepted["tracking"]["remittance_posted"], false);
+    assert_eq!(
+        claim_account_version(&r, &a, &patient, &posted).await,
+        version.unwrap()
+    );
+    server.abort();
 }
 
 #[tokio::test]

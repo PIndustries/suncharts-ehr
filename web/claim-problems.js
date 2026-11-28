@@ -253,12 +253,14 @@ function claimProblemReport(claim,detail={}){
 // The box itself. `raw` is the response wording already shown elsewhere on the screen; it is
 // repeated here only so the plain words and the message sit together. `claimId` is our own claim
 // identifier, never a patient one.
-function claimProblemBoxMarkup(report,raw='',claimId=''){
+function claimProblemBoxMarkup(report,raw='',claimId='',reviewLocalBlue=false){
   if(!report)return '';
   const sentences=report.problems.map(words=>`<p>${esc(words)}</p>`).join('');
   const target=report.field?` data-claim-fix-field="${esc(report.field)}"`:'';
   const claim=claimId?` data-claim-fix-claim="${esc(claimId)}"`:'';
-  return `<section class="claim-problem-box" data-claim-problem-box aria-label="Why it came back"><h3>Why it came back</h3>${sentences}<p class="muted">${esc(report.resend.words)}</p><button type="button" class="primary" data-claim-fix-resend${target}${claim}>Fix and resend</button><p class="muted">${esc(report.note)}</p>${raw?`<details class="amendment"><summary>The message as it came in</summary><p>${esc(raw)}</p></details>`:''}</section>`;
+  const action=reviewLocalBlue?'Review local Blue routing':'Fix and resend';
+  const next=reviewLocalBlue?'Check whether the insurance card says to send this visit to the local Blue plan.':report.resend.words;
+  return `<section class="claim-problem-box" data-claim-problem-box aria-label="Why it came back"><h3>Why it came back</h3>${sentences}<p class="muted">${esc(next)}</p><button type="button" class="primary" data-claim-fix-resend${reviewLocalBlue?' data-claim-local-blue':''}${target}${claim}>${esc(action)}</button>${reviewLocalBlue?'':`<p class="muted">${esc(report.note)}</p>`}${raw?`<details class="amendment"><summary>The message as it came in</summary><p>${esc(raw)}</p></details>`:''}</section>`;
 }
 
 // The fix target: what box to focus, where else the fix belongs, what to tell staff, and how the

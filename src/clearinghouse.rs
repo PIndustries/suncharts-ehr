@@ -364,6 +364,7 @@ async fn generate_versioned(
         ));
     }
     crate::claim_cob::validate_current(&mut tx, &a, &c).await?;
+    claims::require_current_bluecard_send(&mut tx, &a, &c).await?;
     let p = partner(&mut tx, &a, v.partner_id).await?;
     let pc: PartnerContent =
         serde_json::from_value(p.content.clone()).map_err(|_| Error::Invalid("invalid partner"))?;

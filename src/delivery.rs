@@ -315,6 +315,7 @@ async fn queue_versioned(
     let out = clearinghouse::submission(&mut tx, &a, id).await?;
     let c = claims::claim_row(&mut tx, &a, out.claim_id).await?;
     crate::claim_cob::require_outbound(&c)?;
+    claims::require_current_bluecard_send(&mut tx, &a, &c).await?;
     // The encounter form marked this claim to be printed, not sent electronically.
     if c.content["encounter"]["paper_only"] == true {
         return Err(Error::Conflict(
@@ -562,6 +563,8 @@ pub async fn process_one(pool: &PgPool, config: &Config) -> Result<bool> {
         && crate::claimmd::preflight(&out).is_err()
     {
         "claimmd_preflight_failed_before_transmission_review_original_claim_profile"
+    } else if !claims::bluecard_send_is_current(&mut tx, &a, &c).await? {
+        "bluecard_routing_or_prior_payer_evidence_changed"
     } else if crate::claim_cob::tracking_only(&c) {
         "crossover_tracking_has_no_outbound_delivery"
     } else if out.status != "prepared"

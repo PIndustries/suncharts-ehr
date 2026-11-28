@@ -124,6 +124,18 @@ pub(crate) struct Claim {
     pub(crate) payer_control_number: String,
     pub(crate) source_history_id: Option<Uuid>,
 }
+
+/// Subscriber and benefit details remain on the frozen home policy. Only the
+/// payer that receives this claim and returns acknowledgments travels here.
+pub(crate) fn outbound_payer(snapshot: &Value) -> &Value {
+    match snapshot
+        .get("claim_routing")
+        .filter(|route| !route.is_null())
+    {
+        Some(route) => &route["payer_content"],
+        None => &snapshot["account"]["coverage_snapshot"]["payer"]["content"],
+    }
+}
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct NewClaim {
@@ -137,6 +149,10 @@ struct NewClaim {
     coordination: Option<crate::claim_cob::Request>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     crossover: Option<crate::claim_cob::CrossoverRequest>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    local_blue_payer_id: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    local_blue_route_reviewed: Option<bool>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -658,7 +674,7 @@ pub(crate) fn preflight(c: &Claim) -> Result<Vec<String>> {
     {
         issues.push(format!("Billing provider name {organization_text}"));
     }
-    let payer = &c.snapshot["account"]["coverage_snapshot"]["payer"]["content"];
+    let payer = outbound_payer(&c.snapshot);
     let payer_name = payer["name"].as_str().unwrap_or("");
     if payer_name.trim().is_empty() {
         issues.push("Payer name is required".into());
@@ -865,7 +881,8 @@ async fn claims(
            'service_date',c.snapshot->'account'->'content'->>'service_date',
            'patient_name',p.family_name||', '||p.given_name,
            'total_cents',c.snapshot->'account'->'total_cents',
-           'payer_name',c.snapshot->'account'->'coverage_snapshot'->'payer'->'content'->>'name',
+           'payer_name',coalesce(c.snapshot->'claim_routing'->>'payer_name',c.snapshot->'account'->'coverage_snapshot'->'payer'->'content'->>'name'),
+           'claim_routing',c.snapshot->'claim_routing',
            'coverage_priority',c.snapshot->'account'->'coverage_snapshot'->'coverage'->'content'->>'priority',
            'crossover_tracking_only',coalesce(jsonb_typeof(c.snapshot->'coordination_of_benefits'->'crossover')='object',false),
            'synthetic_test',coalesce((c.content->>'synthetic_test')::boolean,false),
@@ -1006,6 +1023,242 @@ async fn claim_status_counts(
     tx.commit().await?;
     Ok(Json(json!({"counts":counts})))
 }
+
+#[derive(sqlx::FromRow)]
+struct LocalBluePayer {
+    id: Uuid,
+    content: Value,
+}
+
+impl LocalBluePayer {
+    fn option(&self) -> Value {
+        json!({"payer_id":self.id,"payer_code":self.content["payer_code"],"payer_name":self.content["name"]})
+    }
+
+    fn route(&self, home: &Value) -> Value {
+        json!({
+            "kind":"bluecard_local",
+            "payer_id":self.id,
+            "payer_code":self.content["payer_code"],
+            "payer_name":self.content["name"],
+            "payer_content":self.content,
+            "home_payer_id":home["id"],
+            "home_payer_code":home["content"]["payer_code"],
+            "home_payer_name":home["content"]["name"]
+        })
+    }
+}
+
+async fn local_blue_payer(
+    tx: &mut Transaction<'_, Postgres>,
+    a: &Actor,
+) -> Result<Option<LocalBluePayer>> {
+    // Use the reviewed practice payer record. An ambiguous ID cannot safely
+    // route an 835 back to this claim.
+    let rows: Vec<LocalBluePayer> = sqlx::query_as(
+        "SELECT id,content FROM ehr_payers
+         WHERE tenant_id=$1 AND content->>'payer_code'='22099' ORDER BY id LIMIT 2",
+    )
+    .bind(a.tenant_id)
+    .fetch_all(&mut **tx)
+    .await?;
+    if rows.len() == 1 {
+        Ok(rows.into_iter().next().filter(|row| {
+            row.content["active"] == true
+                && crate::x12::organization_name(
+                    row.content["name"].as_str().unwrap_or_default(),
+                    "payer_name",
+                )
+                .is_ok()
+        }))
+    } else {
+        Ok(None)
+    }
+}
+
+async fn bluecard_return_is_current(
+    tx: &mut Transaction<'_, Postgres>,
+    a: &Actor,
+    b: &billing::Account,
+    prior: &Claim,
+    candidate: Option<Uuid>,
+) -> Result<bool> {
+    let Some(coverage) = b.coverage_snapshot.as_ref() else {
+        return Ok(false);
+    };
+    let visit_id: Option<Uuid> = serde_json::from_value(b.content["visit_id"].clone()).ok();
+    let frozen = &prior.snapshot["account"];
+    if b.status != "posted"
+        || b.source_history_id.is_some()
+        || visit_id.is_none()
+        || prior.account_id != b.id
+        || prior.patient_id != b.patient_id
+        || prior.status != "rejected"
+        || prior.frequency != "original"
+        || !prior.payer_control_number.trim().is_empty()
+        || prior.source_history_id.is_some()
+        || !prior.snapshot["coordination_of_benefits"].is_null()
+        || !prior.snapshot["claim_routing"].is_null()
+        || coverage["payer"]["id"] != json!(prior.payer_id)
+        || coverage["payer"]["content"]["payer_code"] != "00200"
+        || coverage["coverage"]["content"]["priority"] != "primary"
+        || frozen["coverage_snapshot"] != *coverage
+        || frozen["content"]["visit_id"] != b.content["visit_id"]
+        || frozen["content"]["service_date"] != b.content["service_date"]
+        || frozen["content"]["lines"] != b.content["lines"]
+        || frozen["total_cents"].as_i64() != Some(b.total_cents)
+    {
+        return Ok(false);
+    }
+    Ok(sqlx::query_scalar(
+        "WITH related AS (
+           SELECT c.id,c.status,c.payer_control_number,c.created_at
+           FROM ehr_claims c JOIN billing_accounts b
+             ON (b.tenant_id,b.id,b.patient_id)=(c.tenant_id,c.account_id,c.patient_id)
+           WHERE c.tenant_id=$1 AND c.patient_id=$2 AND (b.id=$3 OR b.visit_id=$4)
+             AND c.id IS DISTINCT FROM $6::uuid
+         )
+         SELECT EXISTS(SELECT 1 FROM visits WHERE tenant_id=$1 AND patient_id=$2 AND id=$4 AND status='signed')
+           AND $5 IS NOT DISTINCT FROM (SELECT id FROM related WHERE status<>'void' ORDER BY created_at DESC,id DESC LIMIT 1)
+           AND NOT EXISTS (SELECT 1 FROM related
+             WHERE status IN ('draft','ready','submitted','accepted','adjudicated') OR btrim(payer_control_number)<>'')
+           AND NOT EXISTS (SELECT 1 FROM claim_revisions r JOIN related c ON c.id=r.claim_id
+             WHERE r.tenant_id=$1 AND (r.snapshot->>'status' IN ('accepted','adjudicated')
+               OR btrim(coalesce(r.snapshot->>'payer_control_number',''))<>''))
+           AND NOT EXISTS (SELECT 1 FROM edi_submissions s JOIN related c ON c.id=s.claim_id
+             WHERE s.tenant_id=$1 AND s.payer_outcome='accepted')
+           AND NOT EXISTS (SELECT 1 FROM edi_submissions s JOIN related c ON c.id=s.claim_id
+             JOIN edi_remote_reports r
+               ON r.tenant_id=s.tenant_id AND r.native_id=s.id AND r.native_kind='submission'
+             WHERE s.tenant_id=$1 AND r.format='claimmd_status'
+               AND r.parse_summary->>'status'='A'
+               AND coalesce(r.parse_summary#>>'{message,status}','')<>'R'
+               AND coalesce(r.parse_summary->>'senderid','') NOT IN ('','CLMMD')
+               AND btrim(coalesce(r.parse_summary->>'sender_icn',''))<>'')",
+    )
+    .bind(a.tenant_id)
+    .bind(b.patient_id)
+    .bind(b.id)
+    .bind(visit_id)
+    .bind(prior.id)
+    .bind(candidate)
+    .fetch_one(&mut **tx)
+    .await?)
+}
+
+async fn bluecard_option(
+    tx: &mut Transaction<'_, Postgres>,
+    a: &Actor,
+    prior: &Claim,
+) -> Result<Option<Value>> {
+    if prior.status != "rejected"
+        || prior.snapshot["account"]["coverage_snapshot"]["payer"]["content"]["payer_code"]
+            != "00200"
+        || a.scheduling().is_err()
+        || !crate::access_policies::allows(tx, a, "claims", "edit").await?
+    {
+        return Ok(None);
+    }
+    let b = account(tx, a, prior.account_id, Some(prior.patient_id)).await?;
+    if !bluecard_return_is_current(tx, a, &b, prior, None).await? {
+        return Ok(None);
+    }
+    Ok(local_blue_payer(tx, a)
+        .await?
+        .map(|payer| json!({"eligible":true,"options":[payer.option()]})))
+}
+
+async fn prepare_bluecard_route(
+    tx: &mut Transaction<'_, Postgres>,
+    a: &Actor,
+    b: &billing::Account,
+    v: &NewClaim,
+    payer_id: Uuid,
+) -> Result<Value> {
+    if v.local_blue_route_reviewed != Some(true)
+        || v.frequency != "original"
+        || v.source_history_id.is_some()
+        || v.coordination.is_some()
+        || v.crossover.is_some()
+        || v.content.synthetic_test
+        || !v.content.external_control_number.trim().is_empty()
+        || v.content.encounter.paper_only
+    {
+        return Err(Error::Invalid(
+            "Review the local BlueCard route and prepare a fresh live electronic original claim",
+        ));
+    }
+    if !npi(&v.content.billing_npi)
+        || v.content.tax_id.len() != 9
+        || !v.content.tax_id.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return Err(Error::Invalid(
+            "Enter the billing NPI and tax ID verified for the local Blue plan",
+        ));
+    }
+    let parent = v.parent_id.ok_or(Error::Invalid(
+        "BlueCard routing must link the returned original claim",
+    ))?;
+    let prior = claim_row(tx, a, parent).await?;
+    if !bluecard_return_is_current(tx, a, b, &prior, None).await? {
+        return Err(Error::Conflict(
+            "The current returned claim, posted charges or duplicate check no longer supports this BlueCard route",
+        ));
+    }
+    let local = local_blue_payer(tx, a)
+        .await?
+        .filter(|payer| payer.id == payer_id)
+        .ok_or(Error::Invalid(
+            "Select the configured Horizon BCBS NJ payer 22099",
+        ))?;
+    let coverage = b
+        .coverage_snapshot
+        .as_ref()
+        .ok_or(Error::Integrity("missing BlueCard coverage"))?;
+    Ok(local.route(&coverage["payer"]))
+}
+
+pub(crate) async fn bluecard_send_is_current(
+    tx: &mut Transaction<'_, Postgres>,
+    a: &Actor,
+    claim: &Claim,
+) -> Result<bool> {
+    let Some(route) = claim.snapshot.get("claim_routing") else {
+        return Ok(true);
+    };
+    let parent = claim
+        .parent_id
+        .ok_or(Error::Integrity("missing BlueCard parent"))?;
+    let b = account(tx, a, claim.account_id, Some(claim.patient_id)).await?;
+    let prior = claim_row(tx, a, parent).await?;
+    if route["kind"] != "bluecard_local"
+        || route["payer_id"] != json!(claim.payer_id)
+        || route["payer_code"] != "22099"
+        || outbound_payer(&claim.snapshot)["payer_code"] != "22099"
+        || claim.frequency != "original"
+        || claim.content["synthetic_test"] != false
+        || !bluecard_return_is_current(tx, a, &b, &prior, Some(claim.id)).await?
+    {
+        return Ok(false);
+    }
+    Ok(local_blue_payer(tx, a).await?.is_some_and(|payer| {
+        payer.id == claim.payer_id && payer.content == *outbound_payer(&claim.snapshot)
+    }))
+}
+
+pub(crate) async fn require_current_bluecard_send(
+    tx: &mut Transaction<'_, Postgres>,
+    a: &Actor,
+    claim: &Claim,
+) -> Result<()> {
+    if !bluecard_send_is_current(tx, a, claim).await? {
+        return Err(Error::Conflict(
+            "BlueCard routing or payer response changed. Review the original claim before sending.",
+        ));
+    }
+    Ok(())
+}
+
 async fn create_claim(
     a: Actor,
     ExtractState(s): ExtractState<State>,
@@ -1014,6 +1267,11 @@ async fn create_claim(
     Json(mut v): Json<NewClaim>,
 ) -> Result<Json<Claim>> {
     a.scheduling()?;
+    if v.local_blue_payer_id.is_some() {
+        crate::access_policies::require_native(&s, &a, "claims", "edit").await?;
+    } else if v.local_blue_route_reviewed.is_some() {
+        return Err(Error::Invalid("Select the reviewed local BlueCard payer"));
+    }
     v.content.validate()?;
     text(&v.reason, 1000)?;
     let version = crate::expected(&h)?;
@@ -1086,6 +1344,11 @@ async fn create_claim(
     } else if let Some(parent) = v.parent_id.filter(|_| !tracking) {
         let prior = claim_row(&mut tx, &a, parent).await?;
         crate::claim_cob::require_outbound(&prior)?;
+        if prior.snapshot.get("claim_routing").is_some() {
+            return Err(Error::Conflict(
+                "This claim uses a separate local BlueCard payer. Review its payer response and routing before preparing a follow-up.",
+            ));
+        }
         if let Some(evidence) = crate::claim_cob::evidence(&prior)? {
             crate::claim_cob::validate_current(&mut tx, &a, &prior).await?;
             b.coverage_snapshot = Some(prior.snapshot["account"]["coverage_snapshot"].clone());
@@ -1093,15 +1356,22 @@ async fn create_claim(
             coordination = Some(evidence);
         }
     }
-    let payer_id: Uuid = serde_json::from_value(
+    let home_payer_id: Uuid = serde_json::from_value(
         b.coverage_snapshot
             .as_ref()
             .ok_or(Error::Invalid("insurance coverage is required for a claim"))?["payer"]["id"]
             .clone(),
     )
     .map_err(|_| Error::Invalid("invalid payer snapshot"))?;
+    let claim_routing = if let Some(payer_id) = v.local_blue_payer_id {
+        Some(prepare_bluecard_route(&mut tx, &a, &b, &v, payer_id).await?)
+    } else {
+        None
+    };
+    let payer_id = v.local_blue_payer_id.unwrap_or(home_payer_id);
     match (v.frequency.as_str(), v.parent_id) {
         ("original", None) => {}
+        ("original", Some(_)) if claim_routing.is_some() => {}
         ("original", Some(_)) if v.coordination.is_some() || tracking => {}
         ("original", Some(parent)) => {
             let prior = claim_row(&mut tx, &a, parent).await?;
@@ -1163,6 +1433,7 @@ async fn create_claim(
             reason: &v.reason,
             automatic: false,
             copied_canceled_claim: None,
+            claim_routing,
         },
     )
     .await?;
@@ -1184,6 +1455,7 @@ pub(crate) struct NewClaimRecord<'a> {
     pub(crate) reason: &'a str,
     pub(crate) automatic: bool,
     pub(crate) copied_canceled_claim: Option<(Uuid, i64)>,
+    pub(crate) claim_routing: Option<Value>,
 }
 pub(crate) async fn insert_claim(
     tx: &mut Transaction<'_, Postgres>,
@@ -1227,6 +1499,9 @@ pub(crate) async fn insert_claim(
     if let Some(evidence) = &v.coordination {
         snapshot["coordination_of_benefits"] = evidence.clone();
     }
+    if let Some(route) = &v.claim_routing {
+        snapshot["claim_routing"] = route.clone();
+    }
     let payer_control = snapshot["coordination_of_benefits"]["crossover"]["claim"]
         ["payer_control_number"]
         .as_str()
@@ -1241,6 +1516,9 @@ pub(crate) async fn insert_claim(
     }
     if let Some((id, version)) = v.copied_canceled_claim {
         evidence["copied_canceled_claim"] = json!({"id":id,"version":version});
+    }
+    if let Some(route) = &v.claim_routing {
+        evidence["bluecard_route_review"] = json!({"parent_id":v.parent_id,"home_payer_id":route["home_payer_id"],"outbound_payer_id":payer_id,"outbound_payer_code":route["payer_code"]});
     }
     revision(tx, a, claim, v.reason, evidence).await
 }
@@ -1305,13 +1583,14 @@ async fn claim_detail(
     // look at the claim this one is linked to: a correction whose parent is on file with the payer
     // goes back as a replacement carrying the parent's number, not as a second first claim.
     let parent_control: Option<String> = match c.parent_id {
-        Some(parent) => sqlx::query_scalar(
+        Some(parent) => sqlx::query_scalar::<_, Option<String>>(
             "SELECT NULLIF(btrim(payer_control_number),'') FROM ehr_claims WHERE tenant_id=$1 AND id=$2",
         )
         .bind(a.tenant_id)
         .bind(parent)
         .fetch_optional(&mut *tx)
-        .await?,
+        .await?
+        .flatten(),
         None => None,
     };
     let payer_control = if c.payer_control_number.trim().is_empty() {
@@ -1335,17 +1614,20 @@ async fn claim_detail(
     } else {
         None
     };
+    let local_blue_route = bluecard_option(&mut tx, &a, &c).await?;
     crate::postgres::audit(&mut tx, &a, "claim.read", id).await?;
     tx.commit().await?;
     let transport = clearinghouse_transport(db(&s)?, a.tenant_id, artifact_generated).await?;
     let (frequency, frequency_code) = claim_resend_plan_for(&payer_control);
-    Ok(Json(
-        json!({"claim":c,"preflight_issues":issues,"submission_issues":submission_issues,"can_confirm_self_policyholder":can_confirm_self_policyholder,"can_return_to_draft":can_return_to_draft,"transport":transport,"submission_defaults":submission_defaults,"tracking":tracking,
+    let mut detail = json!({"claim":c,"preflight_issues":issues,"submission_issues":submission_issues,"can_confirm_self_policyholder":can_confirm_self_policyholder,"can_return_to_draft":can_return_to_draft,"transport":transport,"submission_defaults":submission_defaults,"tracking":tracking,
             "resend":{"frequency":frequency,"frequency_code":frequency_code,"payer_control_number":payer_control},
             "claimmd_position":claimmd_position,
             "canceled_claim_recovery":canceled_claim_recovery,
-            "responses":{"revisions":responses,"feed":feed}}),
-    ))
+            "responses":{"revisions":responses,"feed":feed}});
+    if let Some(option) = local_blue_route {
+        detail["local_blue_route"] = option;
+    }
+    Ok(Json(detail))
 }
 
 fn x12_sex(value: Option<&str>) -> &'static str {
@@ -1664,7 +1946,11 @@ async fn confirm_self_policyholder(
     if posted.status != "posted"
         || posted.source_history_id.is_some()
         || posted.coverage_snapshot.as_ref() != Some(frozen_coverage)
-        || frozen_coverage["payer"]["id"] != json!(claim.payer_id)
+        || frozen_coverage["payer"]["id"]
+            != claim.snapshot["claim_routing"]
+                .get("home_payer_id")
+                .cloned()
+                .unwrap_or_else(|| json!(claim.payer_id))
     {
         return Err(Error::Conflict(
             "Review the current posted account and policy before correcting the claim",
@@ -1785,7 +2071,7 @@ pub(crate) async fn claim_submission_defaults(
     };
     let patient = &claim.snapshot["patient"];
     let coverage = &claim.snapshot["account"]["coverage_snapshot"]["coverage"]["content"];
-    let payer = &claim.snapshot["account"]["coverage_snapshot"]["payer"]["content"];
+    let payer = outbound_payer(&claim.snapshot);
     let relationship = coverage["relationship"].as_str().unwrap_or_default();
     let patient_given = patient["given_name"].as_str().unwrap_or_default();
     let patient_family = patient["family_name"].as_str().unwrap_or_default();
@@ -1969,6 +2255,24 @@ async fn edit_claim(
             "only the current draft claim can be edited",
         ));
     }
+    if c.snapshot.get("claim_routing").is_some()
+        && (v.content.synthetic_test
+            || !v.content.external_control_number.trim().is_empty()
+            || v.content.encounter.paper_only)
+    {
+        return Err(Error::Invalid(
+            "A BlueCard claim must remain a live electronic claim with its new control number",
+        ));
+    }
+    if c.snapshot.get("claim_routing").is_some()
+        && (c.content["billing_npi"] != v.content.billing_npi
+            || c.content["tax_id"] != v.content.tax_id
+            || c.content["tax_id_type"].as_str().unwrap_or_default() != v.content.tax_id_type)
+    {
+        return Err(Error::Conflict(
+            "The billing NPI and tax ID were reviewed for this BlueCard route. Cancel the unsent draft and review the routing again to change them.",
+        ));
+    }
     sqlx::query("UPDATE ehr_claims SET content=$3,version=version+1 WHERE tenant_id=$1 AND id=$2")
         .bind(a.tenant_id)
         .bind(id)
@@ -2098,6 +2402,7 @@ async fn claim_action_versioned(
         ("ready", "draft") => {
             crate::claim_cob::require_outbound(&c)?;
             crate::claim_cob::validate_current(&mut tx, &a, &c).await?;
+            require_current_bluecard_send(&mut tx, &a, &c).await?;
             // Complete any still-empty detail field from current records before the preflight
             // gate, under the tenant lock this transaction already holds. A refill bumps the
             // version, so re-check optimistic concurrency: a person whose copy is now stale
@@ -2335,7 +2640,7 @@ fn render_cms1500_review(c: &Claim) -> Result<String> {
         r#"<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Claim review {control}</title><style>
 @page{{size:letter landscape;margin:.18in}}*{{box-sizing:border-box}}:root{{--red:#c52e52;--ink:#15232d;--rule:1.15px solid var(--red)}}body{{margin:0;background:#e8edf0;color:var(--ink);font:9px Arial,sans-serif}}.toolbar{{width:10.6in;margin:14px auto 9px;padding:11px 15px;border-radius:8px;background:#123038;color:#fff;display:flex;justify-content:space-between;align-items:center;box-shadow:0 4px 18px #0002}}.toolbar strong{{font-size:14px;display:block}}.toolbar span{{color:#cfe0e3}}button{{border:0;border-radius:5px;padding:9px 13px;background:#7bd9d3;font-weight:700;cursor:pointer}}.sheet{{position:relative;width:10.6in;min-height:8.05in;margin:0 auto 22px;padding:.1in .15in;background:#fffdfd;box-shadow:0 5px 24px #25374655;overflow:hidden}}.watermark{{position:absolute;left:1.45in;top:3.45in;transform:rotate(-20deg);font:bold 38px Arial;color:#d3264518;letter-spacing:.09em;pointer-events:none}}.form{{position:relative;color:var(--red)}}.mast{{height:.55in;display:grid;grid-template-columns:2.7in 1fr 2.25in;align-items:end;gap:8px}}.mast .title{{text-align:center;font:bold 18px Arial}}.mast .approval{{text-align:right;font-weight:700;font-size:8px}}.payer{{height:.5in;border:var(--rule);display:grid;grid-template-columns:7.25in 1fr}}.programs{{display:grid;grid-template-columns:repeat(5,1fr);gap:5px;padding:5px 7px;align-items:center}}.box{{display:inline-block;width:11px;height:11px;border:1px solid var(--red);margin-right:3px;vertical-align:-2px;line-height:9px;text-align:center;color:var(--ink)}}.payername{{border-left:var(--rule);padding:4px 7px;color:var(--ink)}}.rows{{border-left:var(--rule);border-top:var(--rule)}}.row{{display:grid}}.cell{{position:relative;min-height:.37in;padding:14px 5px 3px;border-right:var(--rule);border-bottom:var(--rule);color:var(--ink);font-weight:600;line-height:1.15}}.cell label{{position:absolute;left:4px;right:3px;top:2px;color:var(--red);font-size:7px;font-weight:700;line-height:1.03}}.r1{{grid-template-columns:2.15in 2.4in 1.55in 2.2in 1.97in}}.r2{{grid-template-columns:3.05in 1.5in 2.45in 1.3in 1.97in}}.r3{{grid-template-columns:4.55in 2.45in 3.27in}}.r4{{grid-template-columns:2.35in 2.2in 2.1in 1.65in 1.97in}}.r5{{grid-template-columns:4.55in 3.75in 1.97in}}.choices{{font-weight:400;color:var(--red);word-spacing:6px}}.sig{{font-family:"Segoe Script","Bradley Hand",cursive;color:#46515a;font-size:10px}}.diagnosis{{min-height:.55in}}.codes{{display:grid;grid-template-columns:repeat(4,1fr);gap:2px}}.codes span{{border-bottom:1px dotted #d18494;padding:2px}}table{{width:100%;border-collapse:collapse;table-layout:fixed;border-left:var(--rule);color:var(--ink)}}th,td{{border-right:var(--rule);border-bottom:var(--rule);padding:2px;text-align:center;vertical-align:top}}thead th{{border-top:var(--rule);height:.3in;color:var(--red);font-size:6.5px;line-height:1.05}}tbody td{{height:.29in;font-size:8px}}th:nth-child(1),th:nth-child(2){{width:.8in}}th:nth-child(3){{width:.35in}}th:nth-child(4){{width:.25in}}th:nth-child(5){{width:2.2in}}th:nth-child(6){{width:.5in}}th:nth-child(7){{width:.7in}}th:nth-child(8){{width:.35in}}th:nth-child(9){{width:.4in}}th:nth-child(10){{width:1.65in}}.procedure{{font-weight:700}}.procedure small{{display:block;font-weight:400;font-size:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}}.charge{{font-weight:700}}.bottom{{display:grid;grid-template-columns:1.45in 2.1in 1.1in 1.2in 2.3in 2.12in;border-left:var(--rule)}}.bottom .cell{{min-height:.45in}}.footer{{display:flex;justify-content:space-between;align-items:end;padding-top:4px;color:var(--red);font-size:7px;font-weight:700}}.version{{border:1px solid var(--red);padding:3px 6px}}@media print{{body{{background:#fff}}.toolbar{{display:none}}.sheet{{margin:0;box-shadow:none}}}}@media(max-width:900px){{.toolbar{{margin:8px}}}}
 </style><link rel="stylesheet" href="/cms1500.css"><script src="/cms1500.js" defer></script></head><body>
-<div class=toolbar><div><strong>Claim review · {control}</strong><span>{review_label} for records. Printing does not submit this claim.</span></div><div class=preview-actions aria-label="Form preview controls"><button type=button id=cms-zoom-out aria-label="Zoom out">−</button><output id=cms-zoom-label aria-live=polite>125%</output><button type=button id=cms-zoom-in aria-label="Zoom in">+</button><button type=button id=cms-fit-page>Fit page</button><button type=button id=cms-print>Print / Save PDF</button></div></div>
+<div class=toolbar><div><strong>Claim review · {control}</strong><span>{review_label} for records. Printing does not submit this claim.{routing_note}</span></div><div class=preview-actions aria-label="Form preview controls"><button type=button id=cms-zoom-out aria-label="Zoom out">−</button><output id=cms-zoom-label aria-live=polite>125%</output><button type=button id=cms-zoom-in aria-label="Zoom in">+</button><button type=button id=cms-fit-page>Fit page</button><button type=button id=cms-print>Print / Save PDF</button></div></div>
 <main class=sheet aria-label="Claim review for records"><div class=watermark>{watermark}</div><div class=form>
 <div class=mast><div><b>SunCharts claim review</b><br><small>CMS-1500 field references for review only</small></div><div class=title>{review_label}</div><div class=approval>NOT AN OFFICIAL PAPER FORM<br>NOT FOR PAPER SUBMISSION</div></div>
 <section class=payer><div class=programs><span><i class=box></i>MEDICARE</span><span><i class=box></i>MEDICAID</span><span><i class=box></i>TRICARE</span><span><i class=box></i>CHAMPVA</span><span><i class=box></i>OTHER</span></div><div class=payername><b>{payer}</b><br><small>INSURANCE PLAN NAME OR PROGRAM NAME</small></div></section>
@@ -2358,6 +2663,15 @@ fn render_cms1500_review(c: &Claim) -> Result<String> {
         control = html_escape(&c.control_number),
         member = html_escape(json_text(policy, "member_id")),
         payer = html_escape(json_text(payer, "name")),
+        routing_note = if let Some(route) = c.snapshot.get("claim_routing") {
+            format!(
+                " Electronic submission payer {} ({}).",
+                html_escape(json_text(route, "payer_name")),
+                html_escape(json_text(route, "payer_code"))
+            )
+        } else {
+            String::new()
+        },
         frequency = html_escape(&c.frequency),
         patient_name = patient_name,
         patient_dob = html_escape(json_text(patient, "birth_date")),

@@ -63,7 +63,8 @@ function visitBillingNeedsCoverageReview(s){
 }
 // The status line: what is happening, who is waiting on whom, and the one next step.
 function visitBillingStatus(s,ctx={}){
- const insurer=visitBillingInsurer(s),owes=money(s.patient.owes_now_cents),paid=money(s.insurance.paid_cents),account=s.account?.id||'',claim=s.claim?.id||'',write=ctx.canWrite,create=ctx.canCreate;
+ const insurer=visitBillingInsurer(s),route=typeof claimLocalBlueDestination==='function'?claimLocalBlueDestination(s.claim):'',destination=route||insurer;
+ const owes=money(s.patient.owes_now_cents),paid=money(s.insurance.paid_cents),account=s.account?.id||'',claim=s.claim?.id||'',write=ctx.canWrite,create=ctx.canCreate;
  const button=(label,attribute)=>`<button type="button" class="primary" ${attribute}>${esc(label)}</button>`;
  const handoff=typeof visitHandoffEvidence==='function'?visitHandoffEvidence(s):null;
  if(handoff)return {headline:visitHandoffStatus(handoff),detail:visitHandoffDetail(handoff),action:''};
@@ -80,15 +81,15 @@ function visitBillingStatus(s,ctx={}){
    case 'self_pay_collect':return {headline:'Self-pay: collect payment',detail:`Patient owes ${owes}. Waiting for the patient.`,action:create?button('Collect payment','data-visit-collect'):''};
   case 'prepare_claim':return ctx.prepareError?{headline:`The claim to ${insurer} could not be prepared`,detail:ctx.prepareError,action:create?button('Try again','data-visit-claim-prepare'):''}:create?{headline:`Preparing the claim to ${insurer}`,detail:'The claim is filled in from this encounter. Nothing is sent until you send it.',action:ctx.preparing?'':button('Prepare claim','data-visit-claim-prepare')}:{headline:'Posted',detail:`Billing staff prepare the claim to ${insurer}.`,action:''};
    case 'claim_cancelled':return visitBillingCanceledStatus(s,ctx,`The claim to ${insurer} was cancelled`);
-   case 'fix_claim':return {headline:`Claim to ${insurer} needs details`,detail:'Nothing has been sent yet. Fill in what is missing right on the claim below.',issues:s.claim?.issues||[],action:write?button('Fix claim details',`data-visit-claim-fix="${esc(claim)}"`):''};
-    case 'send_claim':return {headline:`Review claim for ${insurer}`,detail:'Open the claim to check it before sending.',action:reviewButton(s,ctx)||(write&&ctx.claimsAllowed!==false?button('Review claim',`data-visit-claim-send="${esc(claim)}"`):'')};
-    case 'correct_claim':return {headline:'Charges changed after the claim was sent',detail:`Send a corrected claim to ${insurer}.`,action:button('Open claim',`data-revenue-claim="${esc(claim)}"`)};
+   case 'fix_claim':return {headline:`Claim to ${destination} needs details`,detail:'Nothing has been sent yet. Fill in what is missing right on the claim below.',issues:s.claim?.issues||[],action:write?button('Fix claim details',`data-visit-claim-fix="${esc(claim)}"`):''};
+    case 'send_claim':return {headline:`Review claim for ${destination}`,detail:'Open the claim to check it before sending.',action:reviewButton(s,ctx)||(write&&ctx.claimsAllowed!==false?button('Review claim',`data-visit-claim-send="${esc(claim)}"`):'')};
+    case 'correct_claim':return {headline:'Charges changed after the claim was sent',detail:`Send a corrected claim to ${destination}.`,action:button('Open claim',`data-revenue-claim="${esc(claim)}"`)};
    case 'claimmd_correction':return {headline:'The clearinghouse found a problem with this claim',detail:'Review the clearinghouse response on the existing claim.',action:button('Review response',`data-revenue-claim="${esc(claim)}"`)};
    case 'claimmd_received':return {headline:'Received by the clearinghouse',detail:'Waiting for payer acceptance.',action:button('Check claim status',`data-revenue-claim="${esc(claim)}"`)};
-   case 'waiting_insurer':return {headline:s.claim?.status==='accepted'?'Accepted by the payer':`Waiting on ${insurer}`,detail:`${s.insurance.sent_on?`Claim sent ${visitBillingDate(s.insurance.sent_on)}. `:''}Waiting for the payer’s decision.`,action:button('Check claim status',`data-revenue-claim="${esc(claim)}"`)};
-   case 'post_response':return {headline:`${insurer} answered`,detail:'Review their payment and post it to this encounter.',action:button('Review insurer payment',`data-revenue-remittance="${esc(s.claim?.response_to_review||'')}"`)};
+   case 'waiting_insurer':return {headline:s.claim?.status==='accepted'?'Accepted by the payer':`Waiting on ${destination}`,detail:`${s.insurance.sent_on?`Claim sent ${visitBillingDate(s.insurance.sent_on)}. `:''}Waiting for the payer’s decision.`,action:button('Check claim status',`data-revenue-claim="${esc(claim)}"`)};
+   case 'post_response':return {headline:route?'Payer response received':`${insurer} answered`,detail:'Review their payment and post it to this encounter.',action:button('Review insurer payment',`data-revenue-remittance="${esc(s.claim?.response_to_review||'')}"`)};
    case 'claim_rejected':return {headline:visitBillingReturnTitle(s.claim),detail:'Review the return reason and correct the claim before resubmitting.',action:button('Review returned claim',`data-revenue-claim="${esc(claim)}"`)};
-   case 'denied':return {headline:`Denied by ${insurer}`,detail:'Review the payer’s decision and any balance the payer assigned to the patient.',action:button('Review payer decision',`data-revenue-claim="${esc(claim)}"`)};
+   case 'denied':return {headline:route?'Denied by the payer':`Denied by ${insurer}`,detail:'Review the payer’s decision and any balance the payer assigned to the patient.',action:button('Review payer decision',`data-revenue-claim="${esc(claim)}"`)};
    case 'review_response':return {headline:`Insurance paid ${paid}`,detail:`${money(s.insurance.unassigned_cents)} is not paid, written off or assigned to the patient yet. Review the insurer’s answer.`,action:button('Review insurer answer',`data-revenue-claim="${esc(claim)}"`)};
    case 'review_balance':return {headline:`${money(s.insurance.unassigned_cents)} is not on the patient’s statement`,detail:'The latest statement is paid, but the encounter still has a balance. Write the rest off or adjust it; a new statement then shows what is left.',action:create?button('Write off or adjust','data-new-ledger'):''};
    case 'patient_owes':return {headline:`Patient owes ${owes}`,detail:`Insurance paid ${paid}. Waiting for the patient.`,action:create?button('Collect payment','data-visit-collect'):''};
@@ -417,6 +418,7 @@ function visitBillingCardMarkup(s,ctx={}){
 const visitBillingFilters=[['all','Everything'],['charges','Charges'],['insurance','Insurance'],['payments','Payments'],['statements','Statements']];
 function visitBillingEventText(event){
  const amount=event.amount_cents==null?'':money(event.amount_cents),insurer=event.insurer||'the insurer',how=visitBillingMethod(event.method),by=how?` (${how})`:'';
+ const destination=event.claim_destination||insurer;
  switch(event.code){
   case 'charges_added':return `Charges added: ${amount}`;
   case 'charges_changed':return 'Charges changed';
@@ -434,15 +436,15 @@ function visitBillingEventText(event){
   case 'reversal':return `Entry undone: ${amount}`;
   case 'insurer_payment':return `Insurance paid ${amount}`;
   case 'insurer_adjustment':return `Insurance adjustment: ${amount} written off`;
-  case 'claim_prepared_auto':return `Claim to ${insurer} prepared from this encounter`;
-  case 'claim_prepared':return `${event.frequency==='replacement'?'Corrected claim':event.frequency==='void_request'?'Request to void the claim':event.secondary?'Secondary claim':'Claim'} to ${insurer} prepared`;
+  case 'claim_prepared_auto':return `Claim to ${destination} prepared from this encounter`;
+  case 'claim_prepared':return `${event.frequency==='replacement'?'Corrected claim':event.frequency==='void_request'?'Request to void the claim':event.secondary?'Secondary claim':'Claim'} to ${destination} prepared`;
   case 'claim_crossover':return `${insurer} answered a claim forwarded by the primary insurer`;
   case 'claim_changed':return 'Claim details changed';
   case 'claim_ready':return 'Claim checked and ready to send';
-  case 'claim_sent':return `Claim sent to ${insurer}`;
-  case 'claim_accepted':return `${insurer} accepted the claim for processing`;
+  case 'claim_sent':return `Claim sent to ${destination}`;
+  case 'claim_accepted':return `${event.claim_destination?'The payer':insurer} accepted the claim for processing`;
   case 'claim_rejected':return 'Claim submission returned';
-  case 'claim_answered':return `${insurer} answered${event.patient_responsibility_cents==null?'':`: patient owes ${money(event.patient_responsibility_cents)}`}`;
+  case 'claim_answered':return `${event.claim_destination?'The payer':insurer} answered${event.patient_responsibility_cents==null?'':`: patient owes ${money(event.patient_responsibility_cents)}`}`;
   case 'claim_cancelled':return 'Claim cancelled';
   case 'statement_sent':return `Statement sent · ${event.channel==='portal'?'Patient portal':event.channel} · ${event.actor_label||'Staff'}`;
   case 'statement':return `Statement given: ${amount} due`;
