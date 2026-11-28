@@ -116,12 +116,23 @@ function claimWorklistButton(c,next){
  const attributes=next.intent?` data-claim-intent="${next.intent.kind}"${next.intent.procedure?` data-claim-procedure="${esc(next.intent.procedure)}" data-claim-line="${next.intent.line}"`:''}${next.intent.field?` data-claim-field="${esc(next.intent.field)}"`:''}${next.intent.part?` data-claim-part="${esc(next.intent.part)}"`:''}`:'';
  return `<button type="button" data-claim-open="${esc(c.id)}"${c.status==='void'?'':' data-claim-visit'}${attributes}>${esc(next.label)}</button>`;
 }
+function claimWorklistResponseReason(c,group){
+ if(group!=='fix')return '';
+ const summarize=typeof claimProblemWorklistReason==='function'?claimProblemWorklistReason:()=>'';
+ if(claimMdNeedsCorrection(c,c))return summarize(c.claimmd_position.correction?.message);
+ if(c.payer_denied===true){
+  const codes=Array.isArray(c.worklist_denial_codes)?c.worklist_denial_codes.filter(code=>typeof code==='string'&&/^(CO|OA|PI)-[A-Z0-9]{1,5}$/.test(code)).slice(0,3):[];
+  return codes.length?`Remittance ${codes.length===1?'adjustment':'adjustments'} ${codes.join(', ')}`:'';
+ }
+ return c.status==='rejected'?summarize(c.worklist_return_reason)||'No return reason recorded':'';
+}
 function claimRowMarkup(c,now=Date.now()){
  const group=claimWorkGroup(c),posted=c.status==='adjudicated'&&c.remittance_posted===true&&c.paid_cents>0&&!c.payer_denied;
  const tone=posted?'paid':group==='resubmit'?'send':group||'other',next=claimWorklistAction(c,group);
  const encounter=c.visit_id&&typeof encounterRowChip==='function'?encounterRowChip(c):'';
  const summary=[c.payer_name&&esc(c.payer_name),c.service_date&&esc(displayDate(c.service_date)),Number.isSafeInteger(c.total_cents)&&money(c.total_cents)].filter(Boolean).join(' · ');
- return `<tr role="row"><td role="cell" class="monitor-record"><b>${esc(c.patient_name)}</b><small class="claim-control">${encounter?`${encounter} · `:''}Claim ${esc(c.control_number||'Not assigned')}${c.frequency&&c.frequency!=='original'?` · ${esc(displayStatus(c.frequency))}`:''}</small>${summary?`<small>${summary}</small>`:''}</td><td role="cell" class="monitor-status"><span class="pill claim-status-${tone}">${esc(posted?'Payment posted':next.reason)}</span></td><td role="cell" class="monitor-age">${claimWorklistAge(c,group,now)}</td><td role="cell" class="monitor-action">${claimWorklistButton(c,next)}</td></tr>`;
+ const response=claimWorklistResponseReason(c,group);
+ return `<tr role="row"><td role="cell" class="monitor-record"><b>${esc(c.patient_name)}</b><small class="claim-control">${encounter?`${encounter} · `:''}Claim ${esc(c.control_number||'Not assigned')}${c.frequency&&c.frequency!=='original'?` · ${esc(displayStatus(c.frequency))}`:''}</small>${summary?`<small>${summary}</small>`:''}</td><td role="cell" class="monitor-status"><span class="pill claim-status-${tone}">${esc(posted?'Payment posted':next.reason)}</span>${response?`<p class="claim-worklist-response" data-claim-response-reason>${esc(response)}</p>`:''}</td><td role="cell" class="monitor-age">${claimWorklistAge(c,group,now)}</td><td role="cell" class="monitor-action">${claimWorklistButton(c,next)}</td></tr>`;
 }
 function claimRowsMarkup(claims,now=Date.now()){
  const order=c=>Date.parse(claimWorklistTime(c)||c.service_date||'');

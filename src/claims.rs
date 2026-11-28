@@ -869,13 +869,25 @@ async fn claims(
            'coverage_priority',c.snapshot->'account'->'coverage_snapshot'->'coverage'->'content'->>'priority',
            'crossover_tracking_only',coalesce(jsonb_typeof(c.snapshot->'coordination_of_benefits'->'crossover')='object',false),
            'synthetic_test',coalesce((c.content->>'synthetic_test')::boolean,false),
-           'status_at',coalesce(st.at,c.created_at))
+           'status_at',coalesce(st.at,c.created_at),
+           'worklist_return_reason',CASE WHEN c.status='rejected' THEN (
+             SELECT left(btrim(regexp_replace(words.message,'[[:space:][:cntrl:]]+',' ','g')),240)
+             FROM claim_revisions rr
+             CROSS JOIN LATERAL (SELECT CASE
+               WHEN rr.evidence->>'event'='claimmd_rejection' AND rr.evidence->>'evidence_origin'='claimmd_status_feed'
+                 THEN rr.evidence->>'message'
+               WHEN rr.evidence->>'action'='record_rejection' THEN rr.reason
+             END AS message) words
+             WHERE rr.tenant_id=c.tenant_id AND rr.claim_id=c.id AND rr.version>=st.version
+               AND words.message ~ '[^[:space:][:cntrl:]]'
+             ORDER BY rr.version DESC LIMIT 1
+           ) END)
          FROM ehr_claims c JOIN patients p ON p.tenant_id=c.tenant_id AND p.id=c.patient_id
          LEFT JOIN billing_accounts b ON b.tenant_id=c.tenant_id AND b.id=c.account_id
          CROSS JOIN LATERAL (SELECT coalesce(b.visit_id,(NULLIF(c.snapshot->'account'->'content'->>'visit_id',''))::uuid) AS visit_id) x
          LEFT JOIN en n ON n.id=x.visit_id
          LEFT JOIN LATERAL (
-           SELECT min(r.created_at) AS at FROM claim_revisions r
+           SELECT min(r.created_at) AS at,min(r.version) AS version FROM claim_revisions r
            WHERE r.tenant_id=c.tenant_id AND r.claim_id=c.id AND r.snapshot->>'status'=c.status
              AND r.version>coalesce((SELECT max(previous.version) FROM claim_revisions previous
                  WHERE previous.tenant_id=c.tenant_id AND previous.claim_id=c.id
@@ -943,6 +955,12 @@ async fn claims(
         if let Some(record) = row.as_object_mut() {
             record.remove("content");
             record.remove("snapshot");
+            if record
+                .get("worklist_return_reason")
+                .is_some_and(Value::is_null)
+            {
+                record.remove("worklist_return_reason");
+            }
         }
         if let Some(id) = row["id"].as_str().and_then(|id| Uuid::parse_str(id).ok()) {
             if let Some(recovery) = recoveries.remove(&id) {
@@ -961,6 +979,9 @@ async fn claims(
             row["remittance_posted"] = json!(remittance.is_some());
             row["payer_denied"] = json!(remittance.as_ref().and_then(|r| r.payer_denied));
             row["paid_cents"] = json!(remittance.as_ref().and_then(|r| r.paid_cents));
+            if let Some(result) = remittance.filter(|r| !r.denial_codes.is_empty()) {
+                row["worklist_denial_codes"] = json!(result.denial_codes);
+            }
         }
     }
     crate::postgres::audit(&mut tx, &a, "claim.worklist", a.tenant_id).await?;
