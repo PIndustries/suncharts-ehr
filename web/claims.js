@@ -1295,7 +1295,7 @@ function claimScreenMarkup(claim,detail,history){
  ${inVisit||readOnly?'':`<div class="actions"><button type="button" data-claim-account="${esc(claim.account_id)}" data-patient="${esc(claim.patient_id)}">Open encounter</button>${editClaim}</div>`}
  <div id="claim-editor"></div></section>`;
 }
-async function showClaim(id,{historyOnly=false}={}){
+async function showClaim(id,{historyOnly=false,loadActivity=true}={}){
  const context=claimContextSnapshot(),identity=typeof me==='undefined'?undefined:me;
  const request={kind:'claim',id};context.detailRequest=request;
  const current=()=>context.detailRequest===request&&claimContextCurrent(context)&&identity===(typeof me==='undefined'?undefined:me);
@@ -1315,7 +1315,7 @@ async function showClaim(id,{historyOnly=false}={}){
   insertClaimStatusTimeline(context,claim,d,h);
   const action=$('claim-action');if(action){action.claimViewContext=context;action.claimRecord=claim;}
   if(!context.historyOnly&&typeof startClaimMdTracking==='function')startClaimMdTracking(claim.id);
-  if(!context.historyOnly&&typeof showClaimMdClaimActivity==='function')await showClaimMdClaimActivity(claim);
+  if(loadActivity&&!context.historyOnly&&typeof showClaimMdClaimActivity==='function')await showClaimMdClaimActivity(claim);
   if(!current())return;
   if(!context.savedActivityOnly)claimProgressToHead(claimWorkspaceHost(context));
   if(claimContextCurrent(context)&&context?.kind!=='encounter')claimDetailTabs(claimWorkspaceHost(context));
@@ -1353,11 +1353,12 @@ async function openWorklistClaim(id,intent={},launcher){
  if(quickFix?.claimInlineDirty?.()&&quickFix.checkValidity()&&!await quickFix.claimInlineSave())return;
  context.heldEditor=null;
  captureClaimDraft();
- const detail=await showClaim(id,{historyOnly:intent.kind==='history'});
+ const direct=['send','missing','correction'].includes(intent.kind);
+ const detail=await showClaim(id,{historyOnly:intent.kind==='history',loadActivity:!direct});
  if(!detail||!claimContextCurrent(context)||context.claim!==id||context.historyOnly)return;
  if(intent.kind==='correction')await openWorklistHeldFix(context,{index:intent.line,code:intent.procedure});
- if(intent.kind==='send')await openClaimMdSubmissionReview(id,{releaseDraft:true,expectedVersion:detail.claim.version});
- if(intent.kind==='missing'){
+ if(intent.kind==='send'&&billingWrite())await openClaimMdSubmissionReview(id,{releaseDraft:true,expectedVersion:detail.claim.version});
+ if(intent.kind==='missing'&&billingWrite()){
   if(context.drawerHost.querySelector('#claim-quick-fix'))openClaimQuickFix();
   else if(detail.submission_issues?.length&&!detail.preflight_issues?.length)await openClaimMdSubmissionReview(id,{releaseDraft:true,expectedVersion:detail.claim.version});
  }

@@ -164,7 +164,7 @@ function claimMdPublishSubmissionStatus(form,evidence,current){
   }
  };
  render();
- if(attempt.outcome==='queued'&&typeof setTimeout==='function')timer=setTimeout(read,1000);
+ if(['queued','delivered'].includes(attempt.outcome)&&typeof setTimeout==='function')timer=setTimeout(read,1000);
 }
 async function openClaimMdSubmissionReview(id,{accountId,current=()=>true,releaseDraft=false,afterQueue,reviewHost=null,expectedVersion=null}={}){
  if(!canPrepareClaimMdSubmission())throw new Error('Ask billing staff with permission to send this claim.');
