@@ -18,7 +18,7 @@ for(const [status,tone] of [['draft','send'],['rejected','fix'],['submitted','wa
 assert.match(c.claimRowMarkup(posted),/claim-status-paid/);
 assert.doesNotMatch(c.claimRowMarkup({...posted,payer_denied:true}),/claim-status-paid/);
 assert.doesNotMatch(c.claimRowMarkup({...posted,paid_cents:0}),/claim-status-paid/);
-for(const [key,line]of [['send','No claims to send.'],['fix','No claims need correction.'],['wait','No claims waiting for a response.']]){c.claimStatusFilter=key;assert(c.claimEmptyRow().includes(line));}
+for(const [key,line]of [['send','No claims to send.'],['fix','No claims need correction.'],['wait','No claims in flight.']]){c.claimStatusFilter=key;assert(c.claimEmptyRow().includes(line));}
 assert.match(claims,/management&&!claimMdConnectionState\?\.connected\)management\.insertAdjacentHTML\('beforebegin',claimMdConnectionCard\(\)\)/);
 const css=fs.readFileSync('web/frame.css','utf8');assert.match(css,/height:100dvh;overflow:hidden/);assert.match(css,/#tools\{min-height:0;overflow:auto;flex:1\}/);
 console.log('PASS Billing groups, correction precedence, oldest first, private identifiers, empty states, connection banner and contained scrolling');

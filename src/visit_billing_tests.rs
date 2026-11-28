@@ -3667,6 +3667,19 @@ async fn charge_correction_void_exposes_the_current_account_for_one_new_review()
     );
     assert_eq!(f.claim(&original["id"]).await, canceled);
     assert!(f.detail(&canceled["id"]).await["canceled_claim_recovery"].is_null());
+    let list = f
+        .ok("GET", "/api/v1/billing/claims", json!(null), None)
+        .await;
+    let claims = list["items"].as_array().unwrap();
+    assert_eq!(
+        claims.iter().find(|row| row["id"] == draft["id"]).unwrap()["copied_from_claim_id"],
+        original["id"]
+    );
+    assert!(claims
+        .iter()
+        .find(|row| row["id"] == original["id"])
+        .unwrap()["copied_from_claim_id"]
+        .is_null());
     assert_eq!(
         f.count("SELECT count(*) FROM edi_delivery_jobs WHERE tenant_id=$1")
             .await,

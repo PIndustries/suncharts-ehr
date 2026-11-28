@@ -884,6 +884,9 @@ async fn claims(
            'payer_name',coalesce(c.snapshot->'claim_routing'->>'payer_name',c.snapshot->'account'->'coverage_snapshot'->'payer'->'content'->>'name'),
            'claim_routing',c.snapshot->'claim_routing',
            'coverage_priority',c.snapshot->'account'->'coverage_snapshot'->'coverage'->'content'->>'priority',
+           'coordination_primary_claim_id',c.snapshot->'coordination_of_benefits'->>'primary_claim_id',
+           'copied_from_claim_id',(SELECT r.evidence->'copied_canceled_claim'->>'id'
+             FROM claim_revisions r WHERE r.tenant_id=c.tenant_id AND r.claim_id=c.id AND r.version=1),
            'crossover_tracking_only',coalesce(jsonb_typeof(c.snapshot->'coordination_of_benefits'->'crossover')='object',false),
            'synthetic_test',coalesce((c.content->>'synthetic_test')::boolean,false),
            'status_at',coalesce(st.at,c.created_at),

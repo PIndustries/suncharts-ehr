@@ -48489,6 +48489,16 @@
                   "canceled_claim_recovery": {
                     "$ref": "#/components/schemas/CanceledClaimRecovery"
                   },
+                  "copied_from_claim_id": {
+                    "type": ["string", "null"],
+                    "format": "uuid",
+                    "description": "The locally canceled claim this draft was explicitly copied from, when recorded in its creation revision."
+                  },
+                  "coordination_primary_claim_id": {
+                    "type": ["string", "null"],
+                    "format": "uuid",
+                    "description": "The primary claim named in this secondary claim's coordination evidence. This link is independent of the correction or resubmission chain."
+                  },
                   "remittance_posted": {
                     "type": "boolean",
                     "description": "Whether a posted payer remittance is the current claim head."

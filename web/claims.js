@@ -8,10 +8,64 @@ var claimRows=[],eraRows=[],claimCurrent,eraCurrent,claimAccount,claimSource,era
 let claimStatusFilterIdentity,claimMonitorEraPages=1;
 const claimsBase='/api/v1/billing/claims',eraBase='/api/v1/billing/remittances';
 const coverageNeedsActionBase='/api/v1/billing/coverage-needs-action';
-const claimMonitorStages={action:'Needs action',send:'To send',wait:'Waiting',fix:'Needs correction','remittance-review':'Remittance to review',posted:'Posted'};
+const claimMonitorStages={action:'Needs action',send:'To send',wait:'In flight',history:'History'};
+const claimLegacyViews={fix:'Needs correction','remittance-review':'Remittance to review',posted:'Posted',payments:'All remittances'};
 const claimRecordFilters=['draft','ready','submitted','accepted','rejected','adjudicated','void'];
-const claimMonitorSelectedRecords=['all',...claimRecordFilters,'payments'];
-const claimActionGroups=['send','fix','delivery','payment','resubmit'];
+const claimMonitorSelectedRecords=['all',...claimRecordFilters,...Object.keys(claimLegacyViews)];
+const claimActionGroups=['fix','delivery','payment','resubmit'];
+
+function claimWorklistLineages(rows){
+ const byId=new Map(rows.map(row=>[row.id,row])),links=new Map(),roots=new Map(),families=new Map();
+ for(const row of rows){
+  const prior=byId.get(row.copied_from_claim_id||row.parent_id);
+  if(prior&&prior.id!==row.id&&prior.patient_id===row.patient_id&&prior.account_id===row.account_id&&
+     row.coordination_primary_claim_id!==prior.id&&
+     (!row.coverage_priority||!prior.coverage_priority||row.coverage_priority===prior.coverage_priority))links.set(row.id,prior);
+ }
+ for(const row of rows){
+  let root=row.id;
+  const visited=new Set();
+  while(links.has(root)&&!roots.has(root)&&!visited.has(root)){
+   visited.add(root);
+   root=links.get(root).id;
+  }
+  // A broken or cyclic link must not hide a claim from the worklist.
+  if(visited.has(root))root=row.id;
+  else{
+   root=roots.get(root)||root;
+   for(const id of visited)roots.set(id,root);
+  }
+  if(!families.has(root))families.set(root,[]);
+  families.get(root).push(row);
+ }
+ const lookup=new Map();
+ for(const family of families.values()){
+  const attempts=family.sort((a,b)=>String(b.created_at||'').localeCompare(String(a.created_at||''))||String(b.id).localeCompare(String(a.id)));
+  const ids=new Set(attempts.map(row=>row.id)),replaced=new Set();
+  const open=attempts.filter(row=>row.status!=='void');
+  const considered=open.length?open:attempts;
+  for(const row of considered){
+   let prior=links.get(row.id);
+   while(open.length&&prior&&ids.has(prior.id)&&prior.status==='void')prior=links.get(prior.id);
+   if(prior&&ids.has(prior.id))replaced.add(prior.id);
+  }
+  const current=considered.filter(row=>!replaced.has(row.id));
+  // Prefer a delivered or unresolved attempt over an unsent sibling draft.
+  const active=current.find(row=>['submitted','accepted','adjudicated'].includes(row.status)||
+   ['queued','waiting','delivered','recorded_externally'].includes(row.claim_handoff?.outcome)||row.claim_handoff?.delivery_status==='unknown')||current[0]||attempts[0];
+  for(const row of attempts)lookup.set(row.id,{active,attempts});
+ }
+ return lookup;
+}
+let lastWorklistRows,claimWorklistLookup;
+function claimWorklistFamily(claim){
+ if(lastWorklistRows!==claimRows){lastWorklistRows=claimRows;claimWorklistLookup=claimWorklistLineages(claimRows);}
+ return claimWorklistLookup.get(claim?.id);
+}
+function claimWorklistAttempts(claim){return claimWorklistFamily(claim)?.attempts.filter(row=>row.id!==claim.id)||[];}
+function claimWorklistActive(claim){return claimWorklistFamily(claim)?.active||null;}
+function claimWorklistSuperseded(claim){const active=claimWorklistActive(claim);return Boolean(active&&active.id!==claim.id);}
+
 function claimCanceledRecovery(claim,recovery=claim?.canceled_claim_recovery){
  if(claim?.status!=='void'||!recovery?.encounter_id||!recovery.account_id||recovery.claim_id!==claim.id||
   recovery.account_id!==claim.account_id||recovery.encounter_id!==(claim.visit_id||claim.snapshot?.account?.content?.visit_id)||
@@ -38,17 +92,20 @@ function claimWorkGroup(c){
 }
 function claimMatchesStatusFilter(c,filter=claimStatusFilter){
  const group=claimWorkGroup(c);
- return filter==='all'||group===filter||c.status===filter||filter==='action'&&claimActionGroups.includes(group);
+ const superseded=claimWorklistSuperseded(c);
+ if(filter==='history')return superseded||!group;
+ if(claimRecordFilters.includes(filter))return c.status===filter;
+ return !superseded&&(filter==='all'||group===filter||filter==='action'&&claimActionGroups.includes(group));
 }
 function eraWorkGroup(r){return ['staged','reconciled'].includes(r.status)?'remittance-review':r.status==='posted'?'posted':'';}
 function claimMonitorShowsRemittances(){return ['remittance-review','posted','payments'].includes(claimStatusFilter);}
 function claimStatusCount(status){
  if(['remittance-review','posted'].includes(status))return eraRows.filter(r=>eraWorkGroup(r)===status).length;
- const coverageCount=status==='action'?(claimViewContext?.coverageQueue?.items.length||0):0;
- return claimRows.filter(c=>claimMatchesStatusFilter(c,status)).length+coverageCount;
+ const coverageCount=status==='action'?claimCoverageMatches(claimViewContext?.coverageQueue).length:0;
+ return claimRows.filter(c=>claimMatchesStatusFilter(c,status)&&claimWorklistMatch(c)).length+coverageCount;
 }
 function claimStatusChipsHtml(){
- return `<nav class="practice-status-strip claims-status-strip" aria-label="Filter claims and remittances">${Object.entries(claimMonitorStages).map(([status,label])=>`<button type="button" data-claim-status="${status}" aria-pressed="false">${label} <span></span></button>`).join('')}<select id="billing-all-claims" aria-label="Other billing views"><option value="" disabled>Other views</option><option value="all">All claims</option><optgroup label="Claim status">${claimRecordFilters.map(status=>`<option value="${status}">${esc(displayStatus(status))}</option>`).join('')}</optgroup><option value="payments">All remittances</option></select></nav>`;
+ return `<nav class="practice-status-strip claims-status-strip" aria-label="Claim queues">${Object.entries(claimMonitorStages).map(([status,label])=>`<button type="button" data-claim-status="${status}" aria-pressed="false">${label} <span></span></button>`).join('')}<select id="billing-all-claims" aria-label="Other billing views"><option value="" disabled>Other views</option><option value="all">All active claims</option><optgroup label="Claim status">${claimRecordFilters.map(status=>`<option value="${status}">${esc(displayStatus(status))}</option>`).join('')}</optgroup><optgroup label="Billing views">${Object.entries(claimLegacyViews).map(([status,label])=>`<option value="${status}">${label}</option>`).join('')}</optgroup></select></nav>`;
 }
 function claimWorklistEvidence(c,group){
  if(group==='payment')return c.worklist_remittance.at;
@@ -77,12 +134,14 @@ function claimWorklistAge(c,group,now){
 function claimWorklistAction(c,group){
  const readOnly=typeof billingWrite==='function'&&!billingWrite();
  const action=(label,reason,intent=null)=>({label:readOnly?'View claim':label,reason,intent:readOnly?null:intent});
+ if(claimWorklistSuperseded(c))return {label:'View history',reason:c.status==='void'?'Claim canceled':'Earlier attempt',intent:{kind:'history'}};
  if(group==='resubmit')return {label:'Resubmit claim',reason:'Canceled before sending',recovery:claimCanceledRecovery(c)};
  if(group==='payment')return {label:'Review payment',reason:'Insurer response needs review',remittance:c.worklist_remittance};
  if(group==='fix'&&claimMdNeedsCorrection(c,c)){
-  const line=c.claimmd_position?.correction?.line;
+  const correction=c.claimmd_position?.correction,line=correction?.line;
   if(typeof line?.code==='string'&&/^[a-z0-9]{5}$/i.test(line.code)&&Number.isInteger(line.index)&&line.index>=0){
-   return action(`Fix ${line.code}`,`Held by Claim.MD · ${line.code}`,{kind:'correction',procedure:line.code,line:line.index});
+   const fix=/\bmodifier\b/i.test(correction.message||'')?'Fix modifier':'Fix';
+   return action(`${fix} ${line.code}`,`Held by Claim.MD · ${line.code}`,{kind:'correction',procedure:line.code,line:line.index});
   }
   return action('Review clearinghouse hold','Held by Claim.MD');
  }
@@ -98,8 +157,13 @@ function claimWorklistAction(c,group){
   return action('Fix claim details',claimMissingPlain(claimMissingIssueText(issue)),input?{kind:'missing',field:input}:null);
  }
  if(group==='fix')return action('Review delivery','Delivery needs review');
- if(group==='send')return action('Review & send',c.status==='ready'?'Ready for review':'Claim draft prepared');
- if(group==='wait')return action('View claim activity',claimStatusLabel(c));
+ if(group==='send')return action('Review & send',c.status==='ready'?'Ready for review':'Claim draft prepared',{kind:'send'});
+ if(group==='wait'){
+  let status=claimStatusLabel(c);
+  if(claimMdOnlyAcknowledged(c,c))status='Claim.MD received';
+  else if(c.status!=='accepted'&&c.claim_handoff?.outcome==='queued')status='Sending to clearinghouse';
+  return action('View activity',status);
+ }
  if(c.status==='void')return action('Review cancellation','Claim canceled');
  return action('Open claim',claimStatusLabel(c)||'Claim status unavailable');
 }
@@ -114,7 +178,7 @@ function claimWorklistButton(c,next){
  }
  if(next.recovery)return claimCanceledRecoveryButton(c,next.recovery);
  const attributes=next.intent?` data-claim-intent="${next.intent.kind}"${next.intent.procedure?` data-claim-procedure="${esc(next.intent.procedure)}" data-claim-line="${next.intent.line}"`:''}${next.intent.field?` data-claim-field="${esc(next.intent.field)}"`:''}${next.intent.part?` data-claim-part="${esc(next.intent.part)}"`:''}`:'';
- return `<button type="button" data-claim-open="${esc(c.id)}"${c.status==='void'?'':' data-claim-visit'}${attributes}>${esc(next.label)}</button>`;
+ return `<button type="button" data-claim-open="${esc(c.id)}"${c.status==='void'||next.intent?.kind==='history'?'':' data-claim-visit'}${attributes}>${esc(next.label)}</button>`;
 }
 function claimWorklistResponseReason(c,group){
  if(group!=='fix')return '';
@@ -127,20 +191,47 @@ function claimWorklistResponseReason(c,group){
  return c.status==='rejected'?summarize(c.worklist_return_reason)||'No return reason recorded':'';
 }
 function claimRowMarkup(c,now=Date.now()){
- const group=claimWorkGroup(c),posted=c.status==='adjudicated'&&c.remittance_posted===true&&c.paid_cents>0&&!c.payer_denied;
+ const group=claimWorklistSuperseded(c)?'':claimWorkGroup(c),posted=c.status==='adjudicated'&&c.remittance_posted===true&&c.paid_cents>0&&!c.payer_denied;
  const tone=posted?'paid':group==='resubmit'?'send':group||'other',next=claimWorklistAction(c,group);
  const encounter=c.visit_id&&typeof encounterRowChip==='function'?encounterRowChip(c):'';
- const summary=[c.payer_name&&esc(c.payer_name),c.service_date&&esc(displayDate(c.service_date)),Number.isSafeInteger(c.total_cents)&&money(c.total_cents)].filter(Boolean).join(' · ');
- const response=claimWorklistResponseReason(c,group);
- return `<tr role="row"><td role="cell" class="monitor-record"><b>${esc(c.patient_name)}</b><small class="claim-control">${encounter?`${encounter} · `:''}Claim ${esc(c.control_number||'Not assigned')}${c.frequency&&c.frequency!=='original'?` · ${esc(displayStatus(c.frequency))}`:''}</small>${summary?`<small>${summary}</small>`:''}</td><td role="cell" class="monitor-status"><span class="pill claim-status-${tone}">${esc(posted?'Payment posted':next.reason)}</span>${response?`<p class="claim-worklist-response" data-claim-response-reason>${esc(response)}</p>`:''}</td><td role="cell" class="monitor-age">${claimWorklistAge(c,group,now)}</td><td role="cell" class="monitor-action">${claimWorklistButton(c,next)}</td></tr>`;
+ const summary=[c.payer_name&&esc(c.payer_name),c.service_date&&esc(displayDate(c.service_date))].filter(Boolean).join(' · ');
+ const amount=Number.isSafeInteger(c.total_cents)?money(c.total_cents):'—';
+ const response=claimWorklistResponseReason(c,claimWorkGroup(c));
+ const waiting=group==='wait'&&claimMdOnlyAcknowledged(c,c)&&c.payer_name?`Waiting for ${c.payer_name}`:'';
+ const testClaim=c.synthetic_test===true?' <span class="pill claim-test-label">Test claim</span>':'';
+ return `<tr role="row" data-claim-list-id="${esc(c.id)}"><td role="cell" class="monitor-record"><b>${esc(c.patient_name)}</b><small class="claim-control">${encounter?`${encounter} · `:''}Claim ${esc(c.control_number||'Not assigned')}${c.frequency&&c.frequency!=='original'?` · ${esc(displayStatus(c.frequency))}`:''}${testClaim}</small>${summary?`<small>${summary}</small>`:''}</td><td role="cell" class="monitor-amount">${esc(amount)}</td><td role="cell" class="monitor-status"><span class="pill claim-status-${tone}">${esc(posted?'Payment posted':next.reason)}</span>${response?`<p class="claim-worklist-response" data-claim-response-reason>${esc(response)}</p>`:''}${waiting?`<small>${esc(waiting)}</small>`:''}</td><td role="cell" class="monitor-age">${claimWorklistAge(c,group,now)}</td><td role="cell" class="monitor-action">${claimWorklistButton(c,next)}</td></tr>`;
 }
-function claimRowsMarkup(claims,now=Date.now()){
- const order=c=>Date.parse(claimWorklistTime(c)||c.service_date||'');
+const claimWorklistSorts={waiting:['Longest waiting',c=>Date.parse(claimWorklistTime(c)||c.service_date||''),1],service_desc:['Newest service date',c=>c.service_date,-1],service_asc:['Oldest service date',c=>c.service_date,1],amount_desc:['Highest amount',c=>c.total_cents,-1],amount_asc:['Lowest amount',c=>c.total_cents,1]};
+const claimWorklistFilterFields=['search','payer','service_from','service_through','amount_min','amount_max'];
+const claimWorklistDefaultFilters={search:'',payer:'',service_from:'',service_through:'',amount_min:'',amount_max:'',sort:'waiting'};
+let claimWorklistFilters={...claimWorklistDefaultFilters};
+function claimWorklistMatch(c,filters=claimWorklistFilters){
+ if((filters.payer&&c.payer_id!==filters.payer)||
+    (filters.service_from&&(!c.service_date||c.service_date<filters.service_from))||
+    (filters.service_through&&(!c.service_date||c.service_date>filters.service_through))||
+    (filters.amount_min&&(!Number.isSafeInteger(c.total_cents)||c.total_cents<Math.round(Number(filters.amount_min)*100)))||
+    (filters.amount_max&&(!Number.isSafeInteger(c.total_cents)||c.total_cents>Math.round(Number(filters.amount_max)*100))))return false;
+ if(!filters.search.trim())return true;
+ const normalize=value=>String(value??'').normalize('NFD').replace(/\p{M}/gu,'').toLowerCase().replace(/[^\p{L}\p{N}]+/gu,' ').trim();
+ const encounter=typeof encounterNumberLabel==='function'?encounterNumberLabel(c.encounter_number):'';
+ const priorControls=claimWorklistSuperseded(c)?[]:claimWorklistAttempts(c).map(row=>row.control_number);
+ const searchable=normalize([c.patient_name,c.control_number,c.encounter_number,encounter,...priorControls].filter(Boolean).join(' '));
+ const search=normalize(filters.search),compact=searchable.replaceAll(' ','');
+ return search.split(' ').filter(Boolean).every(term=>searchable.includes(term)||compact.includes(term));
+}
+function claimRowsMarkup(claims,now=Date.now(),sort=claimWorklistFilters.sort){
+ const [,order,direction]=claimWorklistSorts[sort]||claimWorklistSorts.waiting;
+ const missing=value=>value==null||value===''||Number.isNaN(value);
  return claims.map(claim=>({claim,at:order(claim)}))
-  .sort((a,b)=>(Number.isFinite(a.at)?a.at:Infinity)-(Number.isFinite(b.at)?b.at:Infinity))
+  .sort((a,b)=>{
+   if(a.at===b.at)return 0;
+   if(missing(a.at))return missing(b.at)?0:1;
+   if(missing(b.at))return -1;
+   return (typeof a.at==='number'?a.at-b.at:a.at.localeCompare(b.at))*direction;
+  })
   .map(({claim})=>claimRowMarkup(claim,now)).join('');
 }
-function claimEmptyRow(){return `<tr><td colspan="4" class="table-empty">${({action:'No claims need staff action.',send:'No claims to send.',fix:'No claims need correction.',wait:'No claims waiting for a response.'})[claimStatusFilter]||'No claims.'}</td></tr>`;}
+function claimEmptyRow(){return `<tr><td colspan="5" class="table-empty">${claimWorklistFilterFields.some(field=>claimWorklistFilters[field])?'No claims match these filters.':({action:'No claims need staff action.',send:'No claims to send.',fix:'No claims need correction.',wait:'No claims in flight.',history:'No claim history.'})[claimStatusFilter]||'No claims.'}</td></tr>`;}
 function coverageWorklistAction(row,queue){
  const payer=row.choices?.length===1?row.choices[0].payer_id:null;
  if(['inactive_payer','payer_id'].includes(row.blocker_code)&&me?.role==='owner')return {label:payer?'Edit payer':'Open payer directory',kind:'payer',payer};
@@ -161,9 +252,12 @@ function coverageWorklistStatus(queue){
  if(queue.failed)return 'Could not check for insurance added after posting. <button type="button" data-refresh-coverage-worklist>Retry</button>';
  return queue.items.length?'':'No posted charges need this review.';
 }
-function coverageWorklistRows(queue){
+function claimCoverageMatches(queue){
+ return (queue?.items||[]).filter(row=>(!claimWorklistFilters.payer||row.choices?.some(choice=>(choice.payer_id||choice.id)===claimWorklistFilters.payer))&&claimWorklistMatch(row,{...claimWorklistFilters,payer:''}));
+}
+function coverageWorklistRows(queue,rows=queue.items){
  const amount=value=>Number.isSafeInteger(value)?money(value):'Unavailable';
- return queue.items.map(row=>{
+ return rows.map(row=>{
   const action=coverageWorklistAction(row,queue),count=row.choices?.length||0;
   const coverage=count===1?row.choices[0].payer_name:count>1?`${count} policies on file`:'';
   const status=row.blocked_reason||(row.state==='prepare_claim'?'Insurance applied. Claim pending.':'Posted as self-pay.');
@@ -182,33 +276,58 @@ function coverageWorklistRows(queue){
   </tr>`;
  }).join('');
 }
+function paintClaimWorklistRows(host,markup){
+ if(host.claimWorklistMarkup===markup)return;
+ const focused=document.activeElement?.closest?.('[data-claim-open],[data-era-open]');
+ const selector=focused&&host.contains(focused)?(focused.dataset.claimOpen?'data-claim-open':'data-era-open'):null;
+ const selected=selector&&focused.getAttribute(selector);
+ host.innerHTML=markup;
+ host.claimWorklistMarkup=markup;
+ if(selected)Array.from(host.querySelectorAll(`[${selector}]`)).find(button=>button.getAttribute(selector)===selected)?.focus({preventScroll:true});
+}
+function syncClaimWorklistFilters(host){
+ const filters=host.querySelector('[data-claim-worklist-filters]');
+ if(!filters||filters.hidden)return;
+ const payer=filters.querySelector('[data-claim-filter="payer"]'),labels=new Map();
+ for(const p of billingPayers||[])if(p.id&&p.content?.name)labels.set(p.id,p.content.name);
+ for(const c of claimRows)if(c.payer_id&&c.payer_name&&!labels.has(c.payer_id))labels.set(c.payer_id,c.payer_name);
+ if(claimWorklistFilters.payer&&!labels.has(claimWorklistFilters.payer))labels.set(claimWorklistFilters.payer,'Previously selected payer');
+ const choices='<option value="">All payers</option>'+[...labels].sort((a,b)=>a[1].localeCompare(b[1])).map(([id,label])=>`<option value="${esc(id)}">${esc(label)}</option>`).join('');
+ if(payer.claimOptions!==choices){payer.innerHTML=choices;payer.claimOptions=choices;}
+ for(const field of filters.querySelectorAll('[data-claim-filter]')){
+  const value=claimWorklistFilters[field.dataset.claimFilter];
+  if(field.value!==value)field.value=value;
+ }
+ filters.querySelector('[data-clear-claim-filters]').hidden=!claimWorklistFilterFields.some(field=>claimWorklistFilters[field]);
+}
 function claimWorkspaceMarkup(){
  const host=$('claims-tool');if(!host)return;
  const payments=claimMonitorShowsRemittances(),claimList=host.querySelector('[data-claim-worklist]'),eraList=host.querySelector('[data-era-worklist]');
  if(!claimList||!eraList)return;
  claimList.hidden=payments;
+ const filterBar=host.querySelector('[data-claim-worklist-filters]');
+ if(filterBar)filterBar.hidden=payments;
+ syncClaimWorklistFilters(host);
  eraList.hidden=!payments;
- if(payments)eraList.querySelector('tbody').innerHTML=eraRowsMarkup();
- else claimList.querySelector('tbody').innerHTML=claimRowsMarkup(claimRows.filter(c=>claimMatchesStatusFilter(c)))||claimEmptyRow();
- const actionView=claimStatusFilter==='action',waiting=claimStatusCount('wait');
+ if(payments)paintClaimWorklistRows(eraList.querySelector('tbody'),eraRowsMarkup());
+ else paintClaimWorklistRows(claimList.querySelector('tbody'),claimRowsMarkup(claimRows.filter(c=>claimMatchesStatusFilter(c)&&claimWorklistMatch(c)))||claimEmptyRow());
+ const actionView=claimStatusFilter==='action';
  const coverage=host.querySelector('[data-coverage-worklist]'),coverageQueue=claimViewContext?.coverageQueue;
  if(coverage){
-  coverage.hidden=!actionView||!coverageQueue;
+  const matches=claimCoverageMatches(coverageQueue);
+  coverage.hidden=!actionView||!coverageQueue||!(coverageQueue.loading||coverageQueue.failed||matches.length);
   if(!coverage.hidden){
    const status=coverage.querySelector('[data-coverage-worklist-status]'),table=coverage.querySelector('.billing-table-wrap');
    const statusMarkup=coverageWorklistStatus(coverageQueue);
    status.hidden=!statusMarkup;
    table.hidden=Boolean(statusMarkup);
    const target=statusMarkup?status:table.querySelector('tbody');
-   const markup=statusMarkup||coverageWorklistRows(coverageQueue);
+   const markup=statusMarkup||coverageWorklistRows(coverageQueue,matches);
    if(target.coverageMarkup!==markup){target.innerHTML=markup;target.coverageMarkup=markup;}
   }
  }
  const heading=claimList.querySelector('[data-claim-list-heading]');
- heading.textContent=actionView?'Claims needing action':claimMonitorStages[claimStatusFilter]||'Claims';
- const waitingCard=host.querySelector('[data-claim-waiting]');
- waitingCard.hidden=!actionView||!waiting;
- waitingCard.querySelector('[data-claim-waiting-count]').textContent=String(waiting);
+ heading.textContent=actionView?'Claims needing action':claimMonitorStages[claimStatusFilter]||claimLegacyViews[claimStatusFilter]||'Claims';
  for(const button of host.querySelectorAll('.claims-status-strip [data-claim-status]')){
   const status=button.dataset.claimStatus;
   button.setAttribute('aria-pressed',String(claimStatusFilter===status));
@@ -227,7 +346,21 @@ function selectClaimStatusFilter(status){
  claimWorkspaceMarkup();
  if(typeof frameBillingMonitorNavigation==='function')frameBillingMonitorNavigation();
 }
-document.addEventListener('change',e=>{if(e.target.id==='billing-all-claims')selectClaimStatusFilter(e.target.value);});
+function setClaimWorklistRefinement(field){
+ if(field?.dataset?.claimFilter&&claimContextCurrent(claimViewContext)&&claimViewContext.kind==='worklist'){
+  const key=field.dataset.claimFilter;
+  if(!Object.hasOwn(claimWorklistDefaultFilters,key)||field.validity?.valid===false)return;
+  claimWorklistFilters[key]=field.value;
+  claimWorkspaceMarkup();
+ }
+}
+document.addEventListener('change',e=>{if(e.target.id==='billing-all-claims')selectClaimStatusFilter(e.target.value);else if(e.target.dataset?.claimFilter!=='search')setClaimWorklistRefinement(e.target);});
+document.addEventListener('input',e=>{if(e.target.dataset?.claimFilter==='search')setClaimWorklistRefinement(e.target);});
+document.addEventListener('click',e=>{if(e.target.closest?.('[data-clear-claim-filters]')&&claimContextCurrent(claimViewContext)&&claimViewContext.kind==='worklist'){
+ claimWorklistFilters={...claimWorklistDefaultFilters,sort:claimWorklistFilters.sort};
+ claimWorkspaceMarkup();
+ $('claims-tool')?.querySelector('[data-claim-filter="search"]')?.focus();
+}});
 function billingClaimShortcuts(){
  if(typeof workspaceResourceAllowed==='function'&&!workspaceResourceAllowed('claims'))return '';
  if(typeof workspaceModuleAllowed==='function'&&!workspaceModuleAllowed('claims'))return '';
@@ -526,7 +659,22 @@ const claimTransport=t=>{
  if(claimmd)return `The clearinghouse is connected. ${artifact?'A claim file has been prepared for this claim.':'No claim file has been prepared for this claim yet.'} ${health}.`;
  return `No clearinghouse is connected. ${artifact?'A claim file is ready to download and upload to your clearinghouse yourself.':'You can prepare a claim file (837P) and upload it to your clearinghouse yourself.'} Downloading a claim does not send it.`;
 };
-function claimListMarkup(){return '<div class="section-head claim-worklist-heading"><h3 data-claim-list-heading>Needs action</h3><small class="muted">Longest waiting first</small></div><div class="billing-table-wrap"><table class="billing-table claims-monitor-table claim-worklist-table" role="table" aria-label="Claims"><thead><tr><th scope="col">Encounter</th><th scope="col">What needs attention</th><th scope="col">Waiting</th><th scope="col">Next action</th></tr></thead><tbody role="rowgroup" data-claim-rows></tbody></table></div>'; }
+function claimWorklistFilterMarkup(){
+ const sort=Object.entries(claimWorklistSorts).map(([key,[name]])=>`<option value="${key}">${name}</option>`).join('');
+ return `<div class="claim-worklist-refinement" data-claim-worklist-filters aria-label="Filter claims">
+  <label class="claim-worklist-search">Find a claim<input type="search" data-claim-filter="search" maxlength="120" placeholder="Patient, encounter or claim number" autocomplete="off"></label>
+  <label>Payer<select data-claim-filter="payer"><option value="">All payers</option></select></label>
+  <label>Sort by<select data-claim-filter="sort">${sort}</select></label>
+  <details class="claim-worklist-more"><summary>More filters</summary><div class="claim-worklist-ranges">
+   <label>Service from<input type="date" data-claim-filter="service_from"></label>
+   <label>Service through<input type="date" data-claim-filter="service_through"></label>
+   <label>Minimum amount<input type="number" data-claim-filter="amount_min" min="0" max="100000000" step="0.01" inputmode="decimal"></label>
+   <label>Maximum amount<input type="number" data-claim-filter="amount_max" min="0" max="100000000" step="0.01" inputmode="decimal"></label>
+  </div></details>
+  <button type="button" class="text-button" data-clear-claim-filters hidden>Clear filters</button>
+ </div>`;
+}
+function claimListMarkup(){return '<h3 class="sr-only" data-claim-list-heading>Needs action</h3><div class="billing-table-wrap"><table class="billing-table claims-monitor-table claim-worklist-table" role="table" aria-label="Claims"><thead><tr><th scope="col">Encounter</th><th scope="col">Amount</th><th scope="col">Status</th><th scope="col">Waiting</th><th scope="col">Next action</th></tr></thead><tbody role="rowgroup" data-claim-rows></tbody></table></div>'; }
 function eraListMarkup(){return '<div class="billing-table-wrap"><table class="billing-table claims-monitor-table" role="table" aria-label="Remittances"><thead><tr><th>Insurer</th><th>Trace</th><th>Payment date</th><th>Claims</th><th>Amount</th><th>Status</th></tr></thead><tbody role="rowgroup"></tbody></table></div>';}
 function eraRowsMarkup(){
  const remittances=eraRows.filter(r=>claimStatusFilter==='payments'||eraWorkGroup(r)===claimStatusFilter);
@@ -618,7 +766,7 @@ function registerClaimsAutoRefresh(){
 async function showClaimsWorkspace({filter}={}){
  captureClaimDraft();
  const identity=typeof me==='undefined'?undefined:me;
- if(claimStatusFilterIdentity!==identity){claimStatusFilter='action';claimStatusFilterIdentity=identity;claimMonitorEraPages=1;}
+ if(claimStatusFilterIdentity!==identity){claimStatusFilter='action';claimStatusFilterIdentity=identity;claimMonitorEraPages=1;claimWorklistFilters={...claimWorklistDefaultFilters};}
  const context={kind:'worklist',identity,eraPages:claimMonitorEraPages,eraRevision:0};claimViewContext=context;
  if(filter!==undefined)setClaimMonitorFilter(filter);
  if(typeof loadClaimmdProviderDefaults==='function')await loadClaimmdProviderDefaults();if(!claimContextCurrent(context))return;
@@ -628,7 +776,7 @@ async function showClaimsWorkspace({filter}={}){
  context.coverageQueue=coverageNeedsActionAllowed()?{items:[],loading:true}:null;
  claimRows=c.items;eraRows=r.items;billingPayers=p.items;eraNext=r.next_cursor;showTool('Claims & remittances');
  $('tools').innerHTML=`<section id="claims-tool"><div class="section-head"><h2>Claims worklist</h2></div>
- ${claimStatusChipsHtml()}
+ ${claimStatusChipsHtml()}${claimWorklistFilterMarkup()}
  <section class="billing-section" data-coverage-worklist hidden>
   <div class="section-head"><h3>Insurance added after posting</h3></div>
   <p class="muted" data-coverage-worklist-status role="status" hidden></p>
@@ -638,7 +786,6 @@ async function showClaimsWorkspace({filter}={}){
  </section>
  <section class="billing-section" data-claim-worklist>${claimListMarkup()}</section>
  <section class="billing-section" data-era-worklist>${eraListMarkup()}</section>
- <section class="billing-section claim-worklist-waiting" data-claim-waiting hidden><div><h3>Waiting <span class="pill" data-claim-waiting-count></span></h3><p class="muted">Claims in delivery or awaiting an insurer response.</p></div><button type="button" data-view-waiting-claims>View waiting claims</button></section>
  <div class="actions" data-era-more hidden><span class="muted">Remittance counts reflect loaded records.</span><button type="button" data-era-next>Load more remittances</button></div>
  <details id="claim-monitor-management" class="amendment"><summary>Billing tools${claimMdConnectionState?.connected?'':' · Clearinghouse not connected'}</summary>${billingPageMore()}
  ${s.items.length?`<details class="amendment"><summary>Insurance payments imported from another system (${s.items.length})</summary>${s.items.map(v=>`<div class="timeline-row"><div><b>${esc(v.source_id)}</b><small>${esc(v.source_instance)}</small></div><button type="button" data-era-source="${v.source_history_id}">${v.native_id?'View payment':'Review and import'}</button></div>`).join('')}</details>`:''}<span id="claim-monitor-tools-anchor" hidden></span></details><div id="claims-detail"></div></section>`;
