@@ -44,9 +44,9 @@ const html=f=>f.nodes['patient-billing-panel'].innerHTML;
   const chartHeader=chart.nodes['patient-billing-chart'].innerHTML;
   assert.doesNotMatch(chartHeader,/patient-billing-header|PATIENT BILLING|Showing/);
   assert.match(chartHeader,/>Billing &amp; payments<\/h2>/);
-  assert.match(chartHeader,/<label>Payment records<select id="patient-billing-mode">[\s\S]*Live payments[\s\S]*Test payments<\/option>/);
+  assert.doesNotMatch(chartHeader,/patient-billing-mode|Payment records|Test payments/);
  }
- let f=fixture();await f.ctx.renderBillingOverview();assert.ok(html(f).includes('$5.00'));for(const label of ['Open invoices','Invoices requiring review','Collected copays','Unapplied copay credit','Patient invoices & charge accounts','Copay receipts'])assert.ok(html(f).includes(label),label);assert.match(html(f),/View statement/);assert.match(html(f),/View receipt/);assert.ok(!html(f).includes('data-billing-patient'),'billing-only never offered chart entry');assert.ok(f.nodes['patient-billing-global'].innerHTML.includes('Payment methods'));assert.ok(f.calls.every(c=>!String(c[0]).includes('/workspace')));
+ let f=fixture();await f.ctx.renderBillingOverview();assert.ok(html(f).includes('$5.00'));for(const label of ['Patient owes now','Copays received','Available copay credit','1 open statement','Visit balances and statements','Copay receipts'])assert.ok(html(f).includes(label),label);assert.match(html(f),/View statement/);assert.match(html(f),/View receipt/);assert.ok(!html(f).includes('data-billing-patient'),'billing-only never offered chart entry');assert.ok(f.nodes['patient-billing-global'].innerHTML.includes('Payment methods'));assert.ok(f.calls.every(c=>!String(c[0]).includes('/workspace')));
  await f.ctx.searchPatientBillingPatients(state(f),'Synthetic');assert.ok(f.nodes['billing-patient-results'].innerHTML.includes('A &lt;Patient&gt;'));assert.ok(f.calls.some(c=>String(c[0]).startsWith('/api/v1/billing/patients?q=Synthetic')));
  await f.ctx.showPatientBillingWorkspace({patientId:patient});assert.ok(f.calls.some(c=>String(c[0]).includes('patient_id='+patient)));assert.equal(f.nodes['patient-billing-heading'].textContent,'A <Patient>, Synthetic');
  // Statements are part of Payments; the old Invoices tab name still lands there.

@@ -6,10 +6,11 @@ const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('nod
 const nodes={},handlers={},sent=[];
 const node=id=>nodes[id]??={id,innerHTML:'',dataset:{},open:false,scrollIntoView(){},replaceChildren(){this.innerHTML='';}};
 const account={id:'account',status:'draft',version:4,total_cents:20000,content:{visit_id:'visit',coverage_id:'coverage',service_date:'2026-11-11',lines:[],notes:''}};
+const coverage={id:'coverage',content:{status:'active',priority:'primary',payer_id:'payer',effective_date:'2026-01-01'}};
 const ctx={console,Date,Intl,URL,URLSearchParams,Map,Set,Array,Math,Number,String,JSON,encodeURIComponent,crypto:{randomUUID:()=>'request'},
  me:{role:'owner'},selected:'patient',billingSelected:'account',chartSection:'visits',encounterSection:'charges',
  activeVisit:{id:'visit',appointment_id:'appt',status:'signed'},
- workspace:{appointments:[{id:'appt',starts_at:'2026-11-11T14:00:00Z',status:'in_progress'}],visits:[{id:'visit',appointment_id:'appt',status:'signed'}],billing:{accounts:[account],coverages:[],entries:[],copays:[]}},
+ workspace:{appointments:[{id:'appt',starts_at:'2026-11-11T14:00:00Z',status:'in_progress'}],visits:[{id:'visit',appointment_id:'appt',status:'signed'}],billing:{accounts:[account],coverages:[coverage],entries:[],copays:[]}},
  $:node,document:{addEventListener:(name,fn)=>(handlers[name]??=[]).push(fn)},
  esc:v=>String(v??''),human:String,date:String,money:v=>'$'+(v/100).toFixed(2),payerName:()=>'Synthetic Medicare PPO',
  billingCan:()=>true,showChartSection(){},setEncounterSection(){},showEncounterSection(){},notice(){},
@@ -20,6 +21,7 @@ const ctx={console,Date,Intl,URL,URLSearchParams,Map,Set,Array,Math,Number,Strin
 vm.createContext(ctx);
 const source=fs.readFileSync('web/billing.js','utf8');
 vm.runInContext(source.slice(source.indexOf('function encounterRevenueVisitUnsigned('),source.indexOf('function coveragePayerOptions(')),ctx);
+vm.runInContext(source.slice(source.indexOf('function billingEffectiveCoverages('),source.indexOf('function chargeDiagnosisCurrent(')),ctx);
 vm.runInContext(`const billingBase=()=>\`/api/v1/patients/\${selected}/billing/accounts\`;const entrySum=()=>0,billBalance=()=>20000,billingPayers=[],billingField=(name,label)=>\`<label>\${label}<input name="\${name}" required></label>\`;`,ctx);
 vm.runInContext(source.slice(source.indexOf("document.addEventListener('submit'"),source.indexOf('const accountDiagnosisLinkDrafts')),ctx);
 const formHtml=()=>{const html=node('encounter-billing-detail').innerHTML;return html.slice(html.indexOf('<form id="billing-account-action"'));};

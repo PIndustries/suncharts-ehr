@@ -1549,7 +1549,7 @@ function visitReviewStepFailure(step,reason){
 async function visitReviewRun(claimId,options={}){
  if(visitReviewPendingCharges()){focusUnpricedVisitCharge();return false;}
  const patient=selected,identity=me,visitId=typeof activeVisit!=='undefined'?activeVisit?.id:null;
- const account=typeof encounterChargeAccount==='function'?encounterChargeAccount():null;
+ let account=typeof encounterChargeAccount==='function'?encounterChargeAccount():null;
  if(!account)throw new Error('Open the encounter for these charges first.');
  const current=()=>selected===patient&&me===identity&&(typeof activeVisit==='undefined'?true:activeVisit?.id===visitId);
  const state=encounterRevenueState;
@@ -1582,15 +1582,30 @@ async function visitReviewRun(claimId,options={}){
     }
     if(needPost){
      const ok=await advance('post',async()=>{
-      if(options.confirmPost&&typeof confirmAction==='function'&&!await confirmAction(`Charges of ${money(account.total_cents)} become final. Review and submit the claim on the Claim.MD form.`,{title:'Post these charges?',confirmLabel:'Post charges'}))throw new Error('Cancelled before anything was sent.');
+      const form=$('billing-account-form');
+      if(form?.dataset?.id===account.id&&form.dataset.patient===patient&&form.dataset.autosave!=='off'){
+       await flushEncounterProcedures(form,current);
+       if(!current())throw new Error('This page changed. Open the encounter again.');
+       account=encounterChargeAccount();
+      }
+      const decision=await reviewBillingCoverageForPosting(account,{current});
+      if(!decision)throw new Error('Cancelled before anything was sent.');
+      account=decision.account;
+      if(!decision.reviewed&&options.confirmPost&&typeof confirmAction==='function'&&!await confirmAction(`Charges of ${money(account.total_cents)} become final. Review and submit the claim on the Claim.MD form.`,{title:'Post these charges?',confirmLabel:'Post charges'}))throw new Error('Cancelled before anything was sent.');
       if(!current())throw new Error('This page changed. Open the encounter again.');
-      const posted=await api(`${billingBase()}/${account.id}/actions`,'POST',{action:'post',reason:'Charges posted',local_only:false},account.version);
+      const posted=await api(`${billingBase()}/${account.id}/actions`,'POST',{action:'post',reason:'Charges posted',local_only:false,...billingPostingEvidence(decision)},account.version);
       if(!current())throw new Error('This page changed. Open the encounter again.');
       if(posted?.id!==account.id||posted.patient_id!==patient||posted.content?.visit_id!==visitId||posted.status!=='posted')throw new Error('Refresh this encounter to check whether its charges were posted.');
       workspace.billing.accounts=workspace.billing.accounts.map(row=>row.id===account.id?posted:row);
       if(options.afterPost)await options.afterPost();
+      if(decision.reviewed&&!posted.content.coverage_id)review.postedSelfPay=true;
      });
      if(!ok){review.busy=false;paint();return false;}
+     if(review.postedSelfPay){
+      await loadEncounterRevenueStatus(encounterChargeAccount(),true);
+      if(current())visitReviewClose();
+      return true;
+     }
     }
     if(needPrepare){
      const ok=await advance('prepare',async()=>{
@@ -1789,6 +1804,7 @@ function visitEncounterCanSignAndSubmit(s,account){
 function visitHandoffMode(s,account){
  if(!s?.insurance?.insured||s.viewer?.delegated||me?.delegated||!billingCan()||
    typeof workspaceResourceAllowed==='function'&&(!workspaceResourceAllowed('claims','create')||!workspaceResourceAllowed('claims','edit')))return null;
+ if(typeof billingCoveragePostingChoices==='function'&&billingCoveragePostingChoices(account))return null;
  const form=$('billing-account-form'),fields=form?.elements,details=account?.content?.claim_details||{};
  if(details.review_requested||details.paper_only||fields?.cd_review_requested?.checked||fields?.cd_paper_only?.checked||!s.insurance.electronic||s.claim?.secondary||s.claim?.crossover)return 'prepare';
  return 'queue';
@@ -1830,6 +1846,7 @@ async function visitClaimHandoff(signing=false,requestedMode='queue',reviewClaim
  await flushVisitNoteCharges();
  if(!current())return false;
  const account=encounterChargeAccount(),accountId=account?.id||null,version=account?.version??null,visitVersion=activeVisit.version;
+ if(!signing&&!reviewClaimId&&!inlineReview&&typeof billingCoveragePostingChoices==='function'&&billingCoveragePostingChoices(account))return visitNoteBill();
  const policy=visitHandoffMode(summary,account);
  if(!policy)throw new Error('A billing team member with claim access can submit this encounter.');
  const mode=requestedMode==='queue'&&policy==='queue'?'queue':'prepare';
@@ -1932,7 +1949,10 @@ async function visitNoteBill(){
  let account=encounterChargeAccount();
  if(!account){if(held&&$('visit-page-host')?.dataset?.encounterSteps===undefined)focusUnpricedVisitCharge();else problems();return false;}
  if(account.status==='draft'){
-  const posted=await api(`${billingBase()}/${account.id}/actions`,'POST',{action:'post',reason:'Charges posted',local_only:false},account.version);check();
+  const decision=await reviewBillingCoverageForPosting(account,{current});
+  if(!decision)return false;
+  check();account=decision.account;
+  const posted=await api(`${billingBase()}/${account.id}/actions`,'POST',{action:'post',reason:'Charges posted',local_only:false,...billingPostingEvidence(decision)},account.version);check();
   if(posted?.id!==account.id||posted.status!=='posted')throw new Error('The charges could not be posted.');
   workspace.billing.accounts=workspace.billing.accounts.map(row=>row.id===posted.id?posted:row);account=posted;
  }

@@ -1911,7 +1911,11 @@ async fn every_screen_shows_the_same_patient_owes_now_and_support_sessions_never
     // Draft charges are not a balance anywhere.
     let draft = f.charges(p, visit2, None, 12000).await;
     assert_eq!(f.banner(p).await, 2500);
-    let second = f.post(p, &draft).await;
+    let second = f.ok(
+        "POST", &format!("/api/v1/patients/{p}/billing/accounts/{}/actions", id(&draft)),
+        json!({"action":"post","reason":"Reviewed synthetic signed visit", "self_pay_reason":"Synthetic patient chose to pay privately", "self_pay_coverage_ids":[id(&policy)]}),
+        Some(version(&draft)),
+    ).await;
     f.pay(p, id(&second), 2000).await;
     let cards = [
         f.summary(&f.owner, p, visit).await,
@@ -3033,6 +3037,12 @@ fn posted_coverage_path(patient: Uuid, account: &Value) -> String {
     )
 }
 
+const COVERAGE_WORKLIST: &str = "/api/v1/billing/coverage-needs-action";
+
+async fn coverage_worklist(f: &Fixture) -> Value {
+    f.ok("GET", COVERAGE_WORKLIST, json!(null), None).await
+}
+
 fn coverage_application(coverage: &Value) -> Value {
     json!({
         "request_id": Uuid::new_v4(),
@@ -3040,6 +3050,69 @@ fn coverage_application(coverage: &Value) -> Value {
         "coverage_version": version(coverage),
         "reason": "Synthetic insurance entered after charges posted"
     })
+}
+
+#[tokio::test]
+async fn posting_requires_a_current_coverage_decision_and_respects_reviewed_self_pay() {
+    let f = setup().await;
+    let (p, _, visit) = f.visit(true).await;
+    let draft = f.charges(p, visit, None, 45000).await;
+    let account = id(&draft);
+    let action = format!("/api/v1/patients/{p}/billing/accounts/{account}/actions");
+    let reason = "Reviewed synthetic self-pay request";
+    let (_, current) = f.coverage(p, "primary", "SYN-POSTING", None).await;
+    let (_, secondary) = f.coverage(p, "secondary", "SYN-LATER", None).await;
+    for request in [
+        json!({"action":"post","reason":reason}),
+        json!({"action":"post","reason":reason,"self_pay_reason":reason,"self_pay_coverage_ids":[id(&current)]}),
+        json!({"action":"post","reason":reason,"self_pay_reason":"  ","self_pay_coverage_ids":[id(&current),id(&secondary)]}),
+    ] {
+        let (status, _) = f
+            .call(&f.owner, "POST", &action, request, Some(version(&draft)))
+            .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+    }
+    let posted = f
+        .ok(
+            "POST",
+            &action,
+            json!({"action":"post","reason":"Post synthetic charges","self_pay_reason":reason,
+            "self_pay_coverage_ids":[id(&secondary),id(&current)]}),
+            Some(version(&draft)),
+        )
+        .await;
+    assert_eq!(version(&posted), version(&draft) + 1);
+    assert_eq!(posted["status"], "posted");
+    assert_eq!(posted["content"], draft["content"]);
+    let revision: (String, Value) = sqlx::query_as("SELECT reason,snapshot FROM billing_account_revisions WHERE tenant_id=$1 AND account_id=$2 AND version=$3")
+        .bind(f.owner.tenant_id).bind(account).bind(version(&posted)).fetch_one(&f.db).await.unwrap();
+    assert_eq!(revision.0, format!("Self-pay selected: {reason}"));
+    assert_eq!(
+        revision.1["self_pay_reviewed_coverage_ids"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    let queue = "/api/v1/billing/coverage-needs-action";
+    assert_eq!(
+        f.summary(&f.owner, p, visit).await["insurance"]["added_after_posting"],
+        false
+    );
+    assert_eq!(
+        f.ok("GET", queue, json!(null), None).await["items"],
+        json!([])
+    );
+
+    f.coverage(p, "tertiary", "SYN-NEW", None).await;
+    assert_eq!(
+        f.summary(&f.owner, p, visit).await["insurance"]["added_after_posting"],
+        true
+    );
+    assert_eq!(
+        f.ok("GET", queue, json!(null), None).await["items"][0]["account_id"],
+        json!(account)
+    );
 }
 
 #[tokio::test]
@@ -3075,6 +3148,7 @@ async fn posted_coverage_applies_without_replacing_codes_receipts_or_invoice_his
     assert_eq!(invoice["snapshot"]["amount_due_cents"], 44000);
     assert_eq!(f.banner(p).await, 44000);
     assert!(posted["coverage_snapshot"].is_null());
+    assert_eq!(coverage_worklist(&f).await["items"], json!([]));
 
     // Insurance is entered after the services were coded, posted, and documented on an invoice.
     let (_, policy) = f.coverage(p, "primary", "SYN-POSTED", Some(2500)).await;
@@ -3086,7 +3160,23 @@ async fn posted_coverage_applies_without_replacing_codes_receipts_or_invoice_his
     assert_eq!(options["choices"][0]["id"], policy["id"]);
     assert_eq!(options["choices"][0]["version"], policy["version"]);
     assert!(options["blocked_reason"].is_null());
-    let request = coverage_application(&policy);
+    assert_eq!(options["reviewed_self_pay"], false);
+    let queue = coverage_worklist(&f).await;
+    assert_eq!(queue["can_apply_coverage"], true);
+    assert_eq!(queue["can_prepare_claim"], true);
+    assert_eq!(queue["items"].as_array().unwrap().len(), 1);
+    let row = &queue["items"][0];
+    assert_eq!(row["state"], "apply_coverage");
+    assert_eq!(row["account_id"], posted["id"]);
+    assert_eq!(row["visit_id"], json!(visit));
+    assert_eq!(row["encounter_number"], 1);
+    assert_eq!(row["total_cents"], 45000);
+    assert_eq!(row["patient_paid_cents"], 1000);
+    assert_eq!(row["patient_owes_now_cents"], 44000);
+    assert!(row["blocked_reason"].is_null());
+    assert_eq!(row["choices"][0]["id"], policy["id"]);
+    let mut request = coverage_application(&policy);
+    request["prepare_for_claim"] = json!(true);
     let applied = f
         .ok("POST", &path, request.clone(), Some(version(&posted)))
         .await;
@@ -3185,11 +3275,21 @@ async fn posted_coverage_applies_without_replacing_codes_receipts_or_invoice_his
         1
     );
 
+    let queue = coverage_worklist(&f).await;
+    let row = &queue["items"][0];
+    assert_eq!(row["state"], "prepare_claim");
+    assert_eq!(row["account_version"], applied["version"]);
+    assert_eq!(row["total_cents"], 45000);
+    assert_eq!(row["patient_paid_cents"], 1000);
+    assert_eq!(row["patient_owes_now_cents"], 1500);
+    assert_eq!(row["choices"][0]["id"], policy["id"]);
+
     // The same posted account supplies a claim draft, and nothing has been sent.
     let (status, prepared) = f.prepare(&f.owner, p, account, json!({})).await;
     assert_eq!(status, StatusCode::OK, "{prepared}");
     let claim = f.claim(&prepared["claim_id"]).await;
     assert_eq!(claim["status"], "draft");
+    assert_eq!(coverage_worklist(&f).await["items"], json!([]));
     assert_eq!(
         claim["snapshot"]["account"]["content"]["lines"],
         posted["content"]["lines"]
@@ -3245,8 +3345,13 @@ async fn posted_coverage_requires_current_account_authority_and_service_date() {
         .0,
         StatusCode::CONFLICT
     );
-    let posted = f.post(p, &draft).await;
+    let posted = f.ok(
+        "POST", &format!("/api/v1/patients/{p}/billing/accounts/{}/actions", id(&draft)),
+        json!({"action":"post","reason":"Reviewed synthetic signed visit", "self_pay_reason":"Synthetic patient chose to pay privately", "self_pay_coverage_ids":[id(&current)]}),
+        Some(version(&draft)),
+    ).await;
     let options = f.ok("GET", &path, json!(null), None).await;
+    assert_eq!(options["reviewed_self_pay"], true);
     let choices = options["choices"].as_array().unwrap();
     assert_eq!(choices.len(), 1);
     assert_eq!(choices[0]["id"], current["id"]);
@@ -3365,6 +3470,14 @@ async fn posted_coverage_waits_for_pending_payment_and_serializes_conflicting_ch
     let path = posted_coverage_path(p, &posted);
     let options = f.ok("GET", &path, json!(null), None).await;
     assert_eq!(options["choices"], json!([]));
+    assert_eq!(options["recorded_choices"][0]["id"], policy["id"]);
+    assert_eq!(options["blocker_code"], "pending_payment");
+    let queue = coverage_worklist(&f).await;
+    assert_eq!(queue["items"][0]["blocker_code"], "pending_payment");
+    assert_eq!(
+        queue["items"][0]["blocked_reason"],
+        options["blocked_reason"]
+    );
     assert!(options["blocked_reason"]
         .as_str()
         .unwrap()
@@ -4166,5 +4279,136 @@ async fn only_the_current_unsent_ready_original_can_return_to_draft() {
         f.count("SELECT count(*) FROM edi_delivery_jobs WHERE tenant_id=$1")
             .await,
         0
+    );
+}
+
+#[tokio::test]
+async fn coverage_worklist_pages_even_after_its_cursor_leaves_the_queue() {
+    let f = setup().await;
+    let mut accounts = Vec::new();
+    for _ in 0..2 {
+        let (patient, _, visit) = f.visit(true).await;
+        let draft = f.charges(patient, visit, None, 35000).await;
+        let posted = f.post(patient, &draft).await;
+        let (_, policy) = f.coverage(patient, "primary", "SYN-QUEUE", None).await;
+        accounts.push((id(&posted), patient, posted, policy));
+    }
+    accounts.sort_by_key(|row| row.0);
+    let other = Fixture {
+        db: f.db.clone(),
+        app: f.app.clone(),
+        owner: Actor {
+            sub: Uuid::new_v4(),
+            tenant_id: Uuid::new_v4(),
+            ..f.owner.clone()
+        },
+    };
+    user(&other.db, &other.owner, other.owner.sub, "owner").await;
+    let (patient, _, visit) = other.visit(true).await;
+    let draft = other.charges(patient, visit, None, 36000).await;
+    let other_posted = other.post(patient, &draft).await;
+    other.coverage(patient, "primary", "SYN-OTHER", None).await;
+    let other_list = coverage_worklist(&other).await;
+    assert_eq!(other_list["items"].as_array().unwrap().len(), 1);
+    assert_eq!(other_list["items"][0]["account_id"], other_posted["id"]);
+
+    let (patient, _, visit) = f.visit(true).await;
+    let draft = f.charges(patient, visit, None, 37000).await;
+    f.post(patient, &draft).await;
+    let (_, future) = f.coverage(patient, "primary", "SYN-FUTURE", None).await;
+    let mut content = future["content"].clone();
+    content["effective_date"] = json!("2026-10-26");
+    f.ok(
+        "PUT",
+        &format!("/api/v1/patients/{patient}/coverages/{}", id(&future)),
+        json!({"content":content,"reason":"Synthetic insurance begins after service"}),
+        Some(version(&future)),
+    )
+    .await;
+
+    let page = f
+        .ok(
+            "GET",
+            &format!("{COVERAGE_WORKLIST}?limit=1"),
+            json!(null),
+            None,
+        )
+        .await;
+    let (first_id, patient, posted, policy) = &accounts[0];
+    assert_eq!(page["items"][0]["account_id"], json!(first_id));
+    let cursor = page["next_cursor"].as_str().unwrap();
+    f.ok(
+        "POST",
+        &posted_coverage_path(*patient, posted),
+        coverage_application(policy),
+        Some(version(posted)),
+    )
+    .await;
+    assert_eq!(
+        f.prepare(&f.owner, *patient, *first_id, json!({})).await.0,
+        StatusCode::OK
+    );
+    let next = f
+        .ok(
+            "GET",
+            &format!("{COVERAGE_WORKLIST}?limit=1&after={cursor}"),
+            json!(null),
+            None,
+        )
+        .await;
+    assert_eq!(next["items"].as_array().unwrap().len(), 1);
+    assert_eq!(next["items"][0]["account_id"], json!(accounts[1].0));
+    assert!(next["next_cursor"].is_null());
+    let reader = f.staff(Role::ReadOnly, "read_only").await;
+    let (status, readonly) = f
+        .call(&reader, "GET", COVERAGE_WORKLIST, json!(null), None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{readonly}");
+    assert_eq!(readonly["can_apply_coverage"], false);
+    assert_eq!(readonly["can_prepare_claim"], false);
+}
+
+#[tokio::test]
+async fn coverage_worklist_requires_electronic_payer_before_applying_for_claim() {
+    let f = setup().await;
+    let (patient, _, visit) = f.visit(true).await;
+    let draft = f.charges(patient, visit, None, 45000).await;
+    let posted = f.post(patient, &draft).await;
+    let (payer, policy) = f.coverage(patient, "primary", "", None).await;
+    let list = coverage_worklist(&f).await;
+    assert_eq!(list["items"][0]["blocker_code"], "payer_id");
+    assert_eq!(list["items"][0]["choices"][0]["payer_id"], payer["id"]);
+    let path = posted_coverage_path(patient, &posted);
+    let mut request = coverage_application(&policy);
+    request["prepare_for_claim"] = json!(true);
+    let (status, error) = f
+        .call(
+            &f.owner,
+            "POST",
+            &path,
+            request.clone(),
+            Some(version(&posted)),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{error}");
+    assert_eq!(
+        f.action_count("billing.coverage_applied", id(&posted))
+            .await,
+        0
+    );
+    let mut content = payer["content"].clone();
+    content["payer_code"] = json!("SYN-UPDATED");
+    f.ok(
+        "PUT",
+        &format!("/api/v1/billing/payers/{}", id(&payer)),
+        json!({"content":content,"reason":"Synthetic updated electronic payer ID"}),
+        Some(version(&payer)),
+    )
+    .await;
+    assert!(coverage_worklist(&f).await["items"][0]["blocker_code"].is_null());
+    f.ok("POST", &path, request, Some(version(&posted))).await;
+    assert_eq!(
+        coverage_worklist(&f).await["items"][0]["state"],
+        "prepare_claim"
     );
 }

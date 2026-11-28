@@ -15,10 +15,10 @@ const choices=[{id:'synthetic-policy',version:3,payer_name:'Synthetic Medicare',
 const path=`/api/v1/patients/${patient}/billing/accounts/${account.id}/coverage`;
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
 
-function fixture({blocked='',version=account.version,readOnly=false,conflict=false,interrupted=false}={}){
+function fixture({blocked='',version=account.version,readOnly=false,conflict=false,interrupted=false,queued=false,draftFailure=false,deliberate=false}={}){
  const dom=new JSDOM('<main id="visit-page-host"><div id="guide"><button data-encounter-next></button><button data-encounter-early-payment></button></div><div id="payment"></div><div id="encounter-revenue"></div></main>',{runScripts:'outside-only',url:'http://127.0.0.1'});
  const w=dom.window,d=w.document,calls=[],notices=[];
- const summary={visit,patient_id:patient,account,claim:null,state:'self_pay_collect',insurance:{insured:false},patient:{owes_now_cents:45000},receipts:[]};
+ const summary={visit,patient_id:patient,account,claim:null,state:'self_pay_collect',insurance:{insured:false,added_after_posting:!deliberate},patient:{owes_now_cents:45000},receipts:[]};
  const updated={...account,version:7,content:{...account.content,coverage_id:choices[0].id}};
  const originalCoverage={content:{status:'active',effective_date:'2025-01-01'}};
  const billing={accounts:[account],coverages:[originalCoverage],entries:[],copays:[]};
@@ -29,8 +29,13 @@ function fixture({blocked='',version=account.version,readOnly=false,conflict=fal
   notice:message=>notices.push(message),
   sheetOpen:(title,node)=>{const dlg=d.createElement('dialog');dlg.open=true;dlg.setAttribute('aria-label',title);dlg.append(node);d.body.append(dlg);return dlg;},
   sheetClose:dlg=>{if(dlg.canCloseSheet?.()===false)throw new Error('saving dialog cannot be dismissed');dlg.open=false;dlg.dispatchEvent(new w.Event('close'));dlg.remove();},
+  visitReviewOpen:()=>{reviewed++;},
   api:async(url,method,body,versionHeader)=>{
    calls.push([url,method,body,versionHeader]);
+   if(url.endsWith('/claims/prepare')){
+    if(draftFailure)throw new Error('Test directory unavailable');
+    return {outcome:'prepared',claim_id:'synthetic-claim'};
+   }
    if(!method)return {account_id:account.id,account_version:version,service_date:serviceDate,choices,blocked_reason:blocked};
    if(conflict)throw Object.assign(new Error('The selected coverage changed.'),{status:409});
    if(interrupted&&calls.length===2)throw new Error('Connection interrupted');
@@ -40,12 +45,15 @@ function fixture({blocked='',version=account.version,readOnly=false,conflict=fal
  const context=dom.getInternalVMContext();
  for(const file of ['web/visit-billing.js','web/patient-revenue.js'])vm.runInContext(fs.readFileSync(file,'utf8'),context);
  const state=vm.runInContext('encounterRevenueState',context);state.data={summary};
- let refreshed=0;
- w.renderEncounterRevenue=()=>{assert.deepEqual(billing.accounts,[updated]);refreshed++;};
+ let refreshed=0,reviewed=0;
+ w.renderEncounterRevenue=()=>{
+  assert.deepEqual(billing.accounts,[updated]);refreshed++;
+  if(queued)state.data.summary={...summary,account:updated,claim:draftFailure?null:{id:'synthetic-claim'}};
+ };
  const launcher=()=>d.querySelector('[data-apply-posted-coverage]');
  const payment=()=>w.encounterStepPayments(w.$('payment'),w.$('encounter-revenue'),null,summary,{selfPay:true},false);
  payment();
- return {w,d,calls,notices,updated,billing,launcher,payment,summary,refreshed:()=>refreshed};
+ return {w,d,calls,notices,updated,billing,launcher,payment,summary,refreshed:()=>refreshed,reviewed:()=>reviewed};
 }
 
 async function main(){
@@ -60,9 +68,8 @@ async function main(){
  assert.match(form.textContent,/\$450\.00 posted/);
  assert.equal(form.elements.coverage_id.value,choices[0].id);
  assert.equal(ok.d.activeElement,form.elements.coverage_id);
- assert.equal(form.elements.reason.value,'Apply insurance to posted self-pay charges');
+ assert.equal(form.elements.reason,undefined,'the action supplies its own audit reason');
  assert.deepEqual(ok.calls,[[path,undefined,undefined,undefined]]);
- form.elements.reason.value='  Insurance added after posting  ';
  form.dispatchEvent(new ok.w.Event('submit',{cancelable:true}));
  form.dispatchEvent(new ok.w.Event('submit',{cancelable:true}));
  await tick();
@@ -70,7 +77,7 @@ async function main(){
  const [url,method,body,version]=ok.calls[1];
  assert.equal(url,path);assert.equal(method,'POST');assert.equal(version,6);
  assert.equal(body.coverage_id,choices[0].id);assert.equal(body.coverage_version,3);
- assert.equal(body.reason,'Insurance added after posting');assert.match(body.request_id,/^[0-9a-f-]{36}$/);
+ assert.equal(body.reason,'Apply insurance to posted self-pay charges');assert.match(body.request_id,/^[0-9a-f-]{36}$/);
  assert.deepEqual(ok.billing.accounts[0].content.lines,account.content.lines);
  assert.equal(ok.refreshed(),1);
  assert.equal(ok.d.querySelector('dialog[open]'),null);
@@ -88,7 +95,6 @@ async function main(){
  const changed=fixture({conflict:true});
  await changed.w.openEncounterPostedCoverage(changed.launcher());
  const changedForm=changed.d.querySelector('dialog form');
- changedForm.elements.reason.value='Insurance on file';
  changedForm.dispatchEvent(new changed.w.Event('submit',{cancelable:true}));
  await tick();
  assert.match(changedForm.querySelector('[role="alert"]').textContent,/selected coverage changed/i);
@@ -101,12 +107,30 @@ async function main(){
  await tick();
  assert.equal(retry.textContent,'Retry');
  assert.equal(retry.disabled,false);
- assert.equal(retryForm.elements.reason.disabled,true);
+ assert.equal(retryForm.elements.coverage_id.disabled,true);
  retryForm.dispatchEvent(new failed.w.Event('submit',{cancelable:true}));
  await tick();
  assert.deepEqual(failed.calls[1],failed.calls[2],'the retry replays the exact reviewed request');
  assert.equal(failed.refreshed(),1);
  assert.equal(fixture({readOnly:true}).launcher(),null);
+ assert.equal(fixture({deliberate:true}).launcher(),null,'a documented self-pay decision stays in effect');
+ for(const draftFailure of [false,true]){
+  const queued=fixture({queued:true,draftFailure});
+  queued.w.loadEncounterRevenueStatus=async()=>{};
+  await assert.rejects(queued.w.openEncounterCoverageWorklistAction(account.id,'apply_coverage',5),/posted charges changed/);
+  await queued.w.openEncounterCoverageWorklistAction(account.id,'apply_coverage',6);
+  const queueForm=queued.d.querySelector('dialog form');
+  assert.equal(queueForm.querySelector('button[type=submit]').textContent,'Apply insurance and prepare claim');
+  queueForm.dispatchEvent(new queued.w.Event('submit',{cancelable:true}));
+  await tick();
+  assert.equal(queued.calls.length,3,'only options, application, and claim draft preparation');
+  assert.equal(queued.calls[1][2].prepare_for_claim,true);
+  assert.match(queued.calls[2][0],/\/claims\/prepare$/);
+  assert.equal(queued.billing.accounts[0].content.coverage_id,choices[0].id);
+  assert.equal(queued.reviewed(),draftFailure?0:1);
+  if(draftFailure)assert.match(queued.notices.at(-1),/Insurance applied/);
+  queued.w.close();
+ }
  ok.w.close();changed.w.close();failed.w.close();
  console.log('PASS posted coverage: exact versions, no repeat writes, codes preserved, blocked and stale corrections, read-only staff');
 }

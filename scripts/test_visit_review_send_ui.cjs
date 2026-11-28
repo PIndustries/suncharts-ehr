@@ -12,7 +12,7 @@ const {visitSummary}=require('./visit_billing_fixture.cjs');
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const nodes={},handlers={},sent=[];
 const node=id=>nodes[id]??={id,innerHTML:'',dataset:{},hidden:false,open:false,scrollIntoView(){},querySelector(sel){return (this._q??={})[sel]??null;},querySelectorAll(){return [];},replaceChildren(){this.innerHTML='';},insertAdjacentHTML(){},focus(){},};
-const accountOf=(overrides={})=>({id:'account',patient_id:'patient',version:4,status:'posted',total_cents:28000,content:{visit_id:'visit',service_date:'2026-11-12',lines:[{code:'99213',description:'Office visit',units:1,amount_cents:28000,diagnosis_codes:['M62.81']}]},coverage_snapshot:{coverage:{content:{relationship:'self',member_id:'SYN-MEMBER'}},payer:{content:{name:'Synthetic Medicare PPO',payer_code:'SYN'}}},...overrides});
+const accountOf=(overrides={})=>({id:'account',patient_id:'patient',version:4,status:'posted',total_cents:28000,content:{visit_id:'visit',service_date:'2026-11-12',coverage_id:'synthetic-coverage',lines:[{code:'99213',description:'Office visit',units:1,amount_cents:28000,diagnosis_codes:['M62.81']}]},coverage_snapshot:{coverage:{content:{relationship:'self',member_id:'SYN-MEMBER'}},payer:{content:{name:'Synthetic Medicare PPO',payer_code:'SYN'}}},...overrides});
 let account=accountOf();
 // The screen finds the encounter's charge account through workspace.billing.accounts, exactly as
 // encounterChargeAccount does. Keeping that array in step with the fixture is the whole bridge.
@@ -61,6 +61,8 @@ const ctx={console,Date,Intl,URL,Map,Set,Array,Math,Number,String,JSON,encodeURI
  }};
 vm.createContext(ctx);
 vm.runInContext('const billingBase=()=>"/api/v1/patients/"+selected+"/billing/accounts";',ctx);
+const billing=fs.readFileSync('web/billing.js','utf8');
+vm.runInContext(billing.slice(billing.indexOf('function billingEffectiveCoverages('),billing.indexOf('function chargeDiagnosisCurrent(')),ctx);
 vm.runInContext(fs.readFileSync('web/visit-billing.js','utf8'),ctx);
 vm.runInContext(fs.readFileSync('web/patient-revenue.js','utf8'),ctx);
 vm.runInContext(fs.readFileSync('web/visit-review.js','utf8'),ctx);

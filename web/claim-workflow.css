@@ -274,15 +274,19 @@
 .encounter-switch-button span{margin-right:4px}
 
 /* Keep the claims that need a decision ahead of the waiting list. */
-#claims-tool [data-claim-worklist],#claims-tool .claim-worklist-waiting{margin:12px 0;padding:14px 16px;background:var(--surface);border:1px solid var(--line);border-radius:8px}
+#claims-tool [data-claim-worklist],#claims-tool [data-coverage-worklist],#claims-tool .claim-worklist-waiting{margin:12px 0;padding:14px 16px;background:var(--surface);border:1px solid var(--line);border-radius:8px}
 .claim-worklist-heading{flex-wrap:wrap}
+[data-coverage-worklist] table:has(.table-empty) thead{display:none}
+.coverage-worklist-amounts{display:flex;flex-wrap:wrap;gap:6px 18px;margin:0;font-variant-numeric:tabular-nums}
+.coverage-worklist-amounts dt{font-size:.8rem;color:var(--muted)}
+.coverage-worklist-amounts dd{margin:0;font-weight:600;white-space:nowrap}
 #claims-tool .claim-worklist-waiting{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
 .claim-worklist-waiting p{margin:3px 0 0}
 .claim-worklist-table .monitor-age{white-space:nowrap;color:var(--muted);font-variant-numeric:tabular-nums}
 .claim-worklist-table .monitor-action button{min-height:36px}
 .claim-worklist-payment-row{outline:2px solid var(--blue);outline-offset:2px;scroll-margin-top:95px}
 @media(max-width:620px){
- #claims-tool [data-claim-worklist],#claims-tool .claim-worklist-waiting{padding:12px}
+ #claims-tool [data-claim-worklist],#claims-tool [data-coverage-worklist],#claims-tool .claim-worklist-waiting{padding:12px}
  .claim-worklist-table{min-width:0}
  .claim-worklist-table thead{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
  .claim-worklist-table tbody,.claim-worklist-table tr{display:block}

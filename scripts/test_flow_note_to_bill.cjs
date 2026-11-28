@@ -49,6 +49,8 @@ function fixture(){
  };
  vm.createContext(ctx);
  for(const file of ['visit-note.js','visit-diagnoses.js','fees.js','visit-review.js'])vm.runInContext(read(file),ctx);
+ const billing=read('billing.js');
+ vm.runInContext(billing.slice(billing.indexOf('function billingEffectiveCoverages('),billing.indexOf('function chargeDiagnosisCurrent(')),ctx);
  // Use the application's actual save and sign handlers, independent of its page bootstrapping.
  vm.runInContext(app.slice(app.indexOf('async function saveVisitNote('),app.indexOf('\nlet me, patients')),ctx);
  const start=app.indexOf("    if(['sign','sign-bill'].includes(button.dataset.action)){");

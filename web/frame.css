@@ -29,8 +29,8 @@
 .frame-user-panel .nav-item{width:100%;margin:0;background:transparent;color:var(--ink)}
 .frame-user-panel .nav-item svg{width:16px;height:16px}
 .frame-user-panel .theme-control{justify-content:space-between}
-.frame-billing-tabs{display:flex;gap:6px;border-bottom:1px solid var(--line);margin:0 0 16px}
-.frame-billing-tabs button{border:0;border-bottom:2px solid transparent;border-radius:0;background:transparent;color:var(--muted)}
+.frame-billing-tabs{display:flex;gap:6px;border-bottom:1px solid var(--line);margin:0 0 16px;overflow-x:auto}
+.frame-billing-tabs button,.frame-billing-tabs .nav-item{flex:0 0 auto;width:auto;margin:0;border:0;border-bottom:2px solid transparent;border-radius:0;background:transparent;color:var(--muted);white-space:nowrap}
 .frame-billing-tabs button[aria-current=page]{color:var(--blue);border-bottom-color:var(--blue)}
 .frame-billing-tabs svg{display:none}
 #app .workspace-header{position:static;padding:12px 0;min-height:0;background:transparent;border:0}

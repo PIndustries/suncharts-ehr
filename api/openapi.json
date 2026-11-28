@@ -6105,6 +6105,63 @@
         }
       }
     },
+    "/api/v1/billing/coverage-needs-action": {
+      "get": {
+        "operationId": "billingCoverageNeedsAction",
+        "description": "List posted self-pay visits with effective insurance that was not reviewed when posting, and corrected accounts awaiting claim preparation. Balances are current ledger amounts in USD cents.",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 30
+            }
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "description": "Pass the preceding page's next_cursor unchanged.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "oauth2": [
+              "billing.read"
+            ]
+          },
+          {
+            "browserSession": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Coverage corrections and preparation work in service date order",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BillingCoverageNeedsActionPage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid cursor or page limit"
+          },
+          "401": {
+            "description": "Sign in required"
+          },
+          "403": {
+            "description": "Staff role or billing view permission denied"
+          }
+        }
+      }
+    },
     "/api/v1/billing/worklist": {
       "get": {
         "operationId": "billingWorklist",
@@ -38639,6 +38696,7 @@
           {
             "name": "mode",
             "in": "query",
+            "description": "Recorded mode shows live and manually recorded payments. Test mode is available only in development.",
             "schema": {
               "type": "string",
               "enum": [
@@ -39122,6 +39180,7 @@
           {
             "name": "mode",
             "in": "query",
+            "description": "Recorded mode shows live and manually recorded payments. Test mode is available only in development.",
             "schema": {
               "type": "string",
               "enum": [
@@ -39393,6 +39452,7 @@
           {
             "name": "mode",
             "in": "query",
+            "description": "Recorded mode shows live and manually recorded payments. Test mode is available only in development.",
             "schema": {
               "type": "string",
               "enum": [
@@ -46690,6 +46750,11 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 1000
+          },
+          "prepare_for_claim": {
+            "type": "boolean",
+            "default": false,
+            "description": "Require claim creation permission and a mapped electronic payer before applying the policy. Prepare the draft through the existing claim preparation operation."
           }
         },
         "required": [
@@ -46718,38 +46783,7 @@
           "choices": {
             "type": "array",
             "items": {
-              "type": "object",
-              "additionalProperties": false,
-              "properties": {
-                "id": {
-                  "type": "string",
-                  "format": "uuid"
-                },
-                "version": {
-                  "type": "integer",
-                  "minimum": 1
-                },
-                "payer_name": {
-                  "type": "string"
-                },
-                "plan_name": {
-                  "type": "string"
-                },
-                "priority": {
-                  "type": "string"
-                },
-                "member_id": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "id",
-                "version",
-                "payer_name",
-                "plan_name",
-                "priority",
-                "member_id"
-              ]
+              "$ref": "#/components/schemas/PostedBillingCoverageChoice"
             }
           },
           "blocked_reason": {
@@ -46757,14 +46791,185 @@
               "string",
               "null"
             ]
+          },
+          "recorded_choices": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PostedBillingCoverageChoice"
+            }
+          },
+          "reviewed_self_pay": {
+            "type": "boolean"
+          },
+          "blocker_code": {
+            "type": "string"
           }
         },
         "required": [
           "account_id",
           "account_version",
           "service_date",
-          "choices"
+          "choices",
+          "recorded_choices",
+          "reviewed_self_pay"
         ]
+      },
+      "PostedBillingCoverageChoice": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "payer_name": {
+            "type": "string"
+          },
+          "plan_name": {
+            "type": "string"
+          },
+          "priority": {
+            "type": "string"
+          },
+          "member_id": {
+            "type": "string"
+          },
+          "payer_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "electronic": {
+            "type": "boolean"
+          },
+          "blocker_code": {
+            "type": "string"
+          },
+          "blocked_reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "version",
+          "payer_name",
+          "plan_name",
+          "priority",
+          "member_id",
+          "payer_id",
+          "electronic"
+        ]
+      },
+      "BillingCoverageNeedsActionItem": {
+        "type": "object",
+        "required": [
+          "account_id",
+          "account_version",
+          "patient_id",
+          "patient_name",
+          "visit_id",
+          "encounter_number",
+          "service_date",
+          "total_cents",
+          "patient_paid_cents",
+          "patient_owes_now_cents",
+          "state",
+          "choices"
+        ],
+        "properties": {
+          "account_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "account_version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "patient_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "patient_name": {
+            "type": "string"
+          },
+          "visit_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "encounter_number": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "service_date": {
+            "type": "string",
+            "format": "date"
+          },
+          "total_cents": {
+            "type": "integer"
+          },
+          "patient_paid_cents": {
+            "type": "integer"
+          },
+          "patient_owes_now_cents": {
+            "type": "integer"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "apply_coverage",
+              "prepare_claim"
+            ]
+          },
+          "choices": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PostedBillingCoverageChoice"
+            }
+          },
+          "blocker_code": {
+            "type": "string"
+          },
+          "blocked_reason": {
+            "type": "string"
+          }
+        }
+      },
+      "BillingCoverageNeedsActionPage": {
+        "type": "object",
+        "required": [
+          "items",
+          "next_cursor",
+          "can_apply_coverage",
+          "can_prepare_claim"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BillingCoverageNeedsActionItem"
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "can_apply_coverage": {
+            "type": "boolean"
+          },
+          "can_prepare_claim": {
+            "type": "boolean"
+          }
+        }
       },
       "BillingAccount": {
         "type": "object",
@@ -46849,6 +47054,29 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 1000
+          },
+          "local_only": {
+            "type": "boolean",
+            "default": false
+          },
+          "review_approved": {
+            "type": "boolean",
+            "default": false
+          },
+          "self_pay_reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 980,
+            "description": "Required when choosing self-pay for a visit with active insurance for the service date."
+          },
+          "self_pay_coverage_ids": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "IDs of every effective policy shown when confirming self-pay."
           }
         },
         "required": [
@@ -62319,6 +62547,16 @@
                     "type": "integer",
                     "format": "int64"
                   },
+                  "open_invoice_due_cents": {
+                    "type": "integer",
+                    "format": "int64",
+                    "description": "Amount due on current saved statements included in open_invoice_count."
+                  },
+                  "patient_owes_now_cents": {
+                    "type": "integer",
+                    "format": "int64",
+                    "description": "Current patient responsibility across posted visits, including those without a statement."
+                  },
                   "reviewed_patient_due_cents": {
                     "type": "integer",
                     "format": "int64"
@@ -62337,6 +62575,8 @@
                   "latest_invoices",
                   "invoice_review_count",
                   "open_invoice_count",
+                  "open_invoice_due_cents",
+                  "patient_owes_now_cents",
                   "reviewed_patient_due_cents",
                   "posted_gross_cents",
                   "posted_account_balance_cents"

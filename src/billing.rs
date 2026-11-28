@@ -19,7 +19,7 @@ use serde_json::{json, Value};
 use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 #[path = "billing/coverage_application.rs"]
-mod coverage_application;
+pub(crate) mod coverage_application;
 #[path = "billing/dead_ends.rs"]
 mod dead_ends;
 #[path = "billing/overview.rs"]
@@ -467,8 +467,23 @@ pub(crate) async fn account_revision(
     id: Uuid,
     reason: &str,
 ) -> Result<Account> {
+    record_account_revision(tx, a, p, id, reason, &[]).await
+}
+
+async fn record_account_revision(
+    tx: &mut Transaction<'_, Postgres>,
+    a: &Actor,
+    p: Uuid,
+    id: Uuid,
+    reason: &str,
+    self_pay_coverage_ids: &[Uuid],
+) -> Result<Account> {
     let row = account_row(tx, a, p, id).await?;
-    sqlx::query("INSERT INTO billing_account_revisions (tenant_id,account_id,version,snapshot,actor_id,reason) VALUES ($1,$2,$3,$4,$5,$6)").bind(a.tenant_id).bind(id).bind(row.version).bind(json!(row)).bind(a.sub).bind(reason).execute(&mut **tx).await?;
+    let mut snapshot = json!(row);
+    if !self_pay_coverage_ids.is_empty() {
+        snapshot["self_pay_reviewed_coverage_ids"] = json!(self_pay_coverage_ids);
+    }
+    sqlx::query("INSERT INTO billing_account_revisions (tenant_id,account_id,version,snapshot,actor_id,reason) VALUES ($1,$2,$3,$4,$5,$6)").bind(a.tenant_id).bind(id).bind(row.version).bind(snapshot).bind(a.sub).bind(reason).execute(&mut **tx).await?;
     crate::postgres::audit(tx, a, "billing.account_change", id).await?;
     crate::automatic_invoices::enqueue(tx, a, &row).await?;
     Ok(row)
@@ -1117,6 +1132,9 @@ struct Action {
     /// The person posting has reviewed charges that were held for review.
     #[serde(default)]
     review_approved: bool,
+    self_pay_reason: Option<String>,
+    #[serde(default)]
+    self_pay_coverage_ids: Vec<Uuid>,
 }
 async fn account_action(
     a: Actor,
@@ -1148,6 +1166,8 @@ pub(crate) async fn post_handoff_account(
             reason: CLAIM_HANDOFF_POST_REASON.into(),
             local_only: false,
             review_approved: false,
+            self_pay_reason: None,
+            self_pay_coverage_ids: Vec::new(),
         },
     )
     .await?
@@ -1178,6 +1198,8 @@ async fn account_action_versioned(
         .claim_details
         .as_ref()
         .is_some_and(|details| details.review_requested);
+    let mut reason = v.reason;
+    let mut reviewed_coverage = Vec::new();
     let (status, snapshot) = match v.action.as_str() {
         "post" => {
             // Charges held for review are posted only by someone who says they reviewed them.
@@ -1188,6 +1210,28 @@ async fn account_action_versioned(
             }
             let snapshot =
                 account_links(&mut tx, &a, p, &content, old.source_history_id, true).await?;
+            if content.coverage_id.is_none() && old.source_history_id.is_none() {
+                reviewed_coverage =
+                    coverage_application::effective_choices(&mut tx, &a, p, content.service_date)
+                        .await?
+                        .into_iter()
+                        .map(|choice| choice.id)
+                        .collect();
+                let mut seen = v.self_pay_coverage_ids;
+                seen.sort_unstable();
+                reviewed_coverage.sort_unstable();
+                if !reviewed_coverage.is_empty() || !seen.is_empty() {
+                    let note = v.self_pay_reason.as_deref().unwrap_or_default().trim();
+                    if note.is_empty() {
+                        return Err(Error::Conflict("Insurance is on file for the service date. Choose a policy or enter a reason to post as self-pay."));
+                    }
+                    if seen != reviewed_coverage {
+                        return Err(Error::Conflict("Insurance changed. Refresh and review the policies for this service date before posting."));
+                    }
+                    text(note, 980)?;
+                    reason = format!("Self-pay selected: {note}");
+                }
+            }
             let missing_electronic_payer = snapshot.as_ref().is_some_and(|snapshot| {
                 snapshot["payer"]["content"]["payer_code"]
                     .as_str()
@@ -1209,7 +1253,7 @@ async fn account_action_versioned(
     if status == "posted" {
         allocate_copays(&mut tx, &a, p, id).await?;
     }
-    let row = account_revision(&mut tx, &a, p, id, &v.reason).await?;
+    let row = record_account_revision(&mut tx, &a, p, id, &reason, &reviewed_coverage).await?;
     tx.commit().await?;
     Ok(Json(row))
 }
@@ -1858,8 +1902,14 @@ pub(crate) async fn copay_rows(
     p: Uuid,
     receipt: Option<Uuid>,
 ) -> Result<Vec<Value>> {
-    Ok(sqlx::query_scalar("SELECT (to_jsonb(r)-'tenant_id'-'creation_hash'-'request_id') || jsonb_build_object('pending_actions',coalesce((SELECT jsonb_agg(jsonb_build_object('request_id',q.request_id,'kind',q.kind,'amount_cents',q.amount_cents,'reason',q.reason,'method',q.method,'account_id',q.account_id)) FROM billing_receipt_actions q WHERE q.tenant_id=r.tenant_id AND q.receipt_id=r.id AND q.status='pending'),'[]'::jsonb),'cash_refunded_cents',coalesce((SELECT f.amount_cents FROM billing_receipt_cash_refunds f WHERE f.tenant_id=r.tenant_id AND f.receipt_id=r.id),0),'hosted_checkout',(SELECT jsonb_build_object('id',o.id,'livemode',o.livemode,'status',o.status,'refunded_cents',o.refunded_cents,'refunded_unapplied_cents',coalesce((SELECT sum(f.unapplied_cents) FROM copay_checkout_refund_events f WHERE f.tenant_id=o.tenant_id AND f.operation_id=o.id),0),'splits',(SELECT jsonb_agg(jsonb_build_object('appointment_id',s.appointment_id,'amount_cents',s.amount_cents,'refunded_cents',least(s.amount_cents,greatest(0,o.refunded_cents-(o.amount_cents-(SELECT sum(q.amount_cents) FROM copay_checkout_splits q WHERE q.tenant_id=s.tenant_id AND q.operation_id=s.operation_id AND q.position<=s.position)))),'allocated_cents',coalesce((SELECT sum(x.amount_cents) FROM billing_copay_allocations x JOIN billing_accounts b ON b.tenant_id=x.tenant_id AND b.id=x.account_id JOIN visits v ON v.tenant_id=b.tenant_id AND v.id=b.visit_id WHERE x.tenant_id=r.tenant_id AND x.receipt_id=r.id AND v.appointment_id=s.appointment_id),0)) ORDER BY s.position) FROM copay_checkout_splits s WHERE s.tenant_id=o.tenant_id AND s.operation_id=o.id)) FROM copay_checkout_attempts o WHERE o.tenant_id=r.tenant_id AND o.receipt_id=r.id),'allocated_cents',coalesce((SELECT sum(x.amount_cents) FROM billing_copay_allocations x WHERE x.tenant_id=r.tenant_id AND x.receipt_id=r.id),0),'reversed_cents',coalesce((SELECT sum(x.amount_cents) FROM billing_copay_allocations x JOIN billing_entries e ON e.tenant_id=x.tenant_id AND e.reverses_id=x.entry_id WHERE x.tenant_id=r.tenant_id AND x.receipt_id=r.id),0),'voided',EXISTS(SELECT 1 FROM billing_copay_voids v WHERE v.tenant_id=r.tenant_id AND v.receipt_id=r.id),'account_ids',coalesce((SELECT jsonb_agg(DISTINCT x.account_id) FROM billing_copay_allocations x WHERE x.tenant_id=r.tenant_id AND x.receipt_id=r.id),'[]'::jsonb)) FROM billing_copay_receipts r WHERE tenant_id=$1 AND patient_id=$2 AND ($3::uuid IS NULL OR id=$3) ORDER BY created_at,id LIMIT 1001")
-        .bind(a.tenant_id).bind(p).bind(receipt).fetch_all(&mut **tx).await?)
+    // Lists drive collection and allocation previews. Direct, audited lookup remains available.
+    let live_only = receipt.is_none()
+        && matches!(
+            crate::DeploymentEnvironment::from_env(),
+            crate::DeploymentEnvironment::Production
+        );
+    Ok(sqlx::query_scalar("SELECT (to_jsonb(r)-'tenant_id'-'creation_hash'-'request_id') || jsonb_build_object('pending_actions',coalesce((SELECT jsonb_agg(jsonb_build_object('request_id',q.request_id,'kind',q.kind,'amount_cents',q.amount_cents,'reason',q.reason,'method',q.method,'account_id',q.account_id)) FROM billing_receipt_actions q WHERE q.tenant_id=r.tenant_id AND q.receipt_id=r.id AND q.status='pending'),'[]'::jsonb),'cash_refunded_cents',coalesce((SELECT f.amount_cents FROM billing_receipt_cash_refunds f WHERE f.tenant_id=r.tenant_id AND f.receipt_id=r.id),0),'hosted_checkout',(SELECT jsonb_build_object('id',o.id,'livemode',o.livemode,'status',o.status,'refunded_cents',o.refunded_cents,'refunded_unapplied_cents',coalesce((SELECT sum(f.unapplied_cents) FROM copay_checkout_refund_events f WHERE f.tenant_id=o.tenant_id AND f.operation_id=o.id),0),'splits',(SELECT jsonb_agg(jsonb_build_object('appointment_id',s.appointment_id,'amount_cents',s.amount_cents,'refunded_cents',least(s.amount_cents,greatest(0,o.refunded_cents-(o.amount_cents-(SELECT sum(q.amount_cents) FROM copay_checkout_splits q WHERE q.tenant_id=s.tenant_id AND q.operation_id=s.operation_id AND q.position<=s.position)))),'allocated_cents',coalesce((SELECT sum(x.amount_cents) FROM billing_copay_allocations x JOIN billing_accounts b ON b.tenant_id=x.tenant_id AND b.id=x.account_id JOIN visits v ON v.tenant_id=b.tenant_id AND v.id=b.visit_id WHERE x.tenant_id=r.tenant_id AND x.receipt_id=r.id AND v.appointment_id=s.appointment_id),0)) ORDER BY s.position) FROM copay_checkout_splits s WHERE s.tenant_id=o.tenant_id AND s.operation_id=o.id)) FROM copay_checkout_attempts o WHERE o.tenant_id=r.tenant_id AND o.receipt_id=r.id),'allocated_cents',coalesce((SELECT sum(x.amount_cents) FROM billing_copay_allocations x WHERE x.tenant_id=r.tenant_id AND x.receipt_id=r.id),0),'reversed_cents',coalesce((SELECT sum(x.amount_cents) FROM billing_copay_allocations x JOIN billing_entries e ON e.tenant_id=x.tenant_id AND e.reverses_id=x.entry_id WHERE x.tenant_id=r.tenant_id AND x.receipt_id=r.id),0),'voided',EXISTS(SELECT 1 FROM billing_copay_voids v WHERE v.tenant_id=r.tenant_id AND v.receipt_id=r.id),'account_ids',coalesce((SELECT jsonb_agg(DISTINCT x.account_id) FROM billing_copay_allocations x WHERE x.tenant_id=r.tenant_id AND x.receipt_id=r.id),'[]'::jsonb)) FROM billing_copay_receipts r WHERE tenant_id=$1 AND patient_id=$2 AND ($3::uuid IS NULL OR id=$3) AND (NOT $4 OR NOT EXISTS(SELECT 1 FROM copay_checkout_attempts o WHERE o.tenant_id=r.tenant_id AND o.receipt_id=r.id AND NOT o.livemode)) ORDER BY created_at,id LIMIT 1001")
+        .bind(a.tenant_id).bind(p).bind(receipt).bind(live_only).fetch_all(&mut **tx).await?)
 }
 #[derive(sqlx::FromRow)]
 struct CopayAllocationCandidate {

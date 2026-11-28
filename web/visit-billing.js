@@ -56,6 +56,11 @@ function visitBillingCanceledStatus(s,ctx,headline){
  }
  return {headline,detail:s.canceled_claim_blocked||(claim?'Opens a new draft for review.':''),action};
 }
+function visitBillingNeedsCoverageReview(s){
+ if(s.account?.status!=='draft'||typeof billingCoveragePostingChoices!=='function')return false;
+ const account=workspace?.billing?.accounts?.find(row=>row.id===s.account.id);
+ return billingCoveragePostingChoices(account)!==null;
+}
 // The status line: what is happening, who is waiting on whom, and the one next step.
 function visitBillingStatus(s,ctx={}){
  const insurer=visitBillingInsurer(s),owes=money(s.patient.owes_now_cents),paid=money(s.insurance.paid_cents),account=s.account?.id||'',claim=s.claim?.id||'',write=ctx.canWrite,create=ctx.canCreate;
@@ -66,6 +71,7 @@ function visitBillingStatus(s,ctx={}){
    case 'add_charges':return visitBillingChargesFilled()?{headline:'Check the charges',detail:'Filled in from the last visit.',action:create?button('Check the charges','data-encounter-charges'):''}:{headline:'Add charges',detail:'Add the procedures done at this encounter.',action:create?button('Add charges','data-encounter-charges'):''};
    case 'sign_visit':return {headline:'Charges can still be changed',detail:'The encounter note must be signed before the charges are posted.',action:reviewButton(s,ctx)||button('Continue the encounter note','data-revenue-documentation')};
    case 'post_charges':{
+    if(write&&visitBillingNeedsCoverageReview(s))return {headline:'Review billing coverage',detail:'Choose how to bill this visit before posting charges.',action:button('Review coverage and post',`data-visit-post-charges="${esc(account)}"`)};
     // Something the claim cannot go without is asked for first, with the button that opens the codes.
     const need=visitBillingBeforePosting(s);
     if(need&&write)return {headline:need.headline,detail:`${need.detail} The claim to ${insurer} cannot be sent without it.`,action:button(need.label,'data-encounter-charges')};
@@ -131,6 +137,7 @@ function visitBillingChargeStep(s,ctx={}){
  switch(s.state){
    case 'sign_visit':return {text:'Sign the encounter note to send these charges.',label:'Open the encounter note',attribute:'data-revenue-documentation'};
    case 'post_charges':{
+    if(write&&visitBillingNeedsCoverageReview(s))return {text:'Choose how to bill this visit before posting charges.',label:'Review coverage and post',attribute:`data-visit-post-charges="${esc(s.account?.id||'')}"`};
     const flow=write&&directFlowPostSend(s,ctx),need=write?visitBillingBeforePosting(s):null;
     return {text:need?need.note:write?flow?'Check and post the charges, then review the claim before sending.':'Check the charges, then post them.':'Check the charges; someone who can change them posts them.',label:flow?'Post charges and review claim':write?'Post charges':'Review charges',attribute:flow?`data-visit-review-open="account" data-post-and-send="account"`:`data-visit-post-charges="${esc(s.account?.id||'')}"`};
    }

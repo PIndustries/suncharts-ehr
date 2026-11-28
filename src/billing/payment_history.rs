@@ -60,8 +60,10 @@ async fn read(
 ) -> Result<Json<Value>> {
     a.staff()?;
     crate::access_policies::require_native(&s, &a, "billing", "view").await?;
-    let mode = q.mode.as_deref().unwrap_or("recorded");
-    choice(mode, &["recorded", "test"])?;
+    let mode = super::overview::payment_records_mode(
+        q.mode.as_deref(),
+        crate::DeploymentEnvironment::from_env(),
+    )?;
     let limit = q.limit.unwrap_or(50);
     if !(1..=100).contains(&limit) {
         return Err(Error::Invalid(

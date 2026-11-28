@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 'use strict';
 const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
-function fixture(count=8,testRows=[]){
+function fixture(count=8,testRows=[],preview=true){
  const nodes=new Map(),events={},calls=[],pending=[];
  const node=id=>{
   if(!nodes.has(id))nodes.set(id,{id,hidden:false,isConnected:true,innerHTML:'',dataset:{},setAttribute(k,v){this[k]=v;},replaceChildren(){this.innerHTML='';},querySelector(sel){return node(sel.replace(/^[#.]/,''));},querySelectorAll(){return [];}});
@@ -11,7 +11,7 @@ function fixture(count=8,testRows=[]){
  const run=code=>vm.runInContext(code,ctx);
  run(fs.readFileSync('web/display-format.js','utf8'));
  run(fs.readFileSync('web/app.js','utf8').split('function chartRecordTemplate')[0]);
- Object.assign(ctx,{me:{role:'owner'},selected:'synthetic-patient',chartSection:'billing',workspace:{patient:{id:'synthetic-patient'},visits:[],appointments:[]},billingCan:()=>true,workspaceResourceAllowed:()=>true,money:n=>n==null?'Not available':new Intl.NumberFormat('en-US',{style:'currency',currency:'USD'}).format(n/100),date:ctx.displayDate,human:ctx.displayStatus,invoicePaymentMethod:x=>({cash:'Cash',check:'Check',card:'Card'}[x]||x||'—'),visitBillingStateName:()=> 'Patient owes',savedCardsForCharge:async()=>({cards:[{id:'saved-card'}]}),savedCardChoiceMarkup:()=>'<select name="card"><option value="saved-card">Card ending 4242</option></select>',run:fn=>pending.push(Promise.resolve().then(fn)),watchSavedCardPayment:op=>calls.push({watch:op})});
+ Object.assign(ctx,{me:{role:'owner'},selected:'synthetic-patient',chartSection:'billing',workspace:{patient:{id:'synthetic-patient'},visits:[],appointments:[]},billingCan:()=>true,workspaceResourceAllowed:()=>true,testPaymentLabel:()=>preview?'Test payment':'',money:n=>n==null?'Not available':new Intl.NumberFormat('en-US',{style:'currency',currency:'USD'}).format(n/100),date:ctx.displayDate,human:ctx.displayStatus,invoicePaymentMethod:x=>({cash:'Cash',check:'Check',card:'Card'}[x]||x||'—'),visitBillingStateName:()=> 'Patient owes',savedCardsForCharge:async()=>({cards:[{id:'saved-card'}]}),savedCardChoiceMarkup:()=>'<select name="card"><option value="saved-card">Card ending 4242</option></select>',run:fn=>pending.push(Promise.resolve().then(fn)),watchSavedCardPayment:op=>calls.push({watch:op})});
  const rows=Array.from({length:count},(_,i)=>({id:'account-'+i,version:3,patient_id:'synthetic-patient',encounter_number:i+1,service_date:`2026-11-${String(24-i%24).padStart(2,'0')}`,created_at:`2026-11-${String(24-i%24).padStart(2,'0')}T12:00:00Z`,total_cents:[61000,53000,83000,2000,135000][i%5],payer_name:'Synthetic plan <unsafe>',insurance_pending_cents:1000,patient_owes_now_cents:2000,account_balance_cents:3000,status:'posted',billing_state:'patient_owes',invoice_id:i===0?'invoice':null,invoice_due_cents:2000,invoice_created_at:'2026-11-24',invoice_needs_review:true}));
  // API pages arrive in creation order, which may differ from service date order.
  rows.reverse();
@@ -35,13 +35,14 @@ const flush=()=>new Promise(resolve=>setImmediate(resolve));
 async function main(){
  let f=fixture();await f.ctx.renderPatientBillingWorkspace(f.node('patient-billing-chart'),'chart');await flush();
  let html=f.node('patient-billing-panel').innerHTML,shell=f.node('patient-billing-chart').innerHTML;
- for(const label of ['Billing &amp; payments','Take payment','Live payments','Test payments','Practice payment settings','Practice billing tools','role="tablist"'])assert.ok(shell.includes(label),label);
- for(const label of ['Patient owes','Insurance pending','Paid','Credit','2 receipts · after refunds','1 receipts to re-check','Money still with insurance','ENC 8','$610.00','$530.00','$830.00','$20.00','$1,350.00','$183.00','Cash','View receipt','Partially refunded','Next payments','No statement prepared','View statement','Needs review'])assert.ok(html.includes(label),label);
+ for(const label of ['Billing &amp; payments','Take payment','Clinic payments','Test payments','Practice payment settings','Practice billing tools','role="tablist"'])assert.ok(shell.includes(label),label);
+ for(const label of ['Patient owes now','Insurance pending','Copays received','Available copay credit','2 receipts · after refunds','1 receipt needs review','Due across posted visits','ENC 8','$610.00','$530.00','$830.00','$20.00','$1,350.00','$183.00','Cash','View receipt','Partially refunded','Next payments','No statement prepared','View statement','Needs review'])assert.ok(html.includes(label),label);
  assert.equal((html.match(/data-account="account-/g)||[]).length,8);
  assert.match(html,/Insurance pending<\/span><strong>\$80.00/);
  assert.ok(html.indexOf('ENC 1')<html.indexOf('ENC 8'));
  assert.match(html,/Nov 24, 2026/);assert.doesNotMatch(html,/>2026-11-|Stripe|<unsafe>/);
  for(const status of ['Not sent','Sent','Accepted','Denied','Paid'])assert.ok(html.includes('>'+status+'</span>'),status);
+ assert.match(f.ctx.patientBillingClaimPill({claim_status:'rejected'},{}),/>Returned<\/span>/);
  assert.match(f.node('patient-billing-balances').innerHTML,/Charge card on file/);
  f.node('patient-billing-chart').querySelectorAll=sel=>sel==='[data-balance-slot]'?[Object.assign(f.node('slot'),{dataset:{balanceSlot:'invoice'}})]:[];
  await f.ctx.openBalanceSavedCard(f.run('patientBillingWorkspace'),'invoice');assert.match(f.node('slot').innerHTML,/4242/);assert.match(f.node('slot').innerHTML,/Charge \$20.00/);
@@ -65,8 +66,21 @@ async function main(){
  assert.equal((html.match(/>Test payment<\/span>/g)||[]).length,3);
  assert(html.indexOf('ENC 92')<html.indexOf('ENC 90')&&html.indexOf('ENC 90')<html.indexOf('ENC 1'));
  assert.match(html,/Insurance pending<\/span><strong>\$80.00/);
- assert.match(html,/Patient owes<\/span><strong>\$160.00/);
+ assert.match(html,/Patient owes now<\/span><strong>\$160.00/);
  assert(f.calls.some(c=>c.url?.includes('mode=test')&&c.url.includes('accounts_after=')));
+ // Production restores a stale test bookmark as recorded activity and never requests test pages.
+ for(const surface of ['chart','global']){
+  const live=fixture(surface==='chart'?8:0,testAccounts,false);
+  const host=live.node(surface==='chart'?'patient-billing-chart':'global-billing');
+  await live.ctx.renderPatientBillingWorkspace(host,surface,{mode:'test'});
+  assert.doesNotMatch(host.innerHTML,/patient-billing-mode|Payment records|Test payments/);
+  assert.doesNotMatch(live.node('patient-billing-panel').innerHTML,/Test payment|test-account-/);
+  assert.equal(live.run('patientBillingWorkspace.mode'),'recorded');
+  assert(!live.calls.some(c=>c.url?.includes('mode=test')));
+  live.events.change({target:{id:'patient-billing-mode',value:'test'}});
+  await Promise.all(live.pending);
+  assert(!live.calls.some(c=>c.url?.includes('mode=test')),'a stale mode event is ignored');
+ }
  // Sorting and pagination operate on the merged history, including the boundary at 50.
  f=fixture(49,testAccounts);await f.ctx.renderPatientBillingWorkspace(f.node('patient-billing-chart'),'chart');html=f.node('patient-billing-panel').innerHTML;
  assert.equal((html.match(/data-account="(?:test-)?account-/g)||[]).length,50);
@@ -96,15 +110,17 @@ async function main(){
  assert.match(f.node('patient-billing-preview').innerHTML,/data-account="account-0" data-version="3"/);
  assert.match(f.node('patient-billing-preview').innerHTML,/I received this payment/);
  assert.ok(f.calls.some(c=>c.url?.includes('accounts_after=')));
+ assert.ok(!f.calls.some(c=>c.method==='POST'),'opening payment never prepares a statement or changes the balance');
  // Billing-only staff can open and act on every practice balance.
  f=fixture();f.ctx.workspaceResourceAllowed=resource=>resource!=='clinical';
  await f.ctx.renderPatientBillingWorkspace(f.node('global-billing'),'global',{patientId:null,tab:'overview',mode:'recorded'});
  const actualPractice=f.node('patient-billing-panel').innerHTML;
- for(const label of ['data-hub-open=','>Collect</button>','>Send statement</button>','Gross charges','Copay receipts'])assert.ok(actualPractice.includes(label),label);
+ for(const label of ['data-hub-open=','>Take payment</button>','Visit balances and statements','Copay receipts'])assert.ok(actualPractice.includes(label),label);
 
  f=fixture();f.ctx.workspaceResourceAllowed=resource=>resource!=='clinical';
  const practice=f.ctx.patientBillingAccounts({accounts:{items:[{id:'account-0',patient_id:'synthetic-patient',patient_name:'Synthetic patient',status:'posted',patient_owes_now_cents:2000,total_cents:3000}]}},{surface:'global',patientId:null,mode:'recorded'});
- for(const label of ['data-hub-open="synthetic-patient"','>Open</button>','data-hub-collect="synthetic-patient"','>Collect</button>','data-hub-statement="synthetic-patient"','>Send statement</button>'])assert.ok(practice.includes(label),label);
+ for(const label of ['data-hub-open="synthetic-patient"','>Synthetic patient</button>','data-hub-collect="synthetic-patient"','>Take payment</button>'])assert.ok(practice.includes(label),label);
+ assert.doesNotMatch(practice,/Send statement/);
  assert.doesNotMatch(practice,/data-billing-patient/);
  await f.ctx.renderPatientBillingWorkspace(f.node('global-billing'),'global',{patientId:'synthetic-patient',tab:'overview',mode:'recorded'});
  let opened;f.ctx.showPatientBillingWorkspace=async options=>{opened=options;};

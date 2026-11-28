@@ -438,6 +438,23 @@ async function prepareVisitClaim(){
  if(encounterRevenueState===state&&state.data)state.data.prepareError=null;
  await loadEncounterRevenueStatus(account,true);
  if(current()&&result.outcome==='prepared')notice('Claim prepared from this encounter. Nothing was sent.');
+ return result;
+}
+async function openEncounterCoverageWorklistAction(accountId,action,version){
+ const account=encounterChargeAccount(),patient=selected,visit=activeVisit?.id,identity=me;
+ const current=()=>selected===patient&&activeVisit?.id===visit&&me===identity&&chartSection==='visits'&&encounterChargeAccount()?.id===accountId;
+ const changed='The posted charges changed. Refresh the worklist and review this encounter.';
+ if(account?.id!==accountId||!current()||version!=null&&account.version!==version)throw new Error(changed);
+ await loadEncounterRevenueStatus(account,true,{prepare:false});
+ if(!current())return;
+ const data=encounterRevenueState.data,summary=data?.summary;
+ if(data?.stale||data?.error||summary?.account?.id!==accountId||summary.account.version!==account.version)throw new Error(changed);
+ if(action==='apply_coverage')return openEncounterPostedCoverage(null,{accountId,prepareClaim:true});
+ if(action==='prepare_claim'){
+  if(summary.state==='prepare_claim')await prepareVisitClaim();
+  if(current()&&encounterRevenueState.data?.summary?.claim?.id)visitReviewOpen();
+  else if(current())throw new Error(encounterRevenueState.data?.prepareError||'The claim is ready for review when the missing billing details are filled in.');
+ }
 }
 async function visitResubmitFromWorklist(recovery){
  const visit=activeVisit?.id,patient=selected,identity=me,account=encounterChargeAccount();
@@ -749,15 +766,6 @@ async function postVisitChargesFromCard(options={}){
  const patient=selected,identity=me,visit=typeof activeVisit==='undefined'?null:activeVisit?.id,accountId=account.id;
  const current=()=>selected===patient&&me===identity&&(typeof activeVisit==='undefined'?null:activeVisit?.id)===visit&&encounterChargeAccount()?.id===accountId;
  if(typeof encounterRevenueVisitUnsigned==='function'&&encounterRevenueVisitUnsigned(account))return false;
- if(account.content.coverage_id){
-  const coverage=(workspace.billing?.coverages||[]).find(c=>c.id===account.content.coverage_id);
-  const payer=(typeof billingPayers!=='undefined'?billingPayers:[]).find(p=>p.id===coverage?.content.payer_id);
-  if(!String(payer?.content.payer_code||'').trim()){
-   billingSelected=account.id;showBillingAccount(account.id,false);
-   $('encounter-billing-detail')?.scrollIntoView({behavior:'smooth',block:'start'});
-   return false;
-  }
- }
  // Codes are checked on every post, as approving an encounter does elsewhere: what must be fixed
  // stops the post and is shown on the table; what should be checked is asked about once.
  const editor=$('billing-account-form');
@@ -779,14 +787,31 @@ async function postVisitChargesFromCard(options={}){
  if(form&&typeof flushEncounterProcedures==='function')await flushEncounterProcedures(form,current);
  if(!current())return false;
  account=encounterChargeAccount();if(account.status!=='draft')return false;
- const insured=state.data?.summary?.insurance?.insured===true&&account.content.coverage_id!=null;
- const message=options.send&&insured?`Charges of ${money(account.total_cents)} become final. Review and submit the claim on the Claim.MD form.`:insured?`Charges of ${money(account.total_cents)} become final and the insurance claim is prepared.`:`Charges of ${money(account.total_cents)} become final.`;
  const held=account.content.claim_details?.review_requested===true;
+ const heldMessage=held?' These charges were held for review. Posting approves them.':'';
  const checks=reviews.length?`\n\nCheck before posting:\n${reviews.map(f=>'• '+(f.code?f.code+' · ':'')+f.text).join('\n')}`:'';
- if(!await confirmAction(message+(held?' These charges were held for review; posting approves them.':'')+checks,{title:held?'Approve and post these charges?':'Post these charges?',confirmLabel:held?'Approve and post':'Post charges'})){visitChargePostResult.cancelled=true;return false;}
+ const confirmLabel=held?'Approve and post':'Post charges';
+ const decision=typeof reviewBillingCoverageForPosting==='function'
+  ?await reviewBillingCoverageForPosting(account,{current,confirmLabel,message:`Charges of ${money(account.total_cents)} become final.${heldMessage}${checks}`})
+  :{account};
+ if(!decision){visitChargePostResult.cancelled=true;return false;}
+ account=decision.account;
+ if(!current())return false;
+ const insured=!!account.content.coverage_id;
+ if(insured){
+  const coverage=(workspace.billing?.coverages||[]).find(c=>c.id===account.content.coverage_id);
+  const payer=(typeof billingPayers!=='undefined'?billingPayers:[]).find(p=>p.id===coverage?.content.payer_id);
+  if(!String(payer?.content.payer_code||'').trim()){
+   billingSelected=account.id;showBillingAccount(account.id,false);
+   $('encounter-billing-detail')?.scrollIntoView({behavior:'smooth',block:'start'});
+   return false;
+  }
+ }
+ const message=options.send&&insured?`Charges of ${money(account.total_cents)} become final. Review and submit the claim on the Claim.MD form.`:insured?`Charges of ${money(account.total_cents)} become final and the insurance claim is prepared.`:`Charges of ${money(account.total_cents)} become final.`;
+ if(!decision.reviewed&&!await confirmAction(message+heldMessage+checks,{title:held?'Approve and post these charges?':'Post these charges?',confirmLabel})){visitChargePostResult.cancelled=true;return false;}
  if(!current())return false;
  if(encounterChargeAccount()?.version!==account.version)throw new Error('The charges changed. Review the saved amount before posting.');
- await api(`${billingBase()}/${account.id}/actions`,'POST',{action:'post',reason:held?'Charges reviewed and posted':'Charges posted',local_only:false,...(held?{review_approved:true}:{})},account.version);
+ await api(`${billingBase()}/${account.id}/actions`,'POST',{action:'post',reason:held?'Charges reviewed and posted':'Charges posted',local_only:false,...(held?{review_approved:true}:{}),...(decision.selfPayReason?{self_pay_reason:decision.selfPayReason,self_pay_coverage_ids:decision.selfPayCoverageIds}:{})},account.version);
  visitChargePostResult.posted=true;
  if(!current())return;
  // The same refresh the lower form does: this encounter reopened on its billing step. Then the
@@ -2050,16 +2075,23 @@ function openCollectModal(){
  const known=scoped&&!data.error&&!data.stale&&!review&&Number.isSafeInteger(balance)&&balance>=0;
  const due=known&&balance>0?balance:null;
  const canCollect=!!(encounterPaymentAppointment(appointment)&&due&&billingCan('create'));
+ const correction=known&&encounterPostedCoverageAccount(summary);
+ const newCoverage=known&&(summary.insurance?.added_after_posting||correction);
  const scope={patient:selected,tenant:me?.tenant_id||'',identity:me,visit:visit?.id,appointment:current,canCollect,
   status:review?'Review the payment history before collecting.':!known?'The current balance could not be confirmed.':balance===0?(posted?'No patient amount due.':'No copay due.'):!canCollect?'Payment collection is unavailable for this encounter.':''};
  const home=panel.parentNode,marker=document.createComment('visit-billing-collect');home.insertBefore(marker,panel);
  const head=document.createElement('div');head.dataset.collectHead='';panel.prepend(head);
  collectSession={target:due,owedAtOpen:due||0,copayOnly:!posted&&due>0,taken:[],group:crypto.randomUUID(),encounters:canCollect?[{appointment:current,owes:due,paid:0,on:true}]:[],current,encounter:scope};
  head.innerHTML=`<div data-collect-owed>${known?collectOwedMarkup({showDue:false}):''}</div><div data-collect-encounters></div><div data-collect-progress></div><p data-collect-availability role="status">${esc(current?scope.status:'Link an appointment to this encounter to take a payment.')}</p><div data-collect-reconcile></div>${canCollect?`<nav class="invoice-tabs collect-methods" role="tablist" aria-label="Payment method">${collectMethods.map(([key,label])=>`<button type="button" role="tab" data-collect-method="${key}" aria-selected="false" disabled>${label}</button>`).join('')}</nav><div data-collect-holder></div>`:''}`;
+ if(newCoverage)head.insertAdjacentHTML('afterbegin',`<div class="warning" data-collect-coverage-review><strong>Insurance is on file for this visit.</strong><p>This amount is based on self-pay. Apply insurance to update what the patient owes.</p>${correction?'<button type="button" class="primary" data-collect-apply-insurance>Apply insurance</button>':''}</div>`);
  panel.hidden=false;
  const dialog=sheetOpen(canCollect?'Take payment':'Patient payments',panel);dialog.classList.add('sheet-wide','collect-sheet');collectDialog=dialog;
  const badge=collectTestBadgeMarkup();if(badge){const heading=dialog.querySelector('.sheet-head h3');if(heading)heading.insertAdjacentHTML('afterend',badge);}
  dialog.canCloseSheet=()=>{const request=encounterTenderRequest(scope);return !(request?.running||request?.refreshing);};
+ head.querySelector('[data-collect-apply-insurance]')?.addEventListener('click',()=>{
+  if(!currentEncounterCollect(scope))return;
+  sheetClose(dialog,()=>{void openEncounterPostedCoverage(null,{accountId:correction.id}).catch(error=>notice(error.message,true));});
+ });
  dialog.addEventListener('close',()=>{if(collectDialog===dialog)collectDialog=null;if(marker.parentNode){panel.hidden=true;head.remove();const slot=$('encounter-hosted-copay-reader');if(slot&&!slot.querySelector('[data-reader-payment="waiting"],[data-reader-payment="finishing"]'))slot.replaceChildren();marker.parentNode.insertBefore(panel,marker);marker.remove();}else panel.remove();if(dialog.dataset.refresh&&currentEncounterCollect(scope))void collectRefresh();},{once:true});
  const request=encounterTenderRequest(scope);
  if(canCollect||request){
@@ -2551,11 +2583,12 @@ function encounterPostedCoverageAccount(summary=encounterRevenueState.data?.summ
  const account=encounterChargeAccount();
  if(account?.id!==summary.account.id||account.status!=='posted'||account.content.coverage_id||account.coverage_snapshot||account.source_history_id)return null;
  const serviceDate=account.content.service_date;
- return serviceDate&&billingEffectiveCoverages(serviceDate).length?account:null;
+ const added=summary.insurance.added_after_posting??(serviceDate&&billingEffectiveCoverages(serviceDate).length>0);
+ return added?account:null;
 }
-async function openEncounterPostedCoverage(button){
+async function openEncounterPostedCoverage(button,{accountId=button?.dataset.applyPostedCoverage,prepareClaim=false}={}){
  const account=encounterPostedCoverageAccount();
- if(!account||account.id!==button.dataset.applyPostedCoverage)throw new Error('Refresh the encounter before applying insurance.');
+ if(!account||account.id!==accountId)throw new Error('Refresh the encounter before applying insurance.');
  if(document.querySelector('dialog[data-posted-coverage-sheet][open]'))return;
  const patient=selected,visit=activeVisit.id,identity=me;
  const path=`/api/v1/patients/${encodeURIComponent(patient)}/billing/accounts/${encodeURIComponent(account.id)}/coverage`;
@@ -2570,7 +2603,7 @@ async function openEncounterPostedCoverage(button){
  dialog.addEventListener('close',()=>{
   if(!current())return;
   const guide=$('visit-page-host')?.querySelector('[data-encounter-next]:not([hidden])');
-  (button.isConnected&&encounterPostedCoverageAccount()?button:guide)?.focus({preventScroll:true});
+  (button?.isConnected&&encounterPostedCoverageAccount()?button:guide)?.focus({preventScroll:true});
  },{once:true});
  const message=text=>{node.replaceChildren();const error=document.createElement('p');error.role='alert';error.textContent=text;node.append(error);};
  let review;
@@ -2584,22 +2617,27 @@ async function openEncounterPostedCoverage(button){
  const option=choice=>{
   const name=[choice.payer_name,choice.plan_name].filter(Boolean).join(' · ');
   const details=[name,choice.priority&&human(choice.priority),choice.member_id&&`Member ${choice.member_id}`].filter(Boolean).join(' · ');
-  return `<option value="${esc(choice.id)}">${esc(details)}</option>`;
+  return `<option value="${esc(choice.id)}"${prepareClaim&&choice.electronic===false?' disabled':''}>${esc(details)}${prepareClaim&&choice.electronic===false?' (add Claim.MD payer ID)':''}</option>`;
  };
- node.innerHTML=`<form data-posted-coverage-form><p>${esc(visitBillingDate(review.service_date))} · ${money(account.total_cents)} posted</p><p>Apply the policy that covers this service date. Your saved procedure and diagnosis codes stay on this encounter. Review the claim before sending it.</p><label>Billing coverage<select name="coverage_id" required>${choices.length===1?'':'<option value="">Choose insurance</option>'}${choices.map(option).join('')}</select></label><label>Reason<input name="reason" required maxlength="1000" value="Apply insurance to posted self-pay charges"></label><p role="alert" data-posted-coverage-error hidden></p><div class="actions"><button type="submit" class="primary">Apply insurance</button><button type="button" data-sheet-close>Cancel</button></div></form>`;
+ const selectable=choices.filter(choice=>!prepareClaim||choice.electronic!==false);
+ const only=selectable.length===1?selectable[0]:null;
+ const action=prepareClaim?'Apply insurance and prepare claim':'Apply insurance';
+ node.innerHTML=`<form data-posted-coverage-form><p>${esc(visitBillingDate(review.service_date))} · ${money(account.total_cents)} posted</p><p>Your saved codes, charges and payments stay on this encounter.</p><label>Billing coverage<select name="coverage_id" required><option value="">Choose insurance</option>${choices.map(option).join('')}</select></label><p role="alert" data-posted-coverage-error hidden></p><div class="actions"><button type="submit" class="primary" ${selectable.length?'':'disabled'}>${action}</button><button type="button" data-sheet-close>Cancel</button></div></form>`;
  const form=node.querySelector('form'),submit=form.querySelector('button[type="submit"]'),errorLine=form.querySelector('[data-posted-coverage-error]');
- const choiceField=form.elements.coverage_id,reasonField=form.elements.reason;
+ const choiceField=form.elements.coverage_id;
+ if(only)choiceField.value=only.id;
+ if(!selectable.length){errorLine.textContent='Add a Claim.MD payer ID to the saved policy before preparing the claim.';errorLine.hidden=false;}
  choiceField.focus({preventScroll:true});
  let payload=null,unconfirmed=false;
  form.addEventListener('submit',async event=>{
   event.preventDefault();
   if(saving||submit.disabled||!open()||!billingCan('edit'))return;
-  const choice=choices.find(row=>row.id===choiceField.value),reason=reasonField.value.trim();
-  if(!choice||!reason){errorLine.textContent='Choose insurance and enter a reason.';errorLine.hidden=false;return;}
+  const choice=selectable.find(row=>row.id===choiceField.value);
+  if(!choice){errorLine.textContent='Choose insurance for this service date.';errorLine.hidden=false;return;}
   saving=true;submit.disabled=true;errorLine.hidden=true;
   let locked=false;
-  if(!payload||(!unconfirmed&&(payload.coverage_id!==choice.id||payload.reason!==reason)))
-   payload={request_id:crypto.randomUUID(),coverage_id:choice.id,coverage_version:choice.version,reason};
+  if(!payload||(!unconfirmed&&payload.coverage_id!==choice.id))
+   payload={request_id:crypto.randomUUID(),coverage_id:choice.id,coverage_version:choice.version,reason:'Apply insurance to posted self-pay charges',...(prepareClaim?{prepare_for_claim:true}:{})};
   try{
    const updated=await api(path,'POST',payload,review.account_version);
    if(!open())return;
@@ -2608,16 +2646,29 @@ async function openEncounterPostedCoverage(button){
     updated.content.coverage_id!==payload.coverage_id||!Number.isSafeInteger(updated.version)||updated.version<=review.account_version||updated.version<currentAccount.version){
     locked=true;throw new Error('Insurance may have saved. Refresh this encounter to review the billing account.');
    }
+   let claimId=null,prepareError=null;
+   if(prepareClaim){
+    try{
+     const draft=await api(`${path.replace(/\/coverage$/,'')}/claims/prepare`,'POST',{});
+     claimId=draft.claim_id||null;
+     if(!claimId)prepareError='Review claim preparation on this encounter.';
+    }catch(error){prepareError=visitBillingPrepareMessage(error);}
+   }
+   if(!open())return;
    workspace.billing.accounts=workspace.billing.accounts.map(row=>row.id===updated.id?updated:row);
    saving=false;sheetClose(dialog);
    renderEncounterRevenue();
    await encounterRevenueState.pending;
-   if(current())notice('Insurance applied. Review the claim before sending.');
+   if(current()){
+    const ready=encounterRevenueState.data?.summary?.claim?.id;
+    notice(prepareError&&!ready?`Insurance applied. ${prepareError}`:'Insurance applied. Review the claim before sending.',!!prepareError&&!ready);
+    if(claimId&&ready===claimId)visitReviewOpen();
+   }
   }catch(error){
    if(!open())return;
    locked||=error.status===409;
    if(!error.status&&!locked){
-    unconfirmed=true;choiceField.disabled=true;reasonField.disabled=true;
+    unconfirmed=true;choiceField.disabled=true;
     submit.textContent='Retry';
    }
    errorLine.textContent=unconfirmed&&!locked?'The response was interrupted. Retry with the same details to check whether insurance was applied.':error.message;

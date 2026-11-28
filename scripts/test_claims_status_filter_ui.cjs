@@ -6,6 +6,7 @@ const vm=require('node:vm');
 const {JSDOM}=require('jsdom');
 const claimsBase='/api/v1/billing/claims';
 const eraBase='/api/v1/billing/remittances';
+const coverageBase='/api/v1/billing/coverage-needs-action';
 const id=n=>`00000000-0000-4000-8000-${String(n).padStart(12,'0')}`;
 const claim=(n,status,fields={})=>({
  id:id(n),patient_name:'Synthetic Patient',patient_id:id(100+n),account_id:id(200+n),
@@ -36,9 +37,10 @@ function fixture({write=true,claimRows=claims,remittanceRows=remittances,history
  Object.assign(ctx,{
   $,me:{user_id:'synthetic-staff',tenant_id:'synthetic-tenant',role:write?'owner':'nurse'},
   esc:value=>String(value??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('"','&quot;'),
+  encounterNumberLabel:sequence=>sequence?`ENC-${String(sequence).padStart(4,'0')}`:'',
   money:value=>`$${(value/100).toFixed(2)}`,human:String,notice(){},billingWrite:()=>write,
   billingPayers:[],payerName:()=> 'Synthetic Payer',billingField:()=> '<input name="reason">',
-  showTool:()=>$('nav-claims').setAttribute('aria-current','page'),captureVisitDrafts(){},busy:false,
+  showTool:()=>{$('nav-claims').setAttribute('aria-current','page');$('tools').hidden=false;$('clinical-workspace').hidden=true;},captureVisitDrafts(){},busy:false,
   claimMdConnectionState:{connected:true},loadClaimMdConnection:async()=>({connected:true}),
   showEraAutomation:async()=>panels.push('automation'),showRecoupments:async()=>panels.push('recoupments'),
   showEraBatches:async()=>panels.push('batch'),showProviderSettlement:async key=>panels.push(key),
@@ -53,6 +55,7 @@ function fixture({write=true,claimRows=claims,remittanceRows=remittances,history
    if(path===`${claimsBase}?after=${encodeURIComponent(nextClaims)}`)return {items:afterClaims.map(c=>({...c})),next_cursor:null};
    if(path===eraBase)return {items:[...pageEras],next_cursor:nextEras};
    if(path===`${eraBase}?after=${encodeURIComponent(nextEras)}`)return {items:[...afterEras],next_cursor:null};
+   if(path===coverageBase)return {items:[],can_apply_coverage:write,can_prepare_claim:write};
    if(path==='/api/v1/billing/payers')return {items:[]};
    if(path==='/api/v1/billing/remittance-sources')return {items:[{source_history_id:id(40),source_id:'Synthetic import',source_instance:'Archive'}]};
    if(path.startsWith(claimsBase+'/')){
@@ -258,6 +261,86 @@ const waitFor=async test=>{
  assert(canceled.calls.every(([,method])=>method==='GET'));
  console.log('PASS canceled recovery opens the exact corrected encounter while older voids stay in history');
 
+ const coverageRow={account_id:id(201),account_version:5,patient_id:id(101),patient_name:'Synthetic Patient',visit_id:id(401),
+  encounter_number:12,service_date:'2026-11-19',total_cents:47500,patient_paid_cents:2500,patient_owes_now_cents:45000,
+  choices:[{id:id(75),payer_name:'Synthetic Primary Payer'}],state:'apply_coverage'};
+ const blockedCoverage={...coverageRow,account_id:id(202),visit_id:id(402),encounter_number:13,
+  blocker_code:'pending_payment',blocked_reason:'Resolve the pending card payment before applying insurance.'};
+ const preparedCoverage={...coverageRow,account_id:id(203),visit_id:id(403),encounter_number:14,state:'prepare_claim',patient_owes_now_cents:0};
+ const coverage=fixture({claimRows:[claim(1,'draft')],remittanceRows:[],history:true});
+ const queueResult={can_apply_coverage:true,can_prepare_claim:true};
+ coverage.routes.set(coverageBase,()=>({...queueResult,items:[coverageRow],next_cursor:'next coverage'}));
+ coverage.routes.set(coverageBase+'?after=next%20coverage',()=>({items:[blockedCoverage,preparedCoverage]}));
+ coverage.ctx.workspace={};
+ let latestAccountVersion=5;
+ coverage.ctx.selectPatient=async (patient,visit,current)=>{
+  if(!current())return;
+  coverage.opened.push([patient,visit]);
+  coverage.ctx.selected=patient;coverage.ctx.activeVisit={id:visit};
+  coverage.ctx.chartSection='visits';coverage.ctx.encounterSection='charges';
+  coverage.$('clinical-workspace').hidden=false;coverage.$('tools').hidden=true;
+  const row=[coverageRow,blockedCoverage,preparedCoverage].find(item=>item.visit_id===visit);
+  coverage.ctx.workspace={billing:{accounts:[{id:row.account_id,version:latestAccountVersion,status:'posted',content:{visit_id:visit}}]}};
+ };
+ coverage.ctx.openEncounterCoverageWorklistAction=async (...args)=>coverage.opened.push(args);
+ coverage.ctx.invoiceTabSet=tab=>coverage.opened.push([tab]);
+ await coverage.ctx.showClaimsWorkspace();
+ assert.equal(coverage.stageCounts().action,4);
+ assert.equal(coverage.stageCounts().send,1,'a charge account does not count as a claim awaiting send');
+ const apply=`[data-coverage-worklist-account="${coverageRow.account_id}"]`;
+ const blocked=`[data-coverage-worklist-account="${blockedCoverage.account_id}"]`;
+ const prepare=`[data-coverage-worklist-account="${preparedCoverage.account_id}"]`;
+ const amountCells=selector=>Array.from(coverage.$q(selector).closest('tr').querySelectorAll('dl div'),item=>[item.querySelector('dt').textContent,item.querySelector('dd').textContent]);
+ assert.deepEqual(amountCells(apply),[['Posted charges','$475.00'],['Patient paid','$25.00'],['Patient owes now','$450.00']]);
+ assert.deepEqual(amountCells(prepare),[['Posted charges','$475.00'],['Patient paid','$25.00'],['Patient owes now','$0.00']]);
+ assert.match(coverage.$q(apply).closest('tr').textContent,/ENC-0012 · Nov 19, 2026/);
+ assert.equal(coverage.$q(apply).textContent,'Apply insurance');
+ assert.equal(coverage.$q(blocked).textContent,'Review payments');
+ assert.match(coverage.$q(blocked).closest('tr').textContent,/Resolve the pending card payment/);
+ assert.equal(coverage.$q(prepare).textContent,'Prepare claim');
+ coverage.stage('send').click();assert.equal(coverage.$q('[data-coverage-worklist]').hidden,true);
+ coverage.stage('action').click();assert.equal(coverage.$q('[data-coverage-worklist]').hidden,false);
+ await coverage.click(apply);
+ assert.deepEqual(coverage.opened.splice(0),[[coverageRow.patient_id,coverageRow.visit_id],['charges'],[coverageRow.account_id,'apply_coverage',coverageRow.account_version]]);
+ assert.equal(coverage.ctx.location.hash,`#/patients/${coverageRow.patient_id}/encounter/${coverageRow.visit_id}/charges`);
+ coverage.ctx.history.back();
+ await waitFor(()=>coverage.ctx.location.hash==='#/claims'&&!coverage.$('tools').hidden&&coverage.stage('action').getAttribute('aria-pressed')==='true');
+ await new Promise(resolve=>coverage.ctx.requestAnimationFrame(()=>coverage.ctx.requestAnimationFrame(resolve)));
+ await coverage.click(blocked);
+ assert.deepEqual(coverage.opened.splice(0),[[blockedCoverage.patient_id,blockedCoverage.visit_id],['charges'],['payments']]);
+ await coverage.ctx.showClaimsWorkspace({filter:'action'});
+ await coverage.click(prepare);
+ assert.deepEqual(coverage.opened.splice(0),[[preparedCoverage.patient_id,preparedCoverage.visit_id],['charges'],[preparedCoverage.account_id,'prepare_claim',preparedCoverage.account_version]]);
+ coverage.routes.set(coverageBase+'?after=next%20coverage',()=>({items:[blockedCoverage]}));
+ coverage.ctx.history.back();
+ await waitFor(()=>coverage.ctx.location.hash==='#/claims'&&!coverage.$('tools').hidden&&!coverage.$q(prepare));
+ await new Promise(resolve=>coverage.ctx.requestAnimationFrame(()=>coverage.ctx.requestAnimationFrame(resolve)));
+ latestAccountVersion++;
+ await assert.rejects(coverage.click(apply),/posted charges changed/);
+ assert(!coverage.opened.some(([,action])=>action==='apply_coverage'),'a stale account can never launch an apply or prepare action');
+ assert(coverage.calls.every(([,method])=>method==='GET'),'row actions hand off to the encounter and do not submit claims');
+ coverage.routes.set(coverageBase,()=>{throw new Error('Service unavailable');});
+ await coverage.ctx.showClaimsWorkspace({filter:'action'});
+ assert.match(coverage.$q('[data-coverage-worklist]').textContent,/Could not check for insurance added after posting/);
+ assert.equal(coverage.stageCounts().action,1);hasIds(coverage,'claim',[1]);
+ coverage.routes.set(coverageBase,()=>({items:[coverageRow],can_apply_coverage:true,can_prepare_claim:false}));
+ await coverage.click('[data-refresh-coverage-worklist]');
+ assert.equal(coverage.$q(apply).textContent,'Review encounter');
+ assert.equal(coverage.stageCounts().action,2);
+ coverage.ctx.workspaceResourceAllowed=resource=>resource!=='clinical';
+ await coverage.ctx.claimsAutoRefreshLoad();
+ assert.equal(coverage.$q(apply),null,'view-only chart restrictions apply to queue navigation');
+ const slowCoverage=fixture({claimRows:[claim(1,'draft')],remittanceRows:[]});
+ let resolveCoverage;
+ slowCoverage.routes.set(coverageBase,()=>new Promise(resolve=>{resolveCoverage=resolve;}));
+ await slowCoverage.ctx.showClaimsWorkspace();
+ hasIds(slowCoverage,'claim',[1]);
+ assert.match(slowCoverage.$q('[data-coverage-worklist]').textContent,/Checking posted charges/);
+ resolveCoverage({items:[coverageRow],...queueResult});
+ await waitFor(()=>slowCoverage.$q(apply));
+ assert.equal(slowCoverage.$q(apply).textContent,'Apply insurance');
+ console.log('PASS coverage worklist totals, granular actions, retry, access and independent loading');
+
  const refresh=fixture();
  refresh.setRemittances([payment(30,'staged')],'older',[payment(36,'posted')]);
  await refresh.ctx.showClaimsWorkspace({filter:'posted'});
@@ -269,7 +352,7 @@ const waitFor=async test=>{
  refresh.setClaims([claim(45,'submitted',{claimmd_position:{needs_correction:true}})]);
  const from=refresh.paths().length;
  await refresh.ctx.claimsAutoRefreshLoad();
- assert.deepEqual(refresh.paths().slice(from),[claimsBase,eraBase,eraBase+'?after=older']);
+ assert.deepEqual(refresh.paths().slice(from),[claimsBase,eraBase,coverageBase,eraBase+'?after=older']);
  hasIds(refresh,'era',[30,36]);assert.equal(refresh.stageCounts().fix,1);
  assert.equal(refresh.$('claims-detail'),detail);assert.equal(detail.querySelector('form'),editor);
  assert.equal(data.value,'Unsaved correction');
@@ -288,5 +371,5 @@ const waitFor=async test=>{
  assert.equal(refresh.stageCounts()['remittance-review'],1);
  console.log('PASS quiet refresh preserves details, loaded pages, and session isolation');
 
- for(const item of [f,empty,actions,readOnly,visit,guided,canceled,refresh])item.dom.window.close();
+ for(const item of [f,empty,actions,readOnly,visit,guided,canceled,coverage,slowCoverage,refresh])item.dom.window.close();
 })().catch(error=>{console.error(error);process.exitCode=1;});
