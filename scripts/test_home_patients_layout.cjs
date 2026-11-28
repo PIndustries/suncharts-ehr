@@ -14,6 +14,7 @@ c.fixture=data;vm.runInContext('practiceData=fixture;renderPracticeWorkspace()',
 const home=node('practice-home').outerHTML;
 assert.equal((home.match(/class="practice-tile(?: is-attention)?"/g)||[]).length,5);
 for(const [label,count]of [['Appointments today',1],['Notes to finish',2],['Claims to send',3],['Claims needing a fix',2]])assert(home.includes(`<span>${label}</span><b>${count}</b>`),label);
+assert.match(home,/href="#\/claims\/send"[^>]*data-practice-action="claims-send"/);
 assert.equal((home.match(/Needs attention/g)||[]).length,1);
 assert.equal((home.match(/<li>/g)||[]).length,7);
 assert.match(home,/Missing address<\/span><b>2<\/b><button[^>]*data-practice-action="missing-address"/);
@@ -84,6 +85,8 @@ async function action(value){const b={id:'',dataset:{practiceAction:value},hasAt
  console.log('PASS Patients endpoint fields, search, paging, status controls, row chart opener and frame-tab path');
  const claims=read('web/claims.js'),cc=vm.createContext({document:{addEventListener(){}}});
  vm.runInContext(claims,cc);
+ assert.equal(cc.claimMatchesStatusFilter({status:'draft'}),false,'clean drafts have their own queue');
+ cc.claimStatusFilter='send';
  assert.equal(cc.claimMatchesStatusFilter({status:'draft'}),true);assert.equal(cc.claimMatchesStatusFilter({status:'ready'}),true);assert.equal(cc.claimMatchesStatusFilter({status:'submitted'}),false);
  cc.claimStatusFilter='fix';assert.equal(cc.claimMatchesStatusFilter({status:'rejected'}),true);assert.equal(cc.claimMatchesStatusFilter({status:'submitted',claimmd_position:{needs_correction:true}}),true);assert.equal(cc.claimMatchesStatusFilter({status:'submitted'}),false);
  console.log('PASS Home claim destinations filter existing rows without new server calls');
