@@ -276,7 +276,8 @@
 /* Keep the claims that need a decision ahead of the waiting list. */
 #claims-tool [data-claim-worklist],#claims-tool [data-coverage-worklist],#claims-tool .claim-worklist-waiting{margin:12px 0;padding:14px 16px;background:var(--surface);border:1px solid var(--line);border-radius:8px}
 .claim-worklist-heading{flex-wrap:wrap}
-[data-coverage-worklist] table:has(.table-empty) thead{display:none}
+#claims-tool [data-coverage-worklist]:not([hidden]):has(>[data-coverage-worklist-status]:not([hidden])){display:flex;align-items:center;flex-wrap:wrap;gap:4px 16px;padding-block:8px}
+[data-coverage-worklist]:has(>[data-coverage-worklist-status]:not([hidden])) :is(.section-head,h3,p){margin:0}
 .coverage-worklist-amounts{display:flex;flex-wrap:wrap;gap:6px 18px;margin:0;font-variant-numeric:tabular-nums}
 .coverage-worklist-amounts dt{font-size:.8rem;color:var(--muted)}
 .coverage-worklist-amounts dd{margin:0;font-weight:600;white-space:nowrap}

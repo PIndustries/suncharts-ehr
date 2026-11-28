@@ -145,10 +145,12 @@ function coverageWorklistAction(row,queue){
  if(['review_ledger','invoice_or_plan','snapshot_payer_id'].includes(row.blocker_code))return {label:'Review charges',kind:'account'};
  return {label:'Review encounter',kind:'encounter'};
 }
+function coverageWorklistStatus(queue){
+ if(queue.loading)return 'Checking posted charges…';
+ if(queue.failed)return 'Could not check for insurance added after posting. <button type="button" data-refresh-coverage-worklist>Retry</button>';
+ return queue.items.length?'':'No posted charges need this review.';
+}
 function coverageWorklistRows(queue){
- if(queue.loading)return '<tr><td colspan="4" class="table-empty"><span role="status">Checking posted charges…</span></td></tr>';
- if(queue.failed)return '<tr><td colspan="4" class="table-empty"><span role="status">Could not check for insurance added after posting.</span> <button type="button" data-refresh-coverage-worklist>Retry</button></td></tr>';
- if(!queue.items.length)return '<tr><td colspan="4" class="table-empty">No posted charges need this review.</td></tr>';
  const amount=value=>Number.isSafeInteger(value)?money(value):'Unavailable';
  return queue.items.map(row=>{
   const action=coverageWorklistAction(row,queue),count=row.choices?.length||0;
@@ -182,8 +184,13 @@ function claimWorkspaceMarkup(){
  if(coverage){
   coverage.hidden=!actionView||!coverageQueue;
   if(!coverage.hidden){
-   const rows=coverage.querySelector('tbody'),markup=coverageWorklistRows(coverageQueue);
-   if(rows.coverageMarkup!==markup){rows.innerHTML=markup;rows.coverageMarkup=markup;}
+   const status=coverage.querySelector('[data-coverage-worklist-status]'),table=coverage.querySelector('.billing-table-wrap');
+   const statusMarkup=coverageWorklistStatus(coverageQueue);
+   status.hidden=!statusMarkup;
+   table.hidden=Boolean(statusMarkup);
+   const target=statusMarkup?status:table.querySelector('tbody');
+   const markup=statusMarkup||coverageWorklistRows(coverageQueue);
+   if(target.coverageMarkup!==markup){target.innerHTML=markup;target.coverageMarkup=markup;}
   }
  }
  const heading=claimList.querySelector('[data-claim-list-heading]');
@@ -207,7 +214,7 @@ function selectClaimStatusFilter(status){
  if(!claimContextCurrent(claimViewContext)||claimViewContext.kind!=='worklist')return;
  setClaimMonitorFilter(status);
  claimWorkspaceMarkup();
- if(typeof frameBillingMonitorNavigation==='function')frameBillingMonitorNavigation(true);
+ if(typeof frameBillingMonitorNavigation==='function')frameBillingMonitorNavigation();
 }
 document.addEventListener('change',e=>{if(e.target.id==='billing-all-claims')selectClaimStatusFilter(e.target.value);});
 function billingClaimShortcuts(){
@@ -589,7 +596,8 @@ async function showClaimsWorkspace({filter}={}){
  ${claimStatusChipsHtml()}
  <section class="billing-section" data-coverage-worklist hidden>
   <div class="section-head"><h3>Insurance added after posting</h3></div>
-  <div class="billing-table-wrap"><table class="billing-table claim-worklist-table" aria-label="Insurance added after posting">
+  <p class="muted" data-coverage-worklist-status role="status" hidden></p>
+  <div class="billing-table-wrap" hidden><table class="billing-table claim-worklist-table" aria-label="Insurance added after posting">
    <thead><tr><th scope="col">Encounter</th><th scope="col">Insurance</th><th scope="col">Amounts</th><th scope="col">Next action</th></tr></thead><tbody role="rowgroup"></tbody>
   </table></div>
  </section>

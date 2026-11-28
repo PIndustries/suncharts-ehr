@@ -117,6 +117,38 @@ const workspacePath=p=>'/api/v1/patients/'+p.id+'/workspace';
 const patientTab=p=>'[data-frame-patient="'+p.id+'"]';
 const atPatient=(page,p)=>page.waitForFunction(id=>document.getElementById('patient-banner')?.dataset.patientId===id&&workspace?.patient?.id===id,{},p.id);
 
+async function archivedPatientLayout({page,replies}) {
+ const patient={...first,archived:true};
+ const base='/api/v1/patients/'+patient.id;
+ const visit=visits[0];
+ replies.set('GET '+base+'/workspace',()=>({patient,visits:[visit],appointments:[],amendments:[],flags:[]}));
+ replies.set('GET '+base+'/lifecycle',()=>({
+  patient_id:patient.id,version:2,archived:true,can_manage:true,
+  history:[{archived:true,created_at:timestamp,actor_id:staff.user_id,reason:'Synthetic duplicate chart'}]
+ }));
+ await page.goto(origin+'/#/patients/'+patient.id+'/encounter/'+visit.id+'/charges',{waitUntil:'load'});
+ await atPatient(page,patient);
+ const notice='#patient-lifecycle';
+ const restore=notice+' [data-patient-lifecycle-open]';
+ await page.waitForSelector(restore,{visible:true});
+ await page.waitForSelector('#visit-page-host #visit-editor',{visible:true});
+ const closed=await page.$eval(notice,el=>({
+  height:el.getBoundingClientRect().height,
+  open:el.querySelector('details').open,
+  overflows:el.scrollWidth>el.clientWidth
+ }));
+ assert.equal(closed.open,false,'archive history is collapsed initially');
+ assert.equal(closed.overflows,false,'the restore action fits at this viewport');
+ assert.ok(closed.height<240,'the archive notice should fit its content, got '+closed.height+'px');
+ await page.$eval(notice,el=>el.scrollIntoView({block:'center'}));
+ await page.click(notice+' summary');
+ assert.match(await page.$eval(notice,el=>el.innerText),/Synthetic duplicate chart/);
+ const open=await page.$eval(notice,el=>el.getBoundingClientRect().height);
+ assert.ok(open>closed.height&&open<320,'the notice grows only to accommodate the expanded history');
+ await page.click(restore);
+ await page.waitForSelector(notice+' #patient-lifecycle-form [name="confirmed"]',{visible:true});
+}
+
 async function patientSwitch({page,requests,hold}) {
  const firstRoute='#/patients/'+first.id+'/encounter/'+visits[0].id+'/charges';
  await page.goto(origin+'/'+firstRoute,{waitUntil:'load'});
@@ -375,6 +407,15 @@ async function chartAppointmentArrival({page,hold,replies,requests,failures}) {
  assert.equal(requests.filter(path=>path.endsWith('/check-in')).length,4);
 }
 
+async function emptyCoverageLayout({page}) {
+ await page.goto(origin+'/#/claims',{waitUntil:'load'});
+ const queue='[data-coverage-worklist]';
+ await page.waitForFunction(selector=>document.querySelector(selector)?.innerText.includes('No posted charges need this review.'),{},queue);
+ const {height,overflow}=await page.$eval(queue,el=>({height:el.getBoundingClientRect().height,overflow:el.scrollWidth>el.clientWidth}));
+ assert.ok(height<100,'an empty insurance queue is a compact status, got '+height+'px');
+ assert.equal(overflow,false);
+}
+
 async function insurancePaymentQueue({page,replies,requests}) {
  const base='/api/v1/billing/remittances';
  const payments=['staged','reconciled','posted'].map((status,i)=>({id:id(115+i),payer_id:id(114),payer_name:'Synthetic insurer',trace:'QUEUE-'+i,status,version:1,payment_date:'2026-11-24',total_paid_cents:12500,claim_count:0}));
@@ -404,7 +445,7 @@ async function main() {
   const target=process.env.CHART_TEST_BROWSER?{executablePath:process.env.CHART_TEST_BROWSER}:{channel:'chrome'};
   browser=await puppeteer.launch({...target, headless:true, pipe:true, userDataDir:profile, args:['--disable-background-networking','--disable-component-update','--disable-default-apps','--no-first-run','--host-resolver-rules=MAP * ~NOTFOUND']});
   for (const viewport of [{width:1280,height:900},{width:390,height:844,isMobile:true,hasTouch:true}]) {
-   for (const check of [patientSwitch,homeAndReferrals,homePatientAndVisits,chartAppointmentArrival,insurancePaymentQueue]) {
+   for (const check of [archivedPatientLayout,emptyCoverageLayout,patientSwitch,homeAndReferrals,homePatientAndVisits,chartAppointmentArrival,insurancePaymentQueue]) {
     if(process.argv[2]&&process.argv[2]!==check.name)continue;
     const test=await fixture(browser,viewport);
     try {await check(test);assert.deepEqual(test.failures,[]);console.log('PASS '+check.name+' at '+viewport.width+' × '+viewport.height);}

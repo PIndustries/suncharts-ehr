@@ -32,7 +32,7 @@
  const sectionAliases={summary:'overview',profile:'profile',problems:'clinical',allergies:'clinical',medications:'clinical'};
  const billingTabs=['overview','invoices','payments','methods','subscriptions'];
  const missingContactFilters=['address','phone'];
- const claimWorklistFilters=['send','wait','fix','remittance-review','posted'];
+ const claimWorklistFilters=['send','wait','fix','remittance-review','posted','payments'];
  const uuid=value=>typeof value==='string'&&/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
  const invert=(map,value)=>Object.keys(map).find(key=>map[key]===value);
  const knownQueueKind=kind=>typeof workQueueKinds!=='undefined'&&workQueueKinds.some(([key])=>key===kind);
@@ -223,7 +223,7 @@
    await invoke('renderBillingOverview',null,null,{practiceWide:true,view:'collected'});return;
   }
   if(route.view==='tool'&&route.nav==='nav-practice'&&route.board){await invoke('showPracticeWorkspace',{board:route.board});return;}
-  if(route.view==='tool'&&route.nav==='nav-claims'&&route.filter){await invoke('showClaimsWorkspace',{filter:route.filter});return;}
+  if(route.view==='tool'&&route.nav==='nav-claims'){await invoke('showClaimsWorkspace',{filter:route.filter||'action'});return;}
   if(route.view==='tool'&&route.nav==='nav-clinical'&&route.missing){await invoke('openMissingPatients',route.missing);return;}
   if(route.view==='tool'&&toolsByNav[route.nav]){await invoke(toolsByNav[route.nav]);return;}
   if(route.view==='screen'&&screenMethods[route.kind]){

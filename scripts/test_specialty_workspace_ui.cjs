@@ -33,6 +33,19 @@ vm.runInContext(`practiceWorkspaceSettings.content.module_labels={clinical:'<Pat
 assert.equal(label.textContent,'<Patients & encounters>');assert.equal(nodes['nav-clinical'].parentNode,care);
 vm.runInContext(`practiceWorkspaceSettings.content.module_labels={};practiceWorkspaceSettings.content.module_groups={};applyPracticeWorkspaceSettings()`,context);
 assert.equal(label.textContent,'Patients');assert.equal(nodes['nav-clinical'].parentNode,native);
+// Stored menu groups cannot move Practice administration out of the account Settings section.
+const settings={append(node){node.parentNode=this;}},adminLabel={textContent:''};
+nodes['nav-admin'].parentNode=settings;nodes['nav-admin'].querySelector=()=>adminLabel;
+vm.runInContext("me={role:'owner',delegated_role:'partner_admin'};practiceAccessPolicy=undefined;practiceWorkspaceSettings.content.module_groups={admin:'care'};applyPracticeWorkspaceSettings()",context);
+assert.equal(nodes['nav-admin'].parentNode,settings);
+assert.equal(adminLabel.textContent,'Practice administration');
+assert.equal(nodes['nav-admin'].hidden,false,'delegated owners retain Practice administration');
+vm.runInContext("practiceWorkspaceSettings.content.module_labels={admin:'Clinic settings'};applyPracticeWorkspaceSettings()",context);
+assert.equal(adminLabel.textContent,'Clinic settings');
+assert.equal(nodes['nav-admin'].parentNode,settings);
+vm.runInContext("me={role:'clinician'};applyPracticeWorkspaceSettings()",context);
+assert.equal(nodes['nav-admin'].hidden,true,'non-owners cannot open Practice administration from Settings');
+vm.runInContext("me={role:'owner',user_id:'owner'}",context);
 vm.runInContext('clearWorkspaceAccessSession()',context);
 assert.equal(vm.runInContext('practiceAccessPolicy',context),undefined);
 console.log('PASS policy-aware module visibility, action checks, chart areas and persisted label/group restoration');
