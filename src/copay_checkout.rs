@@ -477,11 +477,30 @@ async fn create_with(
     };
     // A card payment still in progress for any of these encounters, on its own or as part of
     // a payment for several, has to finish first.
-    let unresolved:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM copay_checkout_attempts o WHERE o.tenant_id=$1 AND (NOT $3 OR o.livemode) AND o.status IN ('creating','open','needs_review') AND o.receipt_id IS NULL AND (o.appointment_id=ANY($2) OR EXISTS(SELECT 1 FROM copay_checkout_splits p WHERE p.tenant_id=o.tenant_id AND p.operation_id=o.id AND p.appointment_id=ANY($2)))) OR EXISTS(SELECT 1 FROM invoice_checkout_attempts x JOIN billing_accounts b ON b.tenant_id=x.tenant_id AND b.id=x.account_id JOIN visits v ON v.tenant_id=b.tenant_id AND v.id=b.visit_id WHERE x.tenant_id=$1 AND (NOT $3 OR x.livemode) AND v.appointment_id=ANY($2) AND x.status IN ('creating','open','needs_review'))").bind(a.tenant_id).bind(&appointments).bind(policy.production).fetch_one(&mut *tx).await?;
-    if unresolved {
-        return Err(Error::Conflict(
-            "review the existing copay checkout before starting another",
-        ));
+    let unresolved_live: Option<bool> = sqlx::query_scalar(
+        "SELECT bool_or(livemode) FROM (
+           SELECT o.livemode FROM copay_checkout_attempts o
+           WHERE o.tenant_id=$1 AND o.status IN ('creating','open','needs_review') AND o.receipt_id IS NULL
+             AND (o.appointment_id=ANY($2) OR EXISTS(SELECT 1 FROM copay_checkout_splits p
+                  WHERE p.tenant_id=o.tenant_id AND p.operation_id=o.id AND p.appointment_id=ANY($2)))
+           UNION ALL
+           SELECT x.livemode FROM invoice_checkout_attempts x
+           JOIN billing_accounts b ON b.tenant_id=x.tenant_id AND b.id=x.account_id
+           JOIN visits v ON v.tenant_id=b.tenant_id AND v.id=b.visit_id
+           WHERE x.tenant_id=$1 AND v.appointment_id=ANY($2) AND x.status IN ('creating','open','needs_review')
+         ) pending",
+    )
+    .bind(a.tenant_id)
+    .bind(&appointments)
+    .fetch_one(&mut *tx)
+    .await?;
+    if let Some(live) = unresolved_live {
+        let message = if policy.production && !live {
+            "An old test checkout is still open for this appointment. Ask support to review it before taking a card payment."
+        } else {
+            "review the existing copay checkout before starting another"
+        };
+        return Err(Error::Conflict(message));
     }
     let binding = current_binding(pool, a.tenant_id, broker).await?;
     let status = broker
