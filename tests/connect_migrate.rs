@@ -4337,6 +4337,9 @@ async fn bluecard_routes_existing_charges_and_reconciles_the_local_payer() {
     assert!(after.get("local_blue_route").is_none());
 
     let cp = format!("/api/v1/billing/claims/{}", draft["id"].as_str().unwrap());
+    let (status, created) = schedule_call(&r, &a, "GET", &cp, Value::Null, None).await;
+    assert_eq!(status, 200, "{created}");
+    assert_eq!(created["resend"]["frequency_code"], "1");
     let mut bad_edit = claim_content();
     bad_edit["synthetic_test"] = json!(true);
     assert_eq!(
@@ -4394,6 +4397,7 @@ async fn bluecard_routes_existing_charges_and_reconciles_the_local_payer() {
             async move {
                 let mut accepted = claimmd_status_claim(&control, 8, "A", "22099", "SYN-BLUECARD-PCN");
                 accepted["payerid"] = json!("22099");
+                accepted["fileid"] = json!("123456");
                 axum::Json(claimmd_page(vec![accepted]))
             }
         }));
