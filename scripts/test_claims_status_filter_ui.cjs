@@ -33,6 +33,9 @@ function fixture({write=true,claimRows=claims,remittanceRows=remittances,history
  const $=name=>doc.getElementById(name);
  let pageClaims=claimRows,pageEras=remittanceRows,nextClaims=null,nextEras=null,afterClaims=[],afterEras=[];
  ctx.HTMLElement.prototype.scrollIntoView=function(){};
+ ctx.HTMLDialogElement.prototype.showModal=function(){this.open=true;};
+ ctx.HTMLDialogElement.prototype.close=function(){this.open=false;this.dispatchEvent(new ctx.Event('close'));};
+ ctx.matchMedia=()=>({matches:true});
  ctx.scrollTo=()=>{};
  Object.assign(ctx,{
   $,me:{user_id:'synthetic-staff',tenant_id:'synthetic-tenant',role:write?'owner':'nurse'},
@@ -62,7 +65,8 @@ function fixture({write=true,claimRows=claims,remittanceRows=remittances,history
     if(path.endsWith('/history'))return {items:[]};
     const key=path.slice(claimsBase.length+1),row=[...pageClaims,...afterClaims].find(c=>c.id===key);
     assert.ok(row,`Fixture claim ${key} must exist`);
-    return {claim:row,canceled_claim_recovery:row.canceled_claim_recovery,tracking:{remittance_posted:row.remittance_posted===true}};
+    return {claim:row,canceled_claim_recovery:row.canceled_claim_recovery,claimmd_position:row.claimmd_position,
+     submission_issues:row.worklist_issue?[row.worklist_issue]:[],tracking:{remittance_posted:row.remittance_posted===true}};
    }
    if(path.startsWith(eraBase+'/')){
     if(path.endsWith('/history'))return {items:[]};
@@ -79,6 +83,8 @@ function fixture({write=true,claimRows=claims,remittanceRows=remittances,history
  // Exercise the real record-loader and its guards with a lightweight claim-detail template.
  ctx.claimScreenMarkup=row=>`<p data-opened-claim="${row.id}">${row.control_number}</p>`;
  ctx.showEncounterClaim=async (key,account)=>opened.push([key,account]);
+ ctx.openClaimMdSubmissionReview=async key=>opened.push(['review',key]);
+ ctx.mountVisitSignedHeldEditor=(_dialog,_host,{claimId})=>({dirty:()=>false,open:async line=>opened.push(['held',claimId,line.index,line.code])});
  if(history)vm.runInContext(fs.readFileSync('web/navigation-history.js','utf8'),ctx);
  const $q=selector=>doc.querySelector(selector);
  const stage=key=>$q(`[data-claim-status="${key}"]`);
@@ -191,7 +197,8 @@ const waitFor=async test=>{
  const visit=fixture({claimRows:[claim(1,'draft',{snapshot:{account:{content:{visit_id:id(400)}}}})]});
  await visit.ctx.showClaimsWorkspace({filter:'send'});
  await visit.click(`[data-claim-open="${id(1)}"]`);
- assert.deepEqual(visit.opened,[['chart'],[id(101),id(400)],['charges'],[id(1),id(201)]]);
+ assert.deepEqual(visit.opened,[['review',id(1)]]);
+ assert.ok(visit.$q(`dialog[data-worklist-claim-dialog][open] [data-opened-claim="${id(1)}"]`));
  console.log('PASS exact claim, encounter and remittance IDs, Back and Forward, and writer-only remittance actions');
 
  const hold=claim(61,'submitted',{service_date:'2026-11-27',snapshot:{account:{content:{visit_id:id(461)}}},claimmd_position:{needs_correction:true,correction:{at:'2026-11-25T08:00:00Z',line:{index:0,code:'64405'},message:'NCCI - Procedure Code [64405] requires an appropriate modifier when procedure [20553] present.'}}});
@@ -219,23 +226,24 @@ const waitFor=async test=>{
  const paidRow=claim(64,'accepted',{worklist_remittance:{id:matched.id,at:'2026-11-27T09:15:00Z',row_index:0}});
  const guided=fixture({claimRows:[zip,paidRow,unconfirmed,hold,claim(65,'submitted')],remittanceRows:[matched]});
  guided.ctx.document.body.insertAdjacentHTML('beforeend','<div id="visit-page-host"></div>');
- const visits=[];
- guided.ctx.visitOpenCurrentEncounterClaim=async (...args)=>{visits.push(JSON.parse(JSON.stringify(args)));return true;};
+ guided.ctx.visitOpenCurrentEncounterClaim=async ()=>{throw new Error('Worklist actions should stay in the drawer');};
  await guided.ctx.showClaimsWorkspace();
  hasIds(guided,'claim',[61,63,62]);
  assert.deepEqual(Array.from(guided.ctx.document.querySelectorAll('[data-claim-worklist] tbody tr time'),node=>node.dateTime),['2026-11-25T08:00:00Z','2026-11-26T12:00:00Z','2026-11-27T09:00:00Z','2026-11-27T09:15:00Z'],'active evidence, rather than service date, orders the queue');
  assert.equal(guided.stageCounts().wait,1);
  guided.stage('wait').click();hasIds(guided,'claim',[65]);
- for(const [row,label,intent] of [
-  [hold,'Fix modifier 64405',{kind:'correction',procedure:'64405',line:0}],
-  [zip,'Add ZIP code',{kind:'missing',field:'subscriber_address',part:'postal_code'}],
-  [unconfirmed,'Check delivery',{kind:'delivery'}]
+ for(const [row,label,opened] of [
+  [hold,'Fix modifier 64405',['held',hold.id,0,'64405']],
+  [zip,'Add ZIP code',['review',zip.id]],
+  [unconfirmed,'Check delivery',null]
  ]){
   await guided.ctx.showClaimsWorkspace({filter:'action'});
   const button=`[data-claim-open="${row.id}"]`;
   assert.equal(guided.$q(button).textContent,label);
+  const before=guided.opened.length;
   await guided.click(button);
-  assert.deepEqual(visits.at(-1),[row.id,row.account_id,intent]);
+  assert.ok(guided.$q(`dialog[data-worklist-claim-dialog][open] [data-opened-claim="${row.id}"]`));
+  assert.deepEqual(guided.opened.slice(before),opened?[opened]:[]);
  }
  await guided.ctx.showClaimsWorkspace({filter:'action'});
  const remitPath=eraBase+'/'+matched.id;

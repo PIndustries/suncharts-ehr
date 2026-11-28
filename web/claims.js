@@ -765,6 +765,8 @@ function registerClaimsAutoRefresh(){
 }
 async function showClaimsWorkspace({filter}={}){
  captureClaimDraft();
+ const previousDrawer=claimViewContext?.drawer;
+ if(previousDrawer?.open){previousDrawer.close();previousDrawer.remove();}
  const identity=typeof me==='undefined'?undefined:me;
  if(claimStatusFilterIdentity!==identity){claimStatusFilter='action';claimStatusFilterIdentity=identity;claimMonitorEraPages=1;claimWorklistFilters={...claimWorklistDefaultFilters};}
  const context={kind:'worklist',identity,eraPages:claimMonitorEraPages,eraRevision:0};claimViewContext=context;
@@ -1347,6 +1349,8 @@ async function openWorklistClaim(id,intent={},launcher){
   });
  }
  if(context.heldEditor?.dirty()&&!await context.heldEditor.close())return;
+ const quickFix=context.drawerHost.querySelector('#claim-quick-fix');
+ if(quickFix?.claimInlineDirty?.()&&quickFix.checkValidity()&&!await quickFix.claimInlineSave())return;
  context.heldEditor=null;
  captureClaimDraft();
  const detail=await showClaim(id,{historyOnly:intent.kind==='history'});
@@ -1543,6 +1547,7 @@ function claimEditor(b,c=null,source=null,parent=null,coordination=null,localBlu
   (typeof workspace!=='undefined'?workspace?.visits?.find(visit=>visit.id===visitId):null)||{id:visitId};
  claimAccount=b;claimSource=source;const defaults=typeof claimmdClaimProviderDefaults==='function'?claimmdClaimProviderDefaults(assignedVisit,b.content.claim_details):{},coverage=b.coverage_snapshot?.coverage?.content||{},patientAddress=source?'':claimPatientAddressDefault(b),diagnoses=source?{diagnosis_codes:[],line_diagnosis_pointers:b.content.lines.map(()=>[])}:claimChargeDiagnosisDefaults(b);const v=c?.content||(coordination?{...parent.content,subscriber_address:coverage.relationship==='self'?parent.content.patient_address:'',subscriber_birth_date:coverage.subscriber_birth_date||'',external_control_number:''}:parent?.content)||{billing_provider_name:defaults.billing_provider_name||'',billing_npi:defaults.billing_npi||'',tax_id:'',billing_address:defaults.billing_address||'',rendering_npi:defaults.rendering_npi||'',patient_address:patientAddress,subscriber_address:coverage.relationship==='self'?patientAddress:'',subscriber_birth_date:coverage.subscriber_birth_date||'',place_of_service:'',...diagnoses,external_control_number:'',notes:'',synthetic_test:false};
  const localBlue=localBlueOptions.length>0,liveRoute=localBlue||Boolean(claimLocalBlueDestination(c));
+ const continueToReview=localBlue||!!context.drawer&&parent?.status==='rejected'&&!coordination&&!source;
  const blueCard=localBlue?claimLocalBlueReviewMarkup(localBlueOptions,b,parent):claimCoverageAndRouteMarkup(c);
  const previousClaimNumber=liveRoute?'<input type="hidden" name="external_control_number" value="">':
   billingField('external_control_number','Claim number from a previous system',v.external_control_number,'text',100);
@@ -1551,13 +1556,13 @@ function claimEditor(b,c=null,source=null,parent=null,coordination=null,localBlu
  const patient=billingField('rendering_npi','Rendering NPI',v.rendering_npi,'text',10)+billingField('billing_address','Billing address',v.billing_address,'text',1000)+billingField('patient_address','Patient address',v.patient_address,'text',1000)+billingField('subscriber_address','Subscriber address',v.subscriber_address,'text',1000)+billingField('subscriber_birth_date','Subscriber date of birth',v.subscriber_birth_date||'','date')+claimPlaceOfServiceField(v.place_of_service)+claimDiagnosisPickerMarkup(v.diagnosis_codes)+previousClaimNumber;
  const other=claimLineDiagnosisMarkup(b,v)+`<label>Notes<textarea name="notes" maxlength="2000">${esc(v.notes)}</textarea></label>`;
  const fields=localBlue?`<div class="form-grid">${frequency}${billing}</div><details data-inline><summary>Other claim details</summary><div class="form-grid">${patient}</div>${other}</details>`:`<div class="form-grid">${frequency}${billing}${patient}</div>${other}`;
- const html=`<form id="claim-editor-form" data-request="${crypto.randomUUID()}" data-edit="${c?.id||''}" data-parent="${parent?.id||''}"><h3>${localBlue?'Review local Blue routing':c?'Edit draft claim':source?'Create a claim from an imported record':coordination?'Create secondary claim':parent?'Create corrected claim':'Create claim'}</h3>${sourceNotice(source)}<p>${money(b.total_cents)} in charges · Service ${esc(displayDate(b.content.service_date))}</p>${blueCard}${fields}${billingField('reason','Reason (saved in the claim history)','','text',1000,true)}${source?'<label class="review-ack"><input type="checkbox" required> I checked that the patient, payer, charges and claim number match the imported record.</label>':''}<button type="submit" class="primary">${localBlue?'Continue to review':'Save draft claim'}</button></form>`;
+ const html=`<form id="claim-editor-form" data-request="${crypto.randomUUID()}" data-edit="${c?.id||''}" data-parent="${parent?.id||''}"><h3>${localBlue?'Review local Blue routing':c?'Edit draft claim':source?'Create a claim from an imported record':coordination?'Create secondary claim':parent?'Create corrected claim':'Create claim'}</h3>${sourceNotice(source)}<p>${money(b.total_cents)} in charges · Service ${esc(displayDate(b.content.service_date))}</p>${blueCard}${fields}${billingField('reason','Reason (saved in the claim history)','','text',1000,true)}${source?'<label class="review-ack"><input type="checkbox" required> I checked that the patient, payer, charges and claim number match the imported record.</label>':''}<button type="submit" class="primary">${continueToReview?'Continue to review':'Save draft claim'}</button></form>`;
  const nestedEditor=context.drawer?null:context.reviewSheet?context.host?.querySelector('#claim-editor'):$('claim-editor');
  if(nestedEditor)nestedEditor.innerHTML=html;else claimPane(html);
  const editorHost=nestedEditor||claimWorkspaceHost(context);
  if(editorHost){editorHost.scrollIntoView({block:'start'});const editorHeading=editorHost.querySelector('#claim-editor-form h3');if(editorHeading){editorHeading.tabIndex=-1;editorHeading.focus({preventScroll:true});editorHeading.id='claim-editor-heading';}}
  const form=editorHost?.querySelector('#claim-editor-form')||document.querySelector('#claim-editor-form');
- if(form){form.claimViewContext=context;form.claimAccount=b;form.claimRecord=c;form.claimSource=source;form.claimParent=parent;form.claimCoordination=coordination;form.claimLocalBlueOptions=localBlueOptions;}
+ if(form){form.claimViewContext=context;form.claimAccount=b;form.claimRecord=c;form.claimSource=source;form.claimParent=parent;form.claimCoordination=coordination;form.claimLocalBlueOptions=localBlueOptions;form.claimContinueToReview=continueToReview;}
  if(!liveRoute)form?.querySelector('.form-grid')?.insertAdjacentHTML('beforebegin',`<label class="review-ack"><input name="synthetic_test" type="checkbox" ${v.synthetic_test?'checked':''}><span><b>Test claim</b><small>Tick only for a made-up patient and insurance. The claim gets an SCTEST control number, and a live clearinghouse account may still charge for it.</small></span></label>`);
  restoreClaimDraft(form,b,c,parent,localBlue?'bluecard-local':coordination?'secondary:'+coordination.coverage_id:source?'source:'+source.source_history_id:'packet',coordination?JSON.stringify([b.version,coordination]):undefined);
 }
@@ -1659,7 +1664,7 @@ async function saveClaimEditorForm(form,data){
  try{
   const claim=form.dataset.edit?await api(`${claimsBase}/${form.dataset.edit}`,'PUT',{content,reason:data.reason},record.version):await api(`/api/v1/patients/${account.patient_id}/billing/accounts/${account.id}/claims`,'POST',{request_id:form.dataset.request,source_history_id:source?.source_history_id||null,parent_id:form.dataset.parent||null,frequency:localBlue?'original':data.frequency,content,reason:data.reason,...routeRequest,...(form.claimCoordination?{coordination:form.claimCoordination}:{})},account.version);
   if(form.claimDraftKey&&context.identity===(typeof me==='undefined'?undefined:me))claimDrafts.delete(form.claimDraftKey);
-  if(localBlue&&claimContextCurrent(context)&&typeof openClaimMdSubmissionReview==='function'){
+  if(form.claimContinueToReview&&claimContextCurrent(context)&&typeof openClaimMdSubmissionReview==='function'){
    try{
     await openClaimMdSubmissionReview(claim.id,{releaseDraft:true,expectedVersion:claim.version});
     return;
