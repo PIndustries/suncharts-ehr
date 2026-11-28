@@ -1047,6 +1047,13 @@ impl LocalBluePayer {
             "home_payer_name":home["content"]["name"]
         })
     }
+
+    fn follows_route(&self, prior: &Claim, home: &Value) -> bool {
+        match prior.snapshot.get("claim_routing") {
+            Some(route) => self.id == prior.payer_id && *route == self.route(home),
+            None => home["id"] == json!(prior.payer_id),
+        }
+    }
 }
 
 async fn local_blue_payer(
@@ -1098,8 +1105,6 @@ async fn bluecard_return_is_current(
         || !prior.payer_control_number.trim().is_empty()
         || prior.source_history_id.is_some()
         || !prior.snapshot["coordination_of_benefits"].is_null()
-        || !prior.snapshot["claim_routing"].is_null()
-        || coverage["payer"]["id"] != json!(prior.payer_id)
         || coverage["payer"]["content"]["payer_code"] != "00200"
         || coverage["coverage"]["content"]["priority"] != "primary"
         || frozen["coverage_snapshot"] != *coverage
@@ -1127,6 +1132,9 @@ async fn bluecard_return_is_current(
                OR btrim(coalesce(r.snapshot->>'payer_control_number',''))<>''))
            AND NOT EXISTS (SELECT 1 FROM edi_submissions s JOIN related c ON c.id=s.claim_id
              WHERE s.tenant_id=$1 AND s.payer_outcome='accepted')
+           AND NOT EXISTS (SELECT 1 FROM edi_submissions s JOIN related c ON c.id=s.claim_id
+             JOIN edi_delivery_jobs j ON j.tenant_id=s.tenant_id AND j.submission_id=s.id
+             WHERE s.tenant_id=$1 AND j.status IN ('queued','leased','retry','unknown','blocked'))
            AND NOT EXISTS (SELECT 1 FROM edi_submissions s JOIN related c ON c.id=s.claim_id
              JOIN edi_remote_reports r
                ON r.tenant_id=s.tenant_id AND r.native_id=s.id AND r.native_kind='submission'
@@ -1163,9 +1171,13 @@ async fn bluecard_option(
     if !bluecard_return_is_current(tx, a, &b, prior, None).await? {
         return Ok(None);
     }
+    let home = &prior.snapshot["account"]["coverage_snapshot"]["payer"];
     Ok(local_blue_payer(tx, a)
         .await?
-        .map(|payer| json!({"eligible":true,"options":[payer.option()]})))
+        .filter(|payer| payer.follows_route(prior, home))
+        .map(|payer| {
+            json!({"eligible":true,"options":[payer.option()],"retains_existing_route":prior.snapshot.get("claim_routing").is_some()})
+        }))
 }
 
 async fn prepare_bluecard_route(
@@ -1215,6 +1227,11 @@ async fn prepare_bluecard_route(
         .coverage_snapshot
         .as_ref()
         .ok_or(Error::Integrity("missing BlueCard coverage"))?;
+    if !local.follows_route(&prior, &coverage["payer"]) {
+        return Err(Error::Conflict(
+            "The linked claim no longer matches the reviewed local Blue route",
+        ));
+    }
     Ok(local.route(&coverage["payer"]))
 }
 
@@ -1241,9 +1258,10 @@ pub(crate) async fn bluecard_send_is_current(
     {
         return Ok(false);
     }
-    Ok(local_blue_payer(tx, a).await?.is_some_and(|payer| {
-        payer.id == claim.payer_id && payer.content == *outbound_payer(&claim.snapshot)
-    }))
+    let home = &claim.snapshot["account"]["coverage_snapshot"]["payer"];
+    Ok(local_blue_payer(tx, a)
+        .await?
+        .is_some_and(|payer| payer.follows_route(&prior, home) && *route == payer.route(home)))
 }
 
 pub(crate) async fn require_current_bluecard_send(
@@ -1344,7 +1362,7 @@ async fn create_claim(
     } else if let Some(parent) = v.parent_id.filter(|_| !tracking) {
         let prior = claim_row(&mut tx, &a, parent).await?;
         crate::claim_cob::require_outbound(&prior)?;
-        if prior.snapshot.get("claim_routing").is_some() {
+        if prior.snapshot.get("claim_routing").is_some() && v.local_blue_payer_id.is_none() {
             return Err(Error::Conflict(
                 "This claim uses a separate local BlueCard payer. Review its payer response and routing before preparing a follow-up.",
             ));
