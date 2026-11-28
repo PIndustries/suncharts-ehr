@@ -92,7 +92,7 @@ draw(account,null,{source_history_id:'source'});assert.equal(fields.diagnosis_co
  await ctx.showClaim('claim');
  const screen=()=>node('claims-detail').innerHTML;
  const drawn=screen();
- assert.match(drawn,/>Send claim<\/button>/);assert.match(drawn,/Everything checks out/);
+ assert.match(drawn,/>Review &amp; send<\/button>/);assert.match(drawn,/Review the claim and the details on file before sending/);
  assert.match(drawn,/data-claimmd-submit="claim"/);
  assert.equal((drawn.match(/<button[^>]*class="primary"/g)||[]).length,2,'one on the open screen, one inside the collapsed element');
  assert.equal((drawn.slice(0,drawn.indexOf('<details class="claim-more"')).match(/<button[^>]*class="primary"/g)||[]).length,1,'the open screen offers exactly one primary button');
@@ -101,7 +101,7 @@ draw(account,null,{source_history_id:'source'});assert.equal(fields.diagnosis_co
 
  // 4. A draft with nothing missing keeps its one send button and its hand-written release option.
  claim.status='draft';await ctx.showClaim('claim');
- assert.match(screen(),/data-claim-release="claim"[^>]*>Send claim<\/button>/);
+ assert.match(screen(),/data-claim-release="claim"[^>]*>Review &amp; send<\/button>/);
  assert.match(screen(),/<summary>Other options for this claim<\/summary>/);assert.match(screen(),/<option value="ready">Release it to send later<\/option><option value="void_draft">/,'releasing or voiding a draft by hand stays reachable');assert.doesNotMatch(screen(),/Mark claim ready|mark it ready/);assert.doesNotMatch(screen(),/Record activity outside SunCharts/);
  claim.status='submitted';await ctx.showClaim('claim');assert.match(screen(),/Record activity outside SunCharts/);assert.match(screen(),/does not send a claim or record an insurance payment/);
 

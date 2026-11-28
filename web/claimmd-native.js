@@ -7,6 +7,7 @@ async function loadClaimMdConnection(guard){
  return state;
 }
 function claimMdConnectionCard(state=claimMdConnectionState){
+ if(state===undefined)return '<p class="muted" role="status">Checking clearinghouse connection…</p>';
  if(!state?.configured)return `<section class="mapping-notice"><div class="section-head"><div><b>No clearinghouse is connected</b><p>Connect your clearinghouse account to check eligibility, send claims and receive insurance payments here.</p></div>${me?.role==='owner'?'<button type="button" class="primary" data-provider-new>Connect a clearinghouse</button>':''}</div></section>`;
  if(!state.connected)return '<section class="mapping-notice"><b>The clearinghouse is not working yet</b><p>The saved clearinghouse account key was not accepted or the connection is turned off. Ask the practice owner to check the clearinghouse connection.</p></section>';
  const active=state.active||{};
@@ -66,7 +67,9 @@ function claimMdClaimLifecycle(claim,detail={},history={items:[]},{responsesOpen
  const at=current,now=stages[at]||{label:typeof claimPlainWords!=='undefined'&&claimPlainWords[status]||human(status)},answered=reports.length>0;
  const barHtml=`<ol class="claim-progress-bar">${stages.map((stage,index)=>`<li class="${stage.done?'is-complete':index===at?'is-current':index<at?'is-missed':'is-upcoming'}" tabindex="0" aria-label="${esc(stage.done?'Done':index===at?'Now':index<at?'Not done':'Later')}: ${esc(stage.label)}. ${esc(stage.detail)}"><span class="claim-progress-fill"></span><span class="claim-progress-tip"><b>${stage.done?`✓ Done · ${esc(stage.label)}`:`${index===at?'Now':index<at?'Not done':'Later'} · ${esc(stage.todo)}`}</b><small>${esc(stage.detail)}</small></span></li>`).join('')}</ol>`;
  if(typeof patientBannerClaimSet==='function')patientBannerClaimSet(claim,barHtml,stages[at]?`${stages.filter(stage=>stage.done).length} of ${stages.length} done · Now: ${stages[at].todo}`:now.label);
- return `<section class="claim-lifecycle claim-progress-compact" aria-label="Claim progress">${barHtml}<p class="claim-progress-now"><b>${esc(now.todo?`Now: ${now.todo}`:now.label)}</b> · ${esc(next)}</p><details class="claim-progress-more"${(responsesOpen??(answered||needsCorrection))?' open':''}><summary>Status checks and responses</summary>${claimMdTrackingSummary(tracking,claim.id)}<p class="muted">A response that could not be matched to a claim automatically is listed under Clearinghouse activity.</p>${claimMdConnectionState?.active?.id?`<button type="button" data-claimmd-operations="${esc(claimMdConnectionState.active.id)}">Open clearinghouse activity</button>`:'<span class="pill">No clearinghouse connected</span>'}</details></section>`;
+ const connection=claimMdConnectionState?.active?.id?`<button type="button" data-claimmd-operations="${esc(claimMdConnectionState.active.id)}">Open clearinghouse activity</button>`:
+  claimMdConnectionState?.connected===false&&!delivered&&!externalSubmitted?'<span class="pill">Clearinghouse not connected</span>':'';
+ return `<section class="claim-lifecycle claim-progress-compact" aria-label="Claim progress">${barHtml}<p class="claim-progress-now"><b>${esc(now.todo?`Now: ${now.todo}`:now.label)}</b> · ${esc(next)}</p><details class="claim-progress-more"${(responsesOpen??(answered||needsCorrection))?' open':''}><summary>Status checks and responses</summary>${claimMdTrackingSummary(tracking,claim.id)}<p class="muted">A response that could not be matched to a claim automatically is listed under Clearinghouse activity.</p>${connection}</details></section>`;
 }
 document.addEventListener('click',event=>{
  const button=event.target.closest('[data-claimmd-review-response]');if(!button)return;
@@ -127,28 +130,41 @@ function claimMdPublishSubmissionStatus(form,evidence,current){
  if(form.claimAfterQueue){form.claimAfterQueue(evidence);return;}
  if(typeof form.querySelector!=='function')return;
  const claim=form.claimRecord||claimCurrent;
- const render=attempt=>{
+ const active=()=>form.isConnected!==false&&current();
+ let timer,checking=false,remaining=5,attempt=evidence;
+ const render=(detail=null)=>{
   const received=attempt.outcome==='delivered'&&attempt.receipt_reference;
-  const title=received?'Claim.MD received':attempt.outcome==='queued'?'Queued for Claim.MD':'Delivery unconfirmed';
+  const title=received?'Claim.MD received':attempt.outcome==='queued'?'Queued for Claim.MD':attempt.outcome==='blocked'?'Delivery needs review':'Delivery unconfirmed';
+  const payer=detail?.claim?.status==='accepted'?'Accepted by the payer':
+   detail?.claim?.status==='adjudicated'?'Payer response recorded':
+   detail?.claim?.status==='rejected'||detail?.claimmd_position?.needs_correction?'Review the response in claim activity':'Waiting for payer response';
   const message=received?'Receipt '+attempt.receipt_reference:
-   attempt.outcome==='queued'?'SunCharts will record the clearinghouse response.':'Check this attempt for a saved receipt.';
-  form.innerHTML='<h3>'+esc(title)+'</h3><p role="status">'+esc(message)+'</p>'+
-   (received?'':'<button type="button" class="primary" data-claimmd-attempt-check>Check delivery</button>');
-  form.querySelector('[data-claimmd-attempt-check]')?.addEventListener('click',async event=>{
-   const button=event.currentTarget;
-   if(!current())return;
-   button.disabled=true;
-   try{
-    const fresh=await api(claimsBase+'/'+encodeURIComponent(claim.id));
-    if(!current()||fresh?.claim?.id!==claim.id||
-       fresh.claim.patient_id!==claim.patient_id||fresh.claim.account_id!==claim.account_id)return;
-    render(claimMdDeliveryAttempt(fresh,attempt));
-   }catch(error){
-    if(current())form.querySelector('[role="status"]').textContent=error.message||'The delivery could not be checked.';
-   }finally{button.disabled=false;}
-  });
+   attempt.outcome==='queued'?'SunCharts is checking for the clearinghouse receipt.':'Check this attempt for a saved receipt.';
+  form.innerHTML=`<h3>${esc(title)}</h3><p role="status">${esc(message)}</p>${received?`<dl class="signed-claim-stage-facts"><div><dt>Payer status</dt><dd>${esc(payer)}</dd></div></dl>`:'<button type="button" class="primary" data-claimmd-attempt-check>Check delivery</button>'}
+   <button type="button" data-claim-review-return="${esc(claim.id)}">View claim activity</button>`;
+  form.querySelector('[data-claimmd-attempt-check]')?.addEventListener('click',()=>void read());
  };
- render(evidence);
+ const read=async()=>{
+  if(!active()||checking)return;
+  if(typeof clearTimeout==='function')clearTimeout(timer);
+  checking=true;
+  const button=form.querySelector('[data-claimmd-attempt-check]');if(button)button.disabled=true;
+  try{
+   const fresh=await api(claimsBase+'/'+encodeURIComponent(claim.id));
+   if(!active()||fresh?.claim?.id!==claim.id||fresh.claim.patient_id!==claim.patient_id||fresh.claim.account_id!==claim.account_id)return;
+   attempt=claimMdDeliveryAttempt(fresh,attempt);
+   render(fresh);
+  }catch(error){
+   const message=active()&&form.querySelector('[role="status"]');
+   if(message)message.textContent=error.message||'The delivery could not be checked.';
+  }finally{
+   checking=false;
+   if(button)button.disabled=false;
+   if(active()&&attempt.outcome==='queued'&&remaining-- > 0&&typeof setTimeout==='function')timer=setTimeout(read,1800);
+  }
+ };
+ render();
+ if(attempt.outcome==='queued'&&typeof setTimeout==='function')timer=setTimeout(read,1000);
 }
 async function openClaimMdSubmissionReview(id,{accountId,current=()=>true,releaseDraft=false,afterQueue,reviewHost=null,expectedVersion=null}={}){
  if(!canPrepareClaimMdSubmission())throw new Error('Ask billing staff with permission to send this claim.');
@@ -156,6 +172,7 @@ async function openClaimMdSubmissionReview(id,{accountId,current=()=>true,releas
  const context=accountId?mountEncounterClaims(accountId,{reviewHost}):claimContextSnapshot(),identity=me;
  const active=()=>current()&&me===identity&&claimContextCurrent(context);
  requireClaimContext(context);
+ if(context.historyOnly)return false;
  if(!claimMdConnectionState?.connected)await loadClaimMdConnection(active);
  if(!active())return false;
  if(!claimMdConnectionState?.connected)throw new Error('Connect a clearinghouse before sending claims.');
@@ -188,71 +205,109 @@ async function openClaimMdSubmissionReview(id,{accountId,current=()=>true,releas
  }
  if(!canPrepareClaimMdSubmission())throw new Error('Ask billing staff with permission to send this claim.');
  claimCurrent=detail.claim;context.claim=id;
- claimMdSubmitEditor(detail,afterQueue);
+ claimMdSubmitEditor(detail,afterQueue,active);
  return true;
 }
-function claimMdSubmitEditor(detail,afterQueue){
- const claim=detail.claim,defaults=detail.submission_defaults||{},context=typeof claimContextSnapshot==='function'?claimContextSnapshot():null;if(context)requireClaimContext(context,claim);
- const patient=claim.snapshot.patient,coverage=claim.snapshot.account.coverage_snapshot.coverage.content;
- const synthetic=claim.content.synthetic_test===true,live=claimMdConnectionState?.active?.usage==='P';
- const compact=!!context?.reviewSheet;
- const hidden=(name,value)=>`<input type="hidden" name="${esc(name)}" value="${esc(value||'')}">`;
- const reviewed=(label,value)=>value?`<div><dt>${esc(label)}</dt><dd>${esc(value)}</dd></div>`:'';
- const address=(prefix,label,optional=false)=>{
-  const required=!optional,value=defaults[prefix+'_address']||{};
-  const saved=[value.line1,value.line2,value.city,[value.state,value.postal_code].filter(Boolean).join(' ')].filter(Boolean).join(', ');
-  const fields=[['line1','Street address',55],['line2','Address line 2',55],['city','City',30],['state','State (2 letters)',2],['postal_code','ZIP code',9]];
-  const editors=fields.filter(([key])=>!compact||required&&key!=='line2'&&!value[key]);
-  const completed=fields.filter(field=>!editors.includes(field)).map(([key])=>hidden(prefix+'_'+key,value[key])).join('');
-  const inputs=editors.map(([key,name,length])=>ediField(prefix+'_'+key,name,value[key]||'',length,required&&key!=='line2')).join('');
-  return completed+(compact&&!editors.length?'':`<fieldset class="edi-address"><legend>${label}</legend>${optional?'<p class="muted">Leave this blank unless the insurer asks for it.</p>':''}${compact&&saved?`<p class="muted">${esc(saved)}</p>`:''}<div class="form-grid">${inputs}</div></fieldset>`);
- };
- const format=address=>[address?.line1,address?.line2,address?.city,[address?.state,address?.postal_code].filter(Boolean).join(' ')].filter(Boolean).join(', ');
- const account=claim.snapshot.account,lines=account.content?.lines||[];
- const payer=account.coverage_snapshot?.payer?.content?.name;
- const destination=typeof claimLocalBlueDestination==='function'?claimLocalBlueDestination(claim):'';
- const routeMarkup=typeof claimCoverageAndRouteMarkup==='function'?claimCoverageAndRouteMarkup(claim):'';
- const facts=`<dl class="signed-claim-reviewed-facts">
-  ${reviewed(destination?'Insurance coverage':'Payer',payer)}${reviewed('Claim destination',destination)}${reviewed('Member ID',coverage.member_id)}
-  ${reviewed('Service date',account.content?.service_date)}${reviewed('Billed',Number.isSafeInteger(account.total_cents)?money(account.total_cents):'')}
-  ${reviewed('Diagnoses',(claim.content.diagnosis_codes||[]).join(', '))}
-  ${reviewed('Procedures',lines.map(line=>[line.code,line.modifiers].filter(Boolean).join('-')).filter(Boolean).join(', '))}
-  ${reviewed('Patient address',format(defaults.patient_address))}
-  ${format(defaults.subscriber_address)!==format(defaults.patient_address)?reviewed('Policy holder address',format(defaults.subscriber_address)):''}
-  ${reviewed('Billing provider',claim.content.billing_provider_name)}
-  ${reviewed('Billing address',format(defaults.billing_address))}
-  ${reviewed('Rendering provider',[defaults.rendering_given_name,defaults.rendering_family_name].filter(Boolean).join(' '))}
- </dl>`;
- const mappedField=(name,label,value,size)=>compact&&value?hidden(name,value):ediField(name,label,value,size);
- const mappedSelect=(name,label,values,value)=>compact?hidden(name,value):selectField(name,label,values,value);
- const billingAddressOnFile=!!(defaults.billing_address&&defaults.billing_address.line1);
- const billingAddressHint='Add the street, city, state and ZIP under Practice administration → Facilities and it will be filled in here.';
- const references=defaults.source_references||{};
- const billingAddressNotice=billingAddressOnFile?'':references.billing_address?`<p class="muted"><b>Billing address on file:</b> ${esc(references.billing_address)}. ${billingAddressHint}</p>`:`<p class="muted"><b>No billing address on file.</b> ${billingAddressHint}</p>`;
- const mapped=[defaults.subscriber_given_name,defaults.subscriber_family_name,defaults.patient_sex!=='U'?defaults.patient_sex:'',defaults.subscriber_sex!=='U'?defaults.subscriber_sex:'',defaults.rendering_given_name,defaults.rendering_family_name,defaults.billing_taxonomy,...['billing_address','subscriber_address','patient_address'].flatMap(key=>Object.values(defaults[key]||{}))].filter(Boolean).length;
- const sourceReference=(label,value,instruction)=>value?`<p class="muted"><b>${esc(label)} on file:</b> ${esc(value)}.${instruction?` ${instruction}`:''}</p>`:'';
-  const taxonomyHint=defaults.billing_taxonomy?(defaults.billing_taxonomy_source==='npi_registry'?'<p class="muted">Found in the national NPI registry for this provider. Check it is right.</p>':''):'<p class="muted">No taxonomy code was found for this provider. Add it under Practice administration → Providers and it will be filled in here.</p>';
- const testReview=synthetic?`<div class="mapping-notice"><b>Test claim${live?' on a live clearinghouse account':''}</b><p>Use made-up patient and insurance details only.${live?' The clearinghouse may charge for this test claim.':''}</p></div><label class="review-ack"><input name="synthetic_test_reviewed" type="checkbox" required><span>I checked that the patient, insurance and claim details are all made up, and I accept any clearinghouse charge for this test.</span></label>`:'';
- claimPane(`<form id="claimmd-submit-form" data-request="${crypto.randomUUID()}"><h3 tabindex="-1" data-claimmd-review-heading>${synthetic?'Send test claim':'Send claim'} to the clearinghouse</h3><p>${esc(patient.given_name)} ${esc(patient.family_name)} · ${esc(claim.control_number)}</p>${compact?facts:`${routeMarkup}<div class="mapping-notice"><b>Check these details before sending</b><p>${mapped} fields were filled in from the claim and the chart. Fill in anything that is blank.</p>${billingAddressNotice}${sourceReference('Insurer address',references.payer_address)}</div>`}<div class="form-grid">${mappedField('subscriber_given_name','Subscriber first name',defaults.subscriber_given_name||'',35)}${mappedField('subscriber_family_name','Subscriber last name',defaults.subscriber_family_name||'',35)}${mappedSelect('patient_sex','Patient sex',['U','F','M'],defaults.patient_sex||'U')}${mappedSelect('subscriber_sex','Subscriber sex',['U','F','M'],defaults.subscriber_sex||'U')}${mappedField('rendering_given_name','Rendering provider first name',defaults.rendering_given_name||'',35)}${mappedField('rendering_family_name','Rendering provider last name',defaults.rendering_family_name||'',35)}${mappedField('billing_taxonomy','Billing provider taxonomy code',defaults.billing_taxonomy||'',10)}${!compact||!defaults.billing_taxonomy?taxonomyHint:''}${mappedSelect('filing_indicator','Insurance type (claim filing code)',['CI','MB','MC','MA','CH','VA','TV','WC','ZZ'],defaults.filing_indicator||'CI')}</div>${address('billing','Billing provider address')}${address('subscriber','Subscriber address')}${address('patient','Patient address')}${address('payer','Insurer address (optional)',true)}${[['signature_on_file','Provider signature is on file.'],['benefits_assigned','I checked the assignment of benefits.'],['release_authorized','I checked the release of information.'],['routine_professional_reviewed','I checked the codes, addresses and consents, and this is a routine professional claim.']].map(([name,label])=>`<label class="review-ack"><input name="${name}" type="checkbox" required> ${label}</label>`).join('')}${testReview}${compact?hidden('reason','Reviewed claim for electronic submission'):ediField('reason','Reason (saved in the claim history)','',1000)}<div class="actions">${context?.reviewSheet?'':`<button type="button" data-claim-open="${esc(claim.id)}">Back to claim</button>`}${compact?'':'<button type="submit" name="claimmd_action" value="prepare">Save claim file without sending</button>'}<button class="primary" type="submit" name="claimmd_action" value="queue">Send claim to the clearinghouse</button></div></form>`);
- const form=$('claimmd-submit-form');if(form){form.claimViewContext=context;form.claimRecord=claim;form.claimIdentity=me;form.claimMdDetail=detail;form.claimAccount={...claim.snapshot.account,patient_id:claim.patient_id};form.claimMdConnection=claimMdConnectionState?.active;form.claimAfterQueue=afterQueue;if(typeof restoreClaimDraft==='function')restoreClaimDraft(form,form.claimAccount,claim,null,'837p',`${claim.version}:${claimMdConnectionState?.active?.id}:${claimMdConnectionState?.active?.partner_version}`);form.querySelector?.('[data-claimmd-review-heading]')?.focus({preventScroll:true});}
+const claimMdReviewAttestations=['signature_on_file','benefits_assigned','release_authorized','routine_professional_reviewed'];
+function claimMdReviewAttestation(synthetic=false,{implicit=false}={}){
+ const sentence='I confirm the provider signature is on file, the assignment of benefits and release of information are on file, and I reviewed the codes, addresses and consents for this routine professional claim.';
+ const test='I checked that the patient, insurance and claim details are all made up, and I accept any clearinghouse charge for this test.';
+ return implicit?'<p id="signed-claim-attestation" class="signed-claim-attestation">By selecting Send claim to Claim.MD, '+esc(sentence)+(synthetic?' '+esc(test):'')+'</p>':
+  `<label class="review-ack"><input name="claim_review_confirmed" type="checkbox" required> ${esc(sentence)}</label>${synthetic?`<label class="review-ack"><input name="synthetic_test_reviewed" type="checkbox" required> ${esc(test)}</label>`:''}`;
 }
-
+function claimMdReviewFacts(claim,account,defaults,{includeSummary=true}={}){
+ const content=claim.content||{},coverage=account.coverage_snapshot?.coverage?.content||{};
+ const format=address=>[address?.line1,address?.line2,address?.city,[address?.state,address?.postal_code].filter(Boolean).join(' ')].filter(Boolean).join(', ');
+ const address=(field)=>defaults[field]!==undefined?format(defaults[field]):content[field];
+ const patientAddress=address('patient_address'),subscriberAddress=address('subscriber_address');
+ const destination=typeof claimLocalBlueDestination==='function'?claimLocalBlueDestination(claim):'';
+ const fact=(label,value)=>value?`<div><dt>${esc(label)}</dt><dd>${esc(value)}</dd></div>`:'';
+ const lines=account.content?.lines||[];
+ const procedure=lines.map(line=>[line.code,line.modifiers].filter(Boolean).join('-')).filter(Boolean).join(', ');
+ return `<dl class="signed-claim-reviewed-facts">
+  ${includeSummary?fact(destination?'Insurance coverage':'Payer',account.coverage_snapshot?.payer?.content?.name)+fact('Claim destination',destination)+fact('Service date',account.content?.service_date)+fact('Billed',Number.isSafeInteger(account.total_cents)?money(account.total_cents):''):''}
+  ${fact('Diagnoses',(content.diagnosis_codes||[]).join(', '))}${fact('Procedures',procedure)}${fact('Member ID',coverage.member_id)}
+  ${fact('Patient address',patientAddress)}${subscriberAddress!==patientAddress?fact('Policy holder address',subscriberAddress):''}
+  ${fact('Billing provider',content.billing_provider_name)}${fact('Billing NPI',content.billing_npi)}${fact('Billing address',address('billing_address'))}
+  ${fact('Rendering provider',[defaults.rendering_given_name,defaults.rendering_family_name].filter(Boolean).join(' '))}
+ </dl>`;
+}
+function claimMdSubmitEditor(detail,afterQueue,active){
+ const claim=detail.claim,defaults=detail.submission_defaults||{},context=typeof claimContextSnapshot==='function'?claimContextSnapshot():null;
+ if(context)requireClaimContext(context,claim);
+ const patient=claim.snapshot.patient,account=claim.snapshot.account;
+ const synthetic=claim.content.synthetic_test===true,live=claimMdConnectionState?.active?.usage==='P';
+ const hidden=(name,value)=>`<input type="hidden" name="${esc(name)}" value="${esc(value||'')}">`;
+ const issues=Array.isArray(detail.submission_issues)?detail.submission_issues:[];
+ const invalid=(name,part='')=>issues.some(issue=>issue.field===name&&(!issue.part||!part||issue.part===part));
+ const references=defaults.source_references||{};
+ const address=(prefix,label,source,optional=false)=>{
+  const value=defaults[prefix+'_address']||{};
+  const fields=[['line1','Street address',55],['line2','Address line 2',55],['city','City',30],['state','State (2 letters)',2],['postal_code','ZIP code',9]];
+  const addressField=prefix+'_address';
+  const editors=fields.filter(([key])=>optional||invalid(addressField,key)||key!=='line2'&&!value[key]);
+  const completed=fields.filter(field=>!editors.includes(field)).map(([key])=>hidden(prefix+'_'+key,value[key])).join('');
+  const inputs=editors.map(([key,name,length])=>ediField(prefix+'_'+key,name,value[key]||'',length,!optional&&key!=='line2')).join('');
+  const reference=prefix==='billing'?references.billing_address:undefined;
+  return {completed,markup:editors.length?`<fieldset class="edi-address"><legend>${label}</legend>${reference?`<p>Address on file: ${esc(reference)}</p>`:''}${source?`<p class="muted">${esc(source)}</p>`:''}<div class="form-grid">${inputs}</div></fieldset>`:''};
+ };
+ const addresses=[
+  address('billing','Billing provider address','From Practice administration → Facilities.'),
+  address('subscriber','Policy holder address','From the patient’s insurance.'),
+  address('patient','Patient address','From the patient’s contact details.')
+ ];
+ const payerAddress=address('payer','Insurer address (optional)','Fill in only when the insurer asks for it.',true);
+ const field=(name,label,key,size,source)=>{
+  const value=defaults[name];
+  return value&&!invalid(key)?{hidden:hidden(name,value),markup:''}:{hidden:'',markup:`<div>${ediField(name,label,value||'',size,true)}<p class="muted">${esc(source)}</p></div>`};
+ };
+ const fields=[
+  field('subscriber_given_name','Policy holder first name','subscriber_name',35,'From the patient’s insurance.'),
+  field('subscriber_family_name','Policy holder last name','subscriber_name',35,'From the patient’s insurance.'),
+  field('rendering_given_name','Rendering provider first name','rendering_provider_name',35,'From Practice administration → Providers.'),
+  field('rendering_family_name','Rendering provider last name','rendering_provider_name',35,'From Practice administration → Providers.'),
+  field('billing_taxonomy','Billing provider taxonomy code','billing_taxonomy',10,'From Practice administration → Providers.')
+ ];
+ const missing=fields.some(item=>item.markup)||addresses.some(item=>item.markup);
+ const demographics=hidden('patient_sex',defaults.patient_sex||'U')+hidden('subscriber_sex',defaults.subscriber_sex||'U');
+ const filing=hidden('filing_indicator',defaults.filing_indicator||'CI');
+ const testNote=synthetic?`<p class="mapping-notice"><b>Test claim${live?' on a live clearinghouse account':''}</b></p>`:'';
+ const primary=`<button class="primary" type="submit" name="claimmd_action" value="queue">Send ${synthetic?'test ':''}claim to Claim.MD</button>`;
+ const back=context?.kind==='encounter'&&context.reviewSheet?'':`<button type="button" data-claim-review-return="${esc(claim.id)}">Back to claim</button>`;
+ const advanced=context?.reviewSheet&&context.kind==='encounter'?'':`<details data-inline><summary>Claim file options</summary><div class="form-grid">${selectField('patient_sex','Patient sex',['U','F','M'],defaults.patient_sex||'U')}${selectField('subscriber_sex','Policy holder sex',['U','F','M'],defaults.subscriber_sex||'U')}${selectField('filing_indicator','Insurance type (claim filing code)',['CI','MB','MC','MA','CH','VA','TV','WC','ZZ'],defaults.filing_indicator||'CI')}</div>${references.payer_address?`<p>Insurer address on file: ${esc(references.payer_address)}</p>`:''}${payerAddress.markup}<button type="submit" name="claimmd_action" value="prepare">Save claim file without sending</button></details>`;
+ claimPane(`<form id="claimmd-submit-form" data-request="${crypto.randomUUID()}"><h3 tabindex="-1" data-claimmd-review-heading>Review &amp; send</h3><p>${esc(patient.given_name)} ${esc(patient.family_name)} · ${esc(claim.control_number)}</p>
+  ${claimMdReviewFacts(claim,account,defaults)}${fields.map(item=>item.hidden).join('')}${addresses.map(item=>item.completed).join('')}${advanced?'':demographics+filing}
+  ${missing?`<section><h4>Complete before sending</h4><div class="form-grid">${fields.map(item=>item.markup).join('')}</div>${addresses.map(item=>item.markup).join('')}</section>`:''}
+  ${advanced||['line1','line2','city','state','postal_code'].map(key=>hidden('payer_'+key,defaults.payer_address?.[key])).join('')}
+  ${testNote}${claimMdReviewAttestation(synthetic)}${hidden('reason','Reviewed claim for electronic submission')}<div class="actions">${back}${primary}</div></form>`);
+ const form=$('claimmd-submit-form');
+ if(form){
+  form.claimViewContext=context;form.claimRecord=claim;form.claimIdentity=me;form.claimMdDetail=detail;
+  form.claimAccount={...account,patient_id:claim.patient_id};form.claimMdConnection=claimMdConnectionState?.active;
+  form.claimAfterQueue=afterQueue;form.claimReviewCurrent=active;
+  if(typeof restoreClaimDraft==='function')restoreClaimDraft(form,form.claimAccount,claim,null,'837p',`${claim.version}:${claimMdConnectionState?.active?.id}:${claimMdConnectionState?.active?.partner_version}`);
+  form.querySelector?.('[data-claimmd-review-heading]')?.focus({preventScroll:true});
+ }
+}
 async function submitClaimMdForm(form,submitter){
  if(form.claimSubmitting||form.claimSubmissionClosed)return;
  if(!canPrepareClaimMdSubmission())throw new Error('Ask billing staff with permission to send this claim.');
  if(form.claimDraftStale)throw new Error('The claim changed since you started. See the notice at the top of this form first.');if(typeof captureClaimDraft==='function')captureClaimDraft(form);
  const context=form.claimViewContext||(typeof claimContextSnapshot==='function'?claimContextSnapshot():null),claim=form.claimRecord||claimCurrent,identity=form.claimIdentity||me;if(identity!==me)throw new Error('You are signed in as a different user. Open the claim again.');if(context)requireClaimContext(context,claim);
  const values=Object.fromEntries(new FormData(form)),details={};
- for(const prefix of ['billing','subscriber','patient','payer']){details[prefix+'_address']={};for(const key of ['line1','line2','city','state','postal_code'])details[prefix+'_address'][key]=values[prefix+'_'+key];}
+ for(const prefix of ['billing','subscriber','patient','payer']){details[prefix+'_address']={};for(const key of ['line1','line2','city','state','postal_code'])details[prefix+'_address'][key]=values[prefix+'_'+key]||'';}
  for(const key of ['subscriber_given_name','subscriber_family_name','patient_sex','subscriber_sex','rendering_given_name','rendering_family_name','billing_taxonomy','filing_indicator'])details[key]=values[key];
- for(const key of ['signature_on_file','benefits_assigned','release_authorized','routine_professional_reviewed','synthetic_test_reviewed'])details[key]=values[key]==='on';
+ if(values.claim_review_confirmed!=='on')throw new Error('Confirm the claim review before continuing.');
+ for(const key of claimMdReviewAttestations)details[key]=true;
+ details.synthetic_test_reviewed=values.synthetic_test_reviewed==='on';
  const active=claimMdConnectionState?.active,reviewed=form.claimMdConnection||active;
  if(context?.kind==='encounter'&&typeof visitReviewStageUnsigned==='function'&&visitReviewStageUnsigned())throw new Error('Sign the encounter note before sending the claim.');
  if(!claimMdConnectionState?.connected||!active?.partner_id||!Number.isInteger(active.partner_version)||!active.route_key||active.id!==reviewed.id||active.partner_id!==reviewed.partner_id||active.partner_version!==reviewed.partner_version||active.route_key!==reviewed.route_key)throw new Error('The clearinghouse connection changed. Open the claim again to review it.');
- const current=()=>identity===me&&(!context||claimContextCurrent(context));
+ const current=()=>identity===me&&(!context||claimContextCurrent(context))&&(!form.claimReviewCurrent||form.claimReviewCurrent())&&form.isConnected!==false;
+ if(!current())return;
  const unlock=typeof lockClaimForm==='function'?lockClaimForm(form):()=>{};form.claimSubmitting=true;try{
  const submission=await api(`${claimsBase}/${encodeURIComponent(claim.id)}/837p`,'POST',{request_id:form.dataset.request,partner_id:active.partner_id,partner_version:active.partner_version,details,reason:values.reason},claim.version);
- if(identity!==me||context&&!claimContextCurrent(context))return;
+ if(!current())return;
  if(!submission?.id||!Number.isInteger(submission.version)||submission.claim_id!==claim.id||submission.claim_version!==claim.version||submission.partner_id!==active.partner_id||submission.partner_version!==active.partner_version)throw new Error('The prepared claim file does not match this review. Open the claim to check its status.');
  const action=submitter?.value==='queue'?'queue':'prepare';
  if(action==='queue'){

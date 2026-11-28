@@ -171,7 +171,7 @@ const open=(over,detail)=>workspace(rejectedClaim(over),detail).open();
  assert.doesNotMatch(returned,/>Fix and resend</);
  await routed.context.beginLocalBlueClaimFix('claim');
  const editor=routed.nodes['claim-editor'].innerHTML;
- assert.match(editor,/<h3>Prepare live claim<\/h3>/);
+ assert.match(editor,/<h3>Review local Blue routing<\/h3>/);
  assert.match(editor,/name="local_blue_payer_id" value="local-payer"/);
  assert.match(editor,/Claim destination<\/b> Synthetic Local Blue · 22099/);
  assert.match(editor,/Insurance coverage<\/b> Synthetic Payer/);

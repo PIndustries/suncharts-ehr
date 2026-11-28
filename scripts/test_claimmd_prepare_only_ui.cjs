@@ -7,7 +7,7 @@ let failDelivery=false,wrongClaim=false;
 const fields={
  subscriber_given_name:'Synthetic',subscriber_family_name:'Member',patient_sex:'U',subscriber_sex:'U',
  rendering_given_name:'Synthetic',rendering_family_name:'Provider',billing_taxonomy:'207Q00000X',filing_indicator:'CI',
- signature_on_file:'on',benefits_assigned:'on',release_authorized:'on',routine_professional_reviewed:'on',
+ claim_review_confirmed:'on',
  synthetic_test_reviewed:'on',reason:'Synthetic preparation test'
 };
 for(const prefix of ['billing','subscriber','patient','payer'])for(const key of ['line1','line2','city','state','postal_code'])fields[`${prefix}_${key}`]='SYNTHETIC';
