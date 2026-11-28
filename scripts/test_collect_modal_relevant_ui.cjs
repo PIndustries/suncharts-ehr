@@ -74,6 +74,41 @@ function fixture({due=6500,draft=false,available=true,operations=[]}={}){
   assert.equal(active.calls.some(call=>call[1]==='POST'),false);
  }finally{active.close();}
 
+ const withoutAppointment=fixture();
+ try{
+  const f=withoutAppointment;
+  const account={...f.ctx.workspace.billing.accounts[0],patient_id:'patient',content:{visit_id:'visit',service_date:'2026-11-11',lines:[]}};
+  f.ctx.workspace.appointments=[];
+  f.ctx.workspace.billing.accounts=[account];
+  f.ctx.visitBillingDate=String;
+  f.ctx.renderEncounterRevenue=()=>{};
+  f.ctx.loadEncounterRevenueStatus=async()=>{};
+  f.ctx.api=async(...args)=>{
+   f.calls.push(args);
+   if(args[1]==='POST')return {id:'ledger-entry',account:{...account,version:2}};
+   return {...f.ctx.workspace.billing,accounts:[{...account,version:2}]};
+  };
+  f.ctx.openVisitCollect();
+  const dialog=f.find('dialog'),form=dialog.querySelector('[data-encounter-balance-payment]');
+  assert.match(dialog.textContent,/ENC-0007/);
+  assert.equal(form.elements.amount.value,'65.00');
+  assert.deepEqual(f.calls,[],'opening the exact visit balance makes no payment or statement call');
+  form.elements.amount.value='65.01';
+  form.querySelector('button').click();await wait();
+  assert.deepEqual(f.calls,[],'an amount above current patient responsibility cannot be recorded');
+  form.elements.amount.value='65.00';
+  form.querySelector('button').click();await wait();
+  const [path,method,body,version]=f.calls[0];
+  assert.equal(path,'/api/v1/patients/patient/billing/accounts/account/entries');
+  assert.equal(method,'POST');
+  assert.equal(version,1);
+  assert.equal(body.reviewed_patient_balance_cents,6500);
+  assert.equal(body.amount_cents,6500);
+  assert.match(dialog.textContent,/\$65\.00 payment recorded/);
+  assert.equal(f.calls.filter(call=>call[1]==='POST').length,1);
+  assert.equal(f.ctx.activeVisit.id,'visit');
+ }finally{withoutAppointment.close();}
+
  for(const draft of [false,true]){
   const f=fixture({due:draft?2500:6500,draft});
   try{

@@ -1394,7 +1394,81 @@ struct Entry {
     reference: String,
     occurred_on: NaiveDate,
     reason: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reviewed_patient_balance_cents: Option<i64>,
 }
+
+async fn require_current_patient_payment_balance(
+    tx: &mut Transaction<'_, Postgres>,
+    a: &Actor,
+    account: &Account,
+    entry: &Entry,
+    reviewed_balance: i64,
+) -> Result<()> {
+    if entry.kind != "payment"
+        || entry.party != "patient"
+        || !matches!(entry.method.as_str(), "cash" | "check" | "external")
+        || !entry
+            .amount_cents
+            .is_some_and(|amount| amount > 0 && amount <= reviewed_balance)
+    {
+        return Err(Error::Invalid(
+            "enter a received payment up to the reviewed patient balance",
+        ));
+    }
+    let summary = crate::visit_billing::summarize(
+        tx,
+        a,
+        account.patient_id,
+        None,
+        Some(account.id),
+        crate::visit_billing::Options::default(),
+    )
+    .await?;
+    if summary["visit"]["status"] != "signed"
+        || summary["patient"]["owes_now_cents"].as_i64() != Some(reviewed_balance)
+        || summary["patient"]["receipt_needs_review"] == true
+    {
+        return Err(Error::Conflict(
+            "review the current patient balance before recording payment",
+        ));
+    }
+    let appointment =
+        serde_json::from_value::<Option<Uuid>>(summary["visit"]["appointment_id"].clone())
+            .map_err(|_| Error::Integrity("invalid appointment on the encounter summary"))?;
+    let has_open_payment: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM copay_checkout_attempts o WHERE o.tenant_id=$1 AND o.patient_id=$2
+         AND o.status IN ('creating','open','needs_review') AND (o.appointment_id=$3 OR EXISTS(
+         SELECT 1 FROM copay_checkout_splits s WHERE s.tenant_id=o.tenant_id AND s.operation_id=o.id AND s.appointment_id=$3)))",
+    )
+    .bind(a.tenant_id)
+    .bind(account.patient_id)
+    .bind(appointment)
+    .fetch_one(&mut **tx)
+    .await?;
+    if has_open_payment {
+        return Err(Error::Conflict("check the payment already in progress"));
+    }
+    if account.coverage_snapshot.is_none() {
+        let service_date = serde_json::from_value(account.content["service_date"].clone())
+            .map_err(|_| Error::Integrity("invalid service date on posted account"))?;
+        if coverage_application::added_after_posting(
+            tx,
+            a,
+            account.patient_id,
+            account.id,
+            service_date,
+        )
+        .await?
+        {
+            return Err(Error::Conflict(
+                "review insurance added after posting before taking payment",
+            ));
+        }
+    }
+    Ok(())
+}
+
 async fn new_entry(
     a: Actor,
     ExtractState(s): ExtractState<State>,
@@ -1434,6 +1508,9 @@ async fn new_entry(
         return Err(Error::Conflict(
             "ledger entry requires the current posted account version",
         ));
+    }
+    if let Some(reviewed_balance) = v.reviewed_patient_balance_cents {
+        require_current_patient_payment_balance(&mut tx, &a, &old, &v, reviewed_balance).await?;
     }
     let effect = if v.kind == "reversal" {
         if v.amount_cents.is_some() {
